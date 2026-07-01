@@ -80,35 +80,26 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
      * @throws Throwable Everything the callback throws is caught and logged.
      */
     override fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam?) {
-        if (lpparam?.packageName != "android" && lpparam?.packageName != "com.android.phone") {
+        val pkgName = lpparam?.packageName ?: return
+        if (pkgName !in setOf(
+                "android",
+                "com.android.phone",
+                "com.android.location.fused",
+                "com.xiaomi.location.fused",
+                "com.oplus.location"
+            )
+        ) {
             return
         }
 
-        val systemClassLoader = (kotlin.runCatching {
-            lpparam.classLoader.loadClass("android.app.ActivityThread")
-                ?: Class.forName("android.app.ActivityThread")
-        }.onFailure {
-            Logger.error("Failed to find ActivityThread", it)
-        }.getOrNull() ?: return)
-            .getMethod("currentActivityThread")
-            .invoke(null)
-            .javaClass
-            .getClassLoader()
 
-        if (systemClassLoader == null) {
-            Logger.error("Failed to get system class loader")
+        if(System.getProperty("portal.injected_$pkgName") == "true") {
             return
         }
-
-        if(System.getProperty("portal.injected_${lpparam.packageName}") == "true") {
-            return
-        } else {
-            System.setProperty("portal.injected_${lpparam.packageName}", "true")
-        }
+        System.setProperty("portal.injected_$pkgName", "true")
 
         when (lpparam.packageName) {
             "com.android.phone" -> {
-                val pkgName = lpparam.packageName
                 Logger.info("Found $pkgName, hooks will be installed after ${BOOT_DELAY_MS / 1000}s delay")
 
                 System.setProperty(DELAY_MARKER_PREFIX + pkgName, "true")
@@ -148,6 +139,21 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                 }, "PortalBootDelay-$pkgName").start()
             }
             "android" -> {
+                val systemClassLoader = (kotlin.runCatching {
+                    lpparam.classLoader.loadClass("android.app.ActivityThread")
+                        ?: Class.forName("android.app.ActivityThread")
+                }.onFailure {
+                    Logger.error("Failed to find ActivityThread", it)
+                }.getOrNull() ?: return)
+                    .getMethod("currentActivityThread")
+                    .invoke(null)
+                    .javaClass
+                    .getClassLoader()
+
+                if (systemClassLoader == null) {
+                    Logger.error("Failed to get system class loader")
+                    return
+                }
                 // Safety mode check: if 3+ consecutive install crashes, enter safe mode
                 if (DomainGuard.checkInstallCrashLoop()) {
                     DomainGuard.enterSafeMode("install crash loop (3 consecutive crashes)")
@@ -187,7 +193,6 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                 Logger.info("[FakeLocation] Hooks will be installed after ${BOOT_DELAY_MS / 1000}s boot delay")
 
                 // 设置生命周期标记，用于外部取消和线程醒来后的状态检查
-                val pkgName = lpparam.packageName
                 System.setProperty(DELAY_MARKER_PREFIX + pkgName, "true")
 
                 // 延迟安装hook，确保用户有80秒操作时间
@@ -232,20 +237,10 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                             Logger.error("[FakeLocation] WlanHook install failed", e)
                             DomainGuard.reportCrash(Domain.WLAN, e)
                         }
-                    runCatching { AndroidFusedLocationProviderHook(lpparam.classLoader) }
-                        .onFailure { e ->
-                            Logger.error("[FakeLocation] AndroidFusedLocationProviderHook failed", e)
-                            DomainGuard.reportCrash(Domain.FUSED_LOCATION, e)
-                        }
                     runCatching { SystemSensorManagerHook(lpparam.classLoader) }
                         .onFailure { e ->
                             Logger.error("[FakeLocation] SystemSensorManagerHook failed", e)
                             DomainGuard.reportCrash(Domain.SENSOR, e)
-                        }
-                    runCatching { ThirdPartyLocationHook(lpparam.classLoader) }
-                        .onFailure { e ->
-                            Logger.error("[FakeLocation] ThirdPartyLocationHook failed", e)
-                            DomainGuard.reportCrash(Domain.FUSED_LOCATION, e)
                         }
 
                     // Load complete: reset install guard + report status
@@ -259,23 +254,47 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                 }, "PortalBootDelay-$pkgName").start()
             }
             "com.android.location.fused" -> {
+                Logger.info("[FakeLocation] Fused process: $pkgName, installing AndroidFusedLocationProviderHook...")
+                FlightRecorder.hookInstall("FUSED", "ANDROID_FUSED", mapOf("process" to pkgName))
                 runCatching { AndroidFusedLocationProviderHook(lpparam.classLoader) }
+                    .onSuccess {
+                        Logger.info("[FakeLocation] AndroidFusedLocationProviderHook ($pkgName) installed successfully")
+                        FlightRecorder.hookInstall("FUSED", "ANDROID_FUSED_OK", mapOf("process" to pkgName))
+                    }
                     .onFailure { e ->
-                        Logger.error("[FakeLocation] AndroidFusedLocationProviderHook (fused process) failed", e)
+                        Logger.error("[FakeLocation] AndroidFusedLocationProviderHook ($pkgName) failed", e)
+                        FlightRecorder.hookFail("FUSED", "ANDROID_FUSED_FAIL",
+                            mapOf("process" to pkgName, "error" to e.javaClass.simpleName))
                         DomainGuard.reportCrash(Domain.FUSED_LOCATION, e)
                     }
             }
             "com.xiaomi.location.fused" -> {
+                Logger.info("[FakeLocation] Fused process: $pkgName, installing ThirdPartyLocationHook...")
+                FlightRecorder.hookInstall("FUSED", "XIAOMI_FUSED", mapOf("process" to pkgName))
                 runCatching { ThirdPartyLocationHook(lpparam.classLoader) }
+                    .onSuccess {
+                        Logger.info("[FakeLocation] ThirdPartyLocationHook ($pkgName) installed successfully")
+                        FlightRecorder.hookInstall("FUSED", "XIAOMI_FUSED_OK", mapOf("process" to pkgName))
+                    }
                     .onFailure { e ->
-                        Logger.error("[FakeLocation] ThirdPartyLocationHook (xiaomi fused) failed", e)
+                        Logger.error("[FakeLocation] ThirdPartyLocationHook ($pkgName) failed", e)
+                        FlightRecorder.hookFail("FUSED", "XIAOMI_FUSED_FAIL",
+                            mapOf("process" to pkgName, "error" to e.javaClass.simpleName))
                         DomainGuard.reportCrash(Domain.FUSED_LOCATION, e)
                     }
             }
             "com.oplus.location" -> {
+                Logger.info("[FakeLocation] Fused process: $pkgName, installing OplusLocationHook...")
+                FlightRecorder.hookInstall("FUSED", "OPLUS_LOCATION", mapOf("process" to pkgName))
                 runCatching { OplusLocationHook(lpparam.classLoader) }
+                    .onSuccess {
+                        Logger.info("[FakeLocation] OplusLocationHook ($pkgName) installed successfully")
+                        FlightRecorder.hookInstall("FUSED", "OPLUS_LOCATION_OK", mapOf("process" to pkgName))
+                    }
                     .onFailure { e ->
-                        Logger.error("[FakeLocation] OplusLocationHook failed", e)
+                        Logger.error("[FakeLocation] OplusLocationHook ($pkgName) failed", e)
+                        FlightRecorder.hookFail("FUSED", "OPLUS_LOCATION_FAIL",
+                            mapOf("process" to pkgName, "error" to e.javaClass.simpleName))
                         DomainGuard.reportCrash(Domain.FUSED_LOCATION, e)
                     }
             }
