@@ -33,8 +33,8 @@ JNI_OnLoad(JavaVM* vm, void* reserved) {
         install_crash_handlers();
 
         // Sensor hooks: ELF parsing + Dobby inline hook.
-        int res = doSensorHook();
-        LOGD("doSensorHook result: %d", res);
+        doSensorHook();
+        LOGD("doSensorHook complete");
     }
     return JNI_VERSION_1_6;
 }
