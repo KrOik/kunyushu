@@ -4,7 +4,7 @@ plugins {
 }
 
 android {
-    namespace = "moe.fuqiuluo.hardcoder"
+    namespace = "tv.kyshu"
     compileSdk = 35
 
     defaultConfig {

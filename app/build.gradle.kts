@@ -8,11 +8,11 @@ plugins {
 }
 
 android {
-    namespace = "moe.fuqiuluo.portal"
+    namespace = "tv.kyshu"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "moe.fuqiuluo.portal"
+        applicationId = "tv.kyshu"
         minSdk = 26
         targetSdk = 35
         versionCode = getVersionCode()

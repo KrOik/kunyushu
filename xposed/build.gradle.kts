@@ -4,7 +4,7 @@ plugins {
 }
 
 android {
-    namespace = "moe.fuqiuluo.xposed"
+    namespace = "tv.kyshu.xposed"
     compileSdk = 35
     ndkVersion = "26.1.10909125"
 
