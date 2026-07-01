@@ -255,7 +255,8 @@ object RemoteCommandSecurity {
             append(payloadDigest)
         }
         val mac = Mac.getInstance(HMAC_ALGORITHM)
-        mac.init(SecretKeySpec(sessionKey.toByteArray(Charsets.UTF_8), HMAC_ALGORITHM))
+        val derivedKey = MessageDigest.getInstance("SHA-256").digest(sessionKey.toByteArray(Charsets.UTF_8))
+        mac.init(SecretKeySpec(derivedKey, HMAC_ALGORITHM))
         return mac.doFinal(payload.toByteArray(Charsets.UTF_8)).toHex()
     }
 

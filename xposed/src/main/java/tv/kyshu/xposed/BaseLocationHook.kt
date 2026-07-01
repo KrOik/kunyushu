@@ -120,7 +120,7 @@ abstract class BaseLocationHook: BaseDivineService() {
         }
 
         if (FakeLoc.enableDebugLog) {
-            Logger.debug("injectLocation success! $location")
+            Logger.debug("injectLocation success! lat=${location.latitude}, lon=${location.longitude}, acc=${location.accuracy}")
         }
 
         return location
@@ -228,8 +228,7 @@ abstract class BaseLocationHook: BaseDivineService() {
                     return null
                 }
             }
-        }.onFailure {
-            Logger.error("NMEA parse failed: ${it.message}, source = $nmeaStr")
+        Logger.error("NMEA parse failed: ${it.message}")
             return null
         }
         return null

@@ -110,57 +110,59 @@ object MockCommandContract {
     }
 
     fun applyPutConfig(rely: Bundle) {
-        with(Extract) {
-            if (rely.containsKey(Keys.ENABLE)) FakeLoc.enable = boolean(rely, Keys.ENABLE)
-            if (rely.containsKey(Keys.SPEED)) FakeLoc.speed = double(rely, Keys.SPEED)
-            if (rely.containsKey(Keys.ALTITUDE)) FakeLoc.altitude = double(rely, Keys.ALTITUDE)
-            if (rely.containsKey(Keys.ACCURACY)) FakeLoc.accuracy = float(rely, Keys.ACCURACY)
+        synchronized(FakeLoc) {
+            with(Extract) {
+                if (rely.containsKey(Keys.ENABLE)) FakeLoc.enable = boolean(rely, Keys.ENABLE)
+                if (rely.containsKey(Keys.SPEED)) FakeLoc.speed = double(rely, Keys.SPEED)
+                if (rely.containsKey(Keys.ALTITUDE)) FakeLoc.altitude = double(rely, Keys.ALTITUDE)
+                if (rely.containsKey(Keys.ACCURACY)) FakeLoc.accuracy = float(rely, Keys.ACCURACY)
 
-            if (rely.containsKey(Keys.ENABLE_MOCK_WIFI)) FakeLoc.enableMockWifi = boolean(rely, Keys.ENABLE_MOCK_WIFI)
-            if (rely.containsKey(Keys.DISABLE_WIFI_SCAN)) FakeLoc.disableWifiScan = boolean(rely, Keys.DISABLE_WIFI_SCAN)
-            if (rely.containsKey(Keys.MOCK_SSID)) FakeLoc.mockSSID = string(rely, Keys.MOCK_SSID) ?: ""
-            if (rely.containsKey(Keys.MOCK_BSSID)) FakeLoc.mockBSSID = string(rely, Keys.MOCK_BSSID) ?: ""
-            if (rely.containsKey(Keys.MOCK_MAC)) FakeLoc.mockMac = string(rely, Keys.MOCK_MAC) ?: ""
-            if (rely.containsKey(Keys.MOCK_IP)) FakeLoc.mockIp = string(rely, Keys.MOCK_IP) ?: ""
-            if (rely.containsKey(Keys.MOCK_WIFI_SCAN_COUNT)) FakeLoc.mockWifiScanCount = int(rely, Keys.MOCK_WIFI_SCAN_COUNT)
+                if (rely.containsKey(Keys.ENABLE_MOCK_WIFI)) FakeLoc.enableMockWifi = boolean(rely, Keys.ENABLE_MOCK_WIFI)
+                if (rely.containsKey(Keys.DISABLE_WIFI_SCAN)) FakeLoc.disableWifiScan = boolean(rely, Keys.DISABLE_WIFI_SCAN)
+                if (rely.containsKey(Keys.MOCK_SSID)) FakeLoc.mockSSID = string(rely, Keys.MOCK_SSID) ?: ""
+                if (rely.containsKey(Keys.MOCK_BSSID)) FakeLoc.mockBSSID = string(rely, Keys.MOCK_BSSID) ?: ""
+                if (rely.containsKey(Keys.MOCK_MAC)) FakeLoc.mockMac = string(rely, Keys.MOCK_MAC) ?: ""
+                if (rely.containsKey(Keys.MOCK_IP)) FakeLoc.mockIp = string(rely, Keys.MOCK_IP) ?: ""
+                if (rely.containsKey(Keys.MOCK_WIFI_SCAN_COUNT)) FakeLoc.mockWifiScanCount = int(rely, Keys.MOCK_WIFI_SCAN_COUNT)
 
-            if (rely.containsKey(Keys.HIDE_BASE_STATION)) FakeLoc.hideBaseStation = boolean(rely, Keys.HIDE_BASE_STATION)
-            if (rely.containsKey(Keys.MIN_SATELLITES)) FakeLoc.minSatellites = sanitizeMinSatellites(int(rely, Keys.MIN_SATELLITES))
+                if (rely.containsKey(Keys.HIDE_BASE_STATION)) FakeLoc.hideBaseStation = boolean(rely, Keys.HIDE_BASE_STATION)
+                if (rely.containsKey(Keys.MIN_SATELLITES)) FakeLoc.minSatellites = sanitizeMinSatellites(int(rely, Keys.MIN_SATELLITES))
 
-            if (rely.containsKey(Keys.HOOK_SENSOR)) FakeLoc.hookSensor = boolean(rely, Keys.HOOK_SENSOR)
-            if (rely.containsKey(Keys.ENABLE_STEP_COUNT_MOCK)) FakeLoc.enableStepCountMock = boolean(rely, Keys.ENABLE_STEP_COUNT_MOCK)
-            if (rely.containsKey(Keys.STEP_COUNT)) FakeLoc.stepCount = int(rely, Keys.STEP_COUNT)
-            if (rely.containsKey(Keys.ENABLE_SHAKE_MOCK)) FakeLoc.enableShakeMock = boolean(rely, Keys.ENABLE_SHAKE_MOCK)
-            if (rely.containsKey(Keys.KEEP_WALKING_WAVEFORM)) FakeLoc.keepWalkingWaveform = boolean(rely, Keys.KEEP_WALKING_WAVEFORM)
-            if (rely.containsKey(Keys.DOZE_SENSOR_INTERVAL_MS)) FakeLoc.dozeSensorIntervalMs = numberLong(rely, Keys.DOZE_SENSOR_INTERVAL_MS)
-            if (rely.containsKey(Keys.GAIT_FREQ)) FakeLoc.gaitFreq = float(rely, Keys.GAIT_FREQ)
-            if (rely.containsKey(Keys.GAIT_AMP_SCALE)) FakeLoc.gaitAmpScale = float(rely, Keys.GAIT_AMP_SCALE)
-            if (rely.containsKey(Keys.GAIT_PARAMS_JSON)) FakeLoc.gaitParamsJson = string(rely, Keys.GAIT_PARAMS_JSON) ?: ""
+                if (rely.containsKey(Keys.HOOK_SENSOR)) FakeLoc.hookSensor = boolean(rely, Keys.HOOK_SENSOR)
+                if (rely.containsKey(Keys.ENABLE_STEP_COUNT_MOCK)) FakeLoc.enableStepCountMock = boolean(rely, Keys.ENABLE_STEP_COUNT_MOCK)
+                if (rely.containsKey(Keys.STEP_COUNT)) FakeLoc.stepCount = int(rely, Keys.STEP_COUNT)
+                if (rely.containsKey(Keys.ENABLE_SHAKE_MOCK)) FakeLoc.enableShakeMock = boolean(rely, Keys.ENABLE_SHAKE_MOCK)
+                if (rely.containsKey(Keys.KEEP_WALKING_WAVEFORM)) FakeLoc.keepWalkingWaveform = boolean(rely, Keys.KEEP_WALKING_WAVEFORM)
+                if (rely.containsKey(Keys.DOZE_SENSOR_INTERVAL_MS)) FakeLoc.dozeSensorIntervalMs = numberLong(rely, Keys.DOZE_SENSOR_INTERVAL_MS)
+                if (rely.containsKey(Keys.GAIT_FREQ)) FakeLoc.gaitFreq = float(rely, Keys.GAIT_FREQ)
+                if (rely.containsKey(Keys.GAIT_AMP_SCALE)) FakeLoc.gaitAmpScale = float(rely, Keys.GAIT_AMP_SCALE)
+                if (rely.containsKey(Keys.GAIT_PARAMS_JSON)) FakeLoc.gaitParamsJson = string(rely, Keys.GAIT_PARAMS_JSON) ?: ""
 
-            if (rely.containsKey(Keys.DISABLE_GET_CURRENT_LOCATION)) FakeLoc.disableGetCurrentLocation = boolean(rely, Keys.DISABLE_GET_CURRENT_LOCATION)
-            if (rely.containsKey(Keys.DISABLE_REGISTER_LOCATION_LISTENER)) FakeLoc.disableRegisterLocationListener = boolean(rely, Keys.DISABLE_REGISTER_LOCATION_LISTENER)
-            if (rely.containsKey(Keys.DISABLE_FUSED_LOCATION)) FakeLoc.disableFusedLocation = boolean(rely, Keys.DISABLE_FUSED_LOCATION)
-            if (rely.containsKey(Keys.LOOP_BROADCAST_LOCATION)) FakeLoc.loopBroadcastLocation = boolean(rely, Keys.LOOP_BROADCAST_LOCATION)
-            if (rely.containsKey(Keys.DISABLE_REQUEST_GEOFENCE)) FakeLoc.disableRequestGeofence = boolean(rely, Keys.DISABLE_REQUEST_GEOFENCE)
-            if (rely.containsKey(Keys.DISABLE_GET_FROM_LOCATION)) FakeLoc.disableGetFromLocation = boolean(rely, Keys.DISABLE_GET_FROM_LOCATION)
+                if (rely.containsKey(Keys.DISABLE_GET_CURRENT_LOCATION)) FakeLoc.disableGetCurrentLocation = boolean(rely, Keys.DISABLE_GET_CURRENT_LOCATION)
+                if (rely.containsKey(Keys.DISABLE_REGISTER_LOCATION_LISTENER)) FakeLoc.disableRegisterLocationListener = boolean(rely, Keys.DISABLE_REGISTER_LOCATION_LISTENER)
+                if (rely.containsKey(Keys.DISABLE_FUSED_LOCATION)) FakeLoc.disableFusedLocation = boolean(rely, Keys.DISABLE_FUSED_LOCATION)
+                if (rely.containsKey(Keys.LOOP_BROADCAST_LOCATION)) FakeLoc.loopBroadcastLocation = boolean(rely, Keys.LOOP_BROADCAST_LOCATION)
+                if (rely.containsKey(Keys.DISABLE_REQUEST_GEOFENCE)) FakeLoc.disableRequestGeofence = boolean(rely, Keys.DISABLE_REQUEST_GEOFENCE)
+                if (rely.containsKey(Keys.DISABLE_GET_FROM_LOCATION)) FakeLoc.disableGetFromLocation = boolean(rely, Keys.DISABLE_GET_FROM_LOCATION)
 
-            if (rely.containsKey(Keys.IS_APP_IN_BACKGROUND)) FakeLoc.isAppInBackground = boolean(rely, Keys.IS_APP_IN_BACKGROUND)
-            if (rely.containsKey(Keys.IS_SCREEN_OFF)) FakeLoc.isScreenOff = boolean(rely, Keys.IS_SCREEN_OFF)
-            if (rely.containsKey(Keys.IS_DEVICE_IDLE_MODE)) FakeLoc.isDeviceIdleMode = boolean(rely, Keys.IS_DEVICE_IDLE_MODE)
+                if (rely.containsKey(Keys.IS_APP_IN_BACKGROUND)) FakeLoc.isAppInBackground = boolean(rely, Keys.IS_APP_IN_BACKGROUND)
+                if (rely.containsKey(Keys.IS_SCREEN_OFF)) FakeLoc.isScreenOff = boolean(rely, Keys.IS_SCREEN_OFF)
+                if (rely.containsKey(Keys.IS_DEVICE_IDLE_MODE)) FakeLoc.isDeviceIdleMode = boolean(rely, Keys.IS_DEVICE_IDLE_MODE)
 
-            if (rely.containsKey(Keys.MIN_SPEED)) FakeLoc.minSpeed = double(rely, Keys.MIN_SPEED)
-            if (rely.containsKey(Keys.MAX_SPEED)) FakeLoc.maxSpeed = double(rely, Keys.MAX_SPEED)
-            if (rely.containsKey(Keys.ENABLE_DEBUG_LOG)) FakeLoc.enableDebugLog = boolean(rely, Keys.ENABLE_DEBUG_LOG)
-            if (rely.containsKey(Keys.HOOK_WIFI)) FakeLoc.wifiData.hookWifi = boolean(rely, Keys.HOOK_WIFI)
-            if (rely.containsKey(Keys.SPEED_AMPLITUDE)) FakeLoc.speedAmplitude = double(rely, Keys.SPEED_AMPLITUDE)
-            if (rely.containsKey(Keys.HIDE_MOCK)) FakeLoc.locationData.hideMock = boolean(rely, Keys.HIDE_MOCK)
-            if (rely.containsKey(Keys.DISABLE_NETWORK_LOCATION)) FakeLoc.disableNetworkLocation = boolean(rely, Keys.DISABLE_NETWORK_LOCATION)
+                if (rely.containsKey(Keys.MIN_SPEED)) FakeLoc.minSpeed = double(rely, Keys.MIN_SPEED)
+                if (rely.containsKey(Keys.MAX_SPEED)) FakeLoc.maxSpeed = double(rely, Keys.MAX_SPEED)
+                if (rely.containsKey(Keys.ENABLE_DEBUG_LOG)) FakeLoc.enableDebugLog = boolean(rely, Keys.ENABLE_DEBUG_LOG)
+                if (rely.containsKey(Keys.HOOK_WIFI)) FakeLoc.wifiData.hookWifi = boolean(rely, Keys.HOOK_WIFI)
+                if (rely.containsKey(Keys.SPEED_AMPLITUDE)) FakeLoc.speedAmplitude = double(rely, Keys.SPEED_AMPLITUDE)
+                if (rely.containsKey(Keys.HIDE_MOCK)) FakeLoc.locationData.hideMock = boolean(rely, Keys.HIDE_MOCK)
+                if (rely.containsKey(Keys.DISABLE_NETWORK_LOCATION)) FakeLoc.disableNetworkLocation = boolean(rely, Keys.DISABLE_NETWORK_LOCATION)
 
-            if (!rely.containsKey(Keys.DISABLE_REGISTER_LOCATION_LISTENER) && rely.containsKey(LegacyKeys.DISABLE_REGISTER_MISSPELLED)) {
-                FakeLoc.disableRegisterLocationListener = boolean(rely, LegacyKeys.DISABLE_REGISTER_MISSPELLED)
-            }
-            if (!rely.containsKey(Keys.LOOP_BROADCAST_LOCATION) && rely.containsKey(LegacyKeys.LOOP_BROADCAST_MISSPELLED)) {
-                FakeLoc.loopBroadcastLocation = boolean(rely, LegacyKeys.LOOP_BROADCAST_MISSPELLED)
+                if (!rely.containsKey(Keys.DISABLE_REGISTER_LOCATION_LISTENER) && rely.containsKey(LegacyKeys.DISABLE_REGISTER_MISSPELLED)) {
+                    FakeLoc.disableRegisterLocationListener = boolean(rely, LegacyKeys.DISABLE_REGISTER_MISSPELLED)
+                }
+                if (!rely.containsKey(Keys.LOOP_BROADCAST_LOCATION) && rely.containsKey(LegacyKeys.LOOP_BROADCAST_MISSPELLED)) {
+                    FakeLoc.loopBroadcastLocation = boolean(rely, LegacyKeys.LOOP_BROADCAST_MISSPELLED)
+                }
             }
         }
     }

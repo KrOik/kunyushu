@@ -209,4 +209,6 @@ bool install_crash_handlers() {
 
     LOGI("Crash recovery handlers installed, %zu code ranges",
          g_code_range_count);
+
+    return true;
 }

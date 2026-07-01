@@ -39,6 +39,7 @@ object LocationNMEAHook: BaseLocationHook() {
     private val gsvSentenceCache = mutableListOf<String>()
     private var gsvSequenceTotal: Int = 0
     private var gsvSequenceSent: Int = 0
+    private val gsvCacheLock = Any()
     operator fun invoke(classILocationManager: Class<*>) {
         hookGnssNmea(classILocationManager)
 
@@ -106,43 +107,45 @@ object LocationNMEAHook: BaseLocationHook() {
         
         // Handle GSV injection with multi-sentence caching
         if (nmea.contains("GSV")) {
-            val parts = nmea.split(",")
-            if (parts.size >= 3) {
-                val msgNum = parts[2].toIntOrNull()
-                if (msgNum != null && msgNum > 1) {
-                    // Return cached sentence for multi-sentence GSV
-                    if (gsvSequenceSent < gsvSequenceTotal && gsvSentenceCache.isNotEmpty()) {
-                        val cached = gsvSentenceCache.getOrNull(gsvSequenceSent)
-                        gsvSequenceSent++
-                        if (gsvSequenceSent >= gsvSequenceTotal) {
-                            // Last sentence served, clear cache
-                            gsvSentenceCache.clear()
-                            gsvSequenceTotal = 0
+            synchronized(gsvCacheLock) {
+                val parts = nmea.split(",")
+                if (parts.size >= 3) {
+                    val msgNum = parts[2].toIntOrNull()
+                    if (msgNum != null && msgNum > 1) {
+                        // Return cached sentence for multi-sentence GSV
+                        if (gsvSequenceSent < gsvSequenceTotal && gsvSentenceCache.isNotEmpty()) {
+                            val cached = gsvSentenceCache.getOrNull(gsvSequenceSent)
+                            gsvSequenceSent++
+                            if (gsvSequenceSent >= gsvSequenceTotal) {
+                                // Last sentence served, clear cache
+                                gsvSentenceCache.clear()
+                                gsvSequenceTotal = 0
+                            }
+                            return cached
                         }
-                        return cached
+                        return null
                     }
-                    return null
                 }
+
+                val constellation = when {
+                    nmea.startsWith("\$GPGSV") -> GnssFlags.CONSTELLATION_GPS
+                    nmea.startsWith("\$GLGSV") -> GnssFlags.CONSTELLATION_GLONASS
+                    nmea.startsWith("\$GAGSV") -> GnssFlags.CONSTELLATION_GALILEO
+                    nmea.startsWith("\$GBGSV") || nmea.startsWith("\$BDGSV") -> GnssFlags.CONSTELLATION_BEIDOU
+                    nmea.startsWith("\$GQGSV") -> GnssFlags.CONSTELLATION_QZSS
+                    else -> return null
+                }
+
+                // Generate complete GSV sequence, split into individual sentences, cache them
+                val fullSequence = runCatching { generateGSV(constellation) }.getOrNull() ?: return null
+                val sentences = fullSequence.split("\r\n")
+                gsvSentenceCache.clear()
+                gsvSentenceCache.addAll(sentences)
+                gsvSequenceTotal = sentences.size
+                gsvSequenceSent = 1 // 第 0 句即将返回
+
+                return sentences.getOrNull(0)
             }
-
-            val constellation = when {
-                nmea.startsWith("\$GPGSV") -> GnssFlags.CONSTELLATION_GPS
-                nmea.startsWith("\$GLGSV") -> GnssFlags.CONSTELLATION_GLONASS
-                nmea.startsWith("\$GAGSV") -> GnssFlags.CONSTELLATION_GALILEO
-                nmea.startsWith("\$GBGSV") || nmea.startsWith("\$BDGSV") -> GnssFlags.CONSTELLATION_BEIDOU
-                nmea.startsWith("\$GQGSV") -> GnssFlags.CONSTELLATION_QZSS
-                else -> return null
-            }
-
-            // Generate complete GSV sequence, split into individual sentences, cache them
-            val fullSequence = runCatching { generateGSV(constellation) }.getOrNull() ?: return null
-            val sentences = fullSequence.split("\r\n")
-            gsvSentenceCache.clear()
-            gsvSentenceCache.addAll(sentences)
-            gsvSequenceTotal = sentences.size
-            gsvSequenceSent = 1 // 第 0 句即将返回
-
-            return sentences.getOrNull(0)
         }
 
         // Generate realistic GGA with probabilistic fix quality

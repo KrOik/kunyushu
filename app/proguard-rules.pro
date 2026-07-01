@@ -12,7 +12,7 @@
 -keep class tv.kyshu.ui.** { *; }
 
 # Application class
--keep class tv.kyshu.PortalApplication { *; }
+-keep class tv.kyshu.Portal { *; }
 
 # Native library loader
 -keep class tv.kyshu.ext.** { *; }

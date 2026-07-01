@@ -16,6 +16,7 @@ navigationUiKtx = "2.8.3"
 jetbrainsKotlinJvm = "2.0.21"
 robolectric = "4.14.1"
 mockk = "1.13.17"
+kotlin-reflect = { module = "org.jetbrains.kotlin:kotlin-reflect", version.ref = "kotlin" }
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }

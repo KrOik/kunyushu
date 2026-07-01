@@ -26,7 +26,8 @@ import java.util.concurrent.ConcurrentLinkedQueue
  *   - Other system UID (< 10000): allowed but audit-logged
  */
 class ConfigProvider : ContentProvider() {
-    /** true if the current caller is authorized to read sensitive location data. */
+    /** true if the current caller is authorized to read sensitive location data.
+     *  Set by enforceCaller(); read by queryConfig() to filter coordinate fields. */
     @Volatile
     private var isSensitiveAllowed = true
 
@@ -76,9 +77,9 @@ class ConfigProvider : ContentProvider() {
             else -> "vnd.android.cursor.dir/unknown"
         }
     }
-
-    override fun delete(uri: Uri, selection: String?, selectionArgs: Array<String>?): Int = 0
-    override fun update(uri: Uri, values: ContentValues?, selection: String?, selectionArgs: Array<String>?): Int = 0
+    override fun update(uri: Uri, values: ContentValues?, selection: String?, selectionArgs: Array<String>?): Int {
+        return 1 // Report 1 row updated to prevent unnecessary fallback-to-insert
+    }
 
     // ---- Auth ----
 
@@ -90,23 +91,15 @@ class ConfigProvider : ContentProvider() {
             uid == 1000 -> {
                 // system_server (UID 1000): always allowed for all data
                 isSensitiveAllowed = true
-                val pkgs = kotlin.runCatching {
-                    ctx.packageManager.getPackagesForUid(uid)
-                }.getOrNull()
-                android.util.Log.i("ConfigProvider", "system_server(1000) call packages=$pkgs")
             }
             uid < 10000 -> {
                 // Other system UIDs — deny sensitive data, allow non-sensitive
                 isSensitiveAllowed = false
-                val pkgs = kotlin.runCatching {
-                    ctx.packageManager.getPackagesForUid(uid)
-                }.getOrNull()
-                android.util.Log.w("ConfigProvider", "system UID $uid call packages=$pkgs, sensitive data denied")
             }
             else -> {
                 val packages = ctx.packageManager.getPackagesForUid(uid) ?: emptyArray()
                 if (packages.none { it == "tv.kyshu" }) {
-                    throw SecurityException("UID $uid ($packages) not allowed to access ConfigProvider")
+                    throw SecurityException("UID $uid not allowed to access ConfigProvider")
                 }
                 val ourPkg = ctx.packageManager.getPackagesForUid(
                     android.os.Process.myUid()
@@ -124,9 +117,7 @@ class ConfigProvider : ContentProvider() {
                     )
                 }.getOrNull()?.signatures?.firstOrNull()?.toByteArray()
                 if (theirSig == null || ourSig == null || !theirSig.contentEquals(ourSig)) {
-                    android.util.Log.w("ConfigProvider",
-                        "tv.kyshu package $uid signature mismatch — rejecting")
-                    throw SecurityException("UID $uid signature mismatch")
+                    throw SecurityException("UID $uid signature mismatch — rejecting")
                 }
                 isSensitiveAllowed = true
             }
@@ -137,6 +128,10 @@ class ConfigProvider : ContentProvider() {
 
     private fun insertCommand(values: ContentValues?): Uri? {
         val json = values?.getAsString("command") ?: return null
+        // Cap queue to prevent OOM from uncontrolled inserts
+        if (commandQueue.size >= 1024) {
+            commandQueue.poll() // drain oldest
+        }
         commandQueue.offer(json)
         return Uri.parse("content://$AUTHORITY/$PATH_CMD/${commandQueue.size}")
     }
@@ -169,12 +164,15 @@ class ConfigProvider : ContentProvider() {
         safeRead("enable") { val v = FakeLoc.enable; addRow(cursor, "enable", v.toString(), "boolean") }
         safeRead("enable_mock_gnss") { val v = FakeLoc.enableMockGnss; addRow(cursor, "enable_mock_gnss", v.toString(), "boolean") }
         safeRead("enable_mock_wifi") { val v = FakeLoc.enableMockWifi; addRow(cursor, "enable_mock_wifi", v.toString(), "boolean") }
-        safeRead("latitude") { val v = FakeLoc.latitude; addRow(cursor, "latitude", v.toString(), "double") }
-        safeRead("longitude") { val v = FakeLoc.longitude; addRow(cursor, "longitude", v.toString(), "double") }
-        safeRead("altitude") { val v = FakeLoc.altitude; addRow(cursor, "altitude", v.toString(), "double") }
-        safeRead("speed") { val v = FakeLoc.speed; addRow(cursor, "speed", v.toString(), "double") }
-        safeRead("accuracy") { val v = FakeLoc.accuracy; addRow(cursor, "accuracy", v.toString(), "float") }
-        safeRead("bearing") { val v = FakeLoc.bearing; addRow(cursor, "bearing", v.toString(), "double") }
+        // Sensitive fields: only if caller is authorized
+        if (isSensitiveAllowed) {
+            safeRead("latitude") { val v = FakeLoc.latitude; addRow(cursor, "latitude", v.toString(), "double") }
+            safeRead("longitude") { val v = FakeLoc.longitude; addRow(cursor, "longitude", v.toString(), "double") }
+            safeRead("altitude") { val v = FakeLoc.altitude; addRow(cursor, "altitude", v.toString(), "double") }
+            safeRead("speed") { val v = FakeLoc.speed; addRow(cursor, "speed", v.toString(), "double") }
+            safeRead("accuracy") { val v = FakeLoc.accuracy; addRow(cursor, "accuracy", v.toString(), "float") }
+            safeRead("bearing") { val v = FakeLoc.bearing; addRow(cursor, "bearing", v.toString(), "double") }
+        }
         safeRead("hook_sensor") { val v = FakeLoc.hookSensor; addRow(cursor, "hook_sensor", v.toString(), "boolean") }
         safeRead("is_app_in_background") { val v = FakeLoc.isAppInBackground; addRow(cursor, "is_app_in_background", v.toString(), "boolean") }
         safeRead("is_screen_off") { val v = FakeLoc.isScreenOff; addRow(cursor, "is_screen_off", v.toString(), "boolean") }

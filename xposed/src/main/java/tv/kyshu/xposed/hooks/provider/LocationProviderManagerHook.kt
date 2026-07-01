@@ -244,7 +244,6 @@ object LocationProviderManagerHook {
                 Logger.debug("onReportLocation: injected!")
             }
 
-            fieldMRegistrations.set(thisObject, newRegistrations)
         }
     }
 

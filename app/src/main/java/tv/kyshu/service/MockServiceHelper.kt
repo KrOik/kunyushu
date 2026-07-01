@@ -140,11 +140,17 @@ object MockServiceHelper {
             bundleBuilder()
         }
         val seq = synchronized(this) { ++commandSequence }
-        kotlin.runCatching {
+        val envelopeOk = kotlin.runCatching {
             RemoteCommandSecurity.attachEnvelope(bundle, randomKey, seq)
         }.onFailure { e ->
             MockServiceProbe.warn("sendAuthenticated: auth envelope attach failed for $commandId: ${e.message}")
+        }.getOrDefault(false)
+
+        if (!envelopeOk) {
+            MockServiceProbe.warn("sendAuthenticated: attachEnvelope returned false for $commandId, skipping send")
+            return false to bundle
         }
+
         MockServiceProbe.ipcSent(commandId)
         val result = sendWithTimeout(locationManager, randomKey, bundle)
         MockServiceProbe.ipcResult(commandId, result)
@@ -155,9 +161,23 @@ object MockServiceHelper {
         val rely = Bundle()
         MockServiceProbe.init("exchange_key_start")
         if(sendWithTimeout(locationManager, "exchange_key", rely)) {
-            rely.getString("key")?.let {
-                randomKey = it
-                MockServiceProbe.init("exchange_key_ok")
+            val encryptedKey = rely.getByteArray("_encrypted_key")
+            val keyIv = rely.getByteArray("_key_iv")
+            if (encryptedKey != null && keyIv != null) {
+                try {
+                    val transportKey = java.security.MessageDigest.getInstance("SHA-256").digest(
+                        "portal_transport_v1".toByteArray(Charsets.UTF_8)
+                    )
+                    val decipher = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding")
+                    decipher.init(javax.crypto.Cipher.DECRYPT_MODE,
+                        javax.crypto.spec.SecretKeySpec(transportKey, "AES"),
+                        javax.crypto.spec.GCMParameterSpec(128, keyIv))
+                    val decrypted = decipher.doFinal(encryptedKey)
+                    randomKey = decrypted.decodeToString()
+                    MockServiceProbe.init("exchange_key_ok")
+                } catch (e: Exception) {
+                    MockServiceProbe.error("exchange_key decrypt failed: ${e.message}")
+                }
             }
         } else {
             MockServiceProbe.init("exchange_key_failed")
@@ -456,16 +476,24 @@ object MockServiceHelper {
                 }
             }
 
-            // Compute HMAC (matching signCommand + payloadDigest in RemoteCommandSecurity)
+            // Compute HMAC matching RemoteCommandSecurity's type-prefixed canonicalization
             val sortedKeys = json.keys().asSequence().filter {
                 !it.startsWith("_kys_")
             }.sorted().toList()
             val canonicalPayload = sortedKeys.joinToString("\n") { key ->
-                "$key=${json.get(key)}"
+                val raw = json.get(key)
+                val canonical = when (raw) {
+                    null -> "null"
+                    is String -> "String:${raw.length}:$raw"
+                    is Int -> "Int:$raw"
+                    is Long -> "Long:$raw"
+                    is Float -> "Float:$raw"
+                    is Double -> "Double:$raw"
+                    is Boolean -> "Boolean:$raw"
+                    else -> "${raw.javaClass.name}:$raw"
+                }
+                "$key=$canonical"
             }
-            val payloadDigest = java.security.MessageDigest.getInstance("SHA-256")
-                .digest(canonicalPayload.toByteArray(Charsets.UTF_8))
-                .joinToString("") { "%02x".format(it) }
             val hmacInput = buildString {
                 append(commandId); append('\n')
                 append(json.getString("_kys_auth_nonce")); append('\n')

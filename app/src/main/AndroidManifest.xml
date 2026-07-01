@@ -34,6 +34,10 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
 
 
+
+    <!-- ConfigProvider 安全权限: signature 级别保护 -->
+    <permission android:name="tv.kyshu.xposed.permission.CONFIG"
+        android:protectionLevel="signature" />
     <application
         android:name=".Portal"
         android:allowBackup="false"

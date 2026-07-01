@@ -80,6 +80,7 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
             @Volatile
             private var pollerThread: Thread? = null
 
+
             fun start() {
                 if (polling) {
                     if (pollerThread?.isAlive == true) return
@@ -88,7 +89,7 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                 polling = true
                 val thread = Thread({
                     try {
-                        while (polling && tv.kyshu.xposed.utils.FakeLoc.enable) {
+                        while (polling) {
                             kotlin.runCatching {
                                 val cursor = FakeLoc.getContext()?.contentResolver?.query(
                                     android.net.Uri.parse("content://tv.kyshu.xposed.config/cmd"),
@@ -362,6 +363,8 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                             mapOf("error" to e.javaClass.simpleName))
                     }
                 }
+                // Start DelayedCommandPoller for ContentProvider fallback command channel
+                DelayedCommandPoller.start()
 
                 Logger.info("Debug Log Status: ${FakeLoc.enableDebugLog}")
                 FakeLoc.isSystemServerProcess = true

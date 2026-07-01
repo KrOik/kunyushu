@@ -32,6 +32,11 @@ import tv.kyshu.xposed.utils.MockAuditTrail
 import tv.kyshu.xposed.config.MockWifiData
 import tv.kyshu.xposed.utils.MockProbeLog
 import kotlin.random.Random
+import java.security.MessageDigest
+import java.security.SecureRandom
+import javax.crypto.Cipher
+import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.SecretKeySpec
 
 object RemoteCommandHandler {
     @Volatile
@@ -124,7 +129,18 @@ object RemoteCommandHandler {
             if (command == "exchange_key") {
                 val userId = BinderUtils.getCallerUid()
                 if (BinderUtils.isLocationProviderEnabled(userId)) {
-                    rely.putString("key", rotateSessionKey())
+                    val rawKey = rotateSessionKey()
+                    // 使用内置传输密钥加密 sessionKey
+                    val transportKey = MessageDigest.getInstance("SHA-256").digest(
+                        "portal_transport_v1".toByteArray(Charsets.UTF_8)
+                    )
+                    val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+                    val iv = ByteArray(12)
+                    SecureRandom().nextBytes(iv)
+                    cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(transportKey, "AES"), GCMParameterSpec(128, iv))
+                    val encrypted = cipher.doFinal(rawKey.toByteArray(Charsets.UTF_8))
+                    rely.putByteArray("_encrypted_key", encrypted)
+                    rely.putByteArray("_key_iv", iv)
                     true
                 } else {
                     Logger.warn("exchange_key: Permission denied for UID $userId")

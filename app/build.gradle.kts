@@ -143,7 +143,8 @@ fun configureAppSigningConfigsForRelease(project: Project) {
                 storePassword = System.getenv("KEYSTORE_PASSWORD")
                 keyAlias = System.getenv("KEY_ALIAS")
                 keyPassword = System.getenv("KEY_PASSWORD")
-                enableV2Signing = true
+                enableV3Signing = true
+                enableV4Signing = true
             }
         }
         buildTypes {
@@ -189,10 +190,11 @@ dependencies {
 }
 
 fun getVersionCode(): Int {
-    // 语义版本 -> versionCode: major*10000 + minor*100 + patch
-    val major = 1
-    val minor = 0
-    val patch = 4
+    // Semantic version -> versionCode: major*10000 + minor*100 + patch
+    val vm = versionName.split(".").map { it.toIntOrNull() ?: 0 }
+    val major = vm.getOrElse(0) { 1 }
+    val minor = vm.getOrElse(1) { 0 }
+    val patch = vm.getOrElse(2) { 0 }
     return major * 10000 + minor * 100 + patch
 }
 

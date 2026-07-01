@@ -115,7 +115,7 @@ internal object LocationServiceHook: BaseLocationHook() {
                 result = injectLocation(location)
 
                 if(FakeLoc.enableDebugLog) {
-                    Logger.debug("getLastLocation: injected! $result")
+                    Logger.debug("getLastLocation: injected! lat=${location.latitude}, lon=${location.longitude}")
                 }
         }).isEmpty()) {
             Logger.error("hook getLastLocation failed")

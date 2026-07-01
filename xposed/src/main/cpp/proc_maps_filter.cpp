@@ -41,11 +41,25 @@
 #include <sys/syscall.h>
 #include <atomic>
 #include <mutex>
-// TODO: Add a close() hook to remove tracked FDs from g_memfd_set when
-// they are closed, preventing fd exhaustion from leaked memfd descriptors.
-// Hook '__NR_close' via Dobby and call g_memfd_set.erase(fd) before
-// invoking the original close.
 #include <unordered_set>
+
+// ============================================================================
+// Close hook: remove tracked FDs from g_memfd_set when they are closed,
+// preventing fd exhaustion from leaked memfd descriptors.
+// ============================================================================
+
+// Original close function pointer
+static int (*orig_close)(int) = nullptr;
+
+static int new_close(int fd) {
+    {
+        std::lock_guard<std::mutex> lock(g_memfd_mutex);
+        g_memfd_set.erase(fd);
+    }
+    if (orig_close)
+        return orig_close(fd);
+    return syscall(__NR_close, fd);
+}
 
 // ============================================================================
 // Original function pointers
@@ -198,6 +212,7 @@ static ssize_t new_readlinkat(int dirfd, const char* path, char* buf, size_t buf
 // ============================================================================
 CRASH_RECOVERY_DECL(g_maps_open_recovery);
 CRASH_RECOVERY_DECL(g_maps_openat_recovery);
+CRASH_RECOVERY_DECL(g_maps_close_recovery);
 
 // ============================================================================
 // install_proc_maps_hooks — install all G2 hooks safely
@@ -232,6 +247,18 @@ bool portal_install_proc_maps_hooks_jni(void) {
             CRASH_RECOVERY_END(g_maps_openat_recovery);
         }
 
+
+        addr = dlsym(RTLD_DEFAULT, "close");
+        if (addr) {
+            CRASH_RECOVERY_BEGIN(g_maps_close_recovery, "G2_CLOSE") {
+                if (DobbyHook(addr, (void*)new_close, (void**)&orig_close) != 0) {
+                    orig_close = nullptr;
+                    ok = false;
+                    LOGD("G2_MAPS: DobbyHook close failed");
+                }
+            }
+            CRASH_RECOVERY_END(g_maps_close_recovery);
+        }
         addr = dlsym(RTLD_DEFAULT, "readlink");
         if (addr) {
             if (DobbyHook(addr, (void*)new_readlink, (void**)&orig_readlink) != 0) {
