@@ -231,13 +231,17 @@ class SettingsFragment : Fragment() {
             requireContext().disableWifiScan = isChecked
             with(mockServiceViewModel) {
                 if (isChecked) {
-                    if(!MockServiceHelper.startWifiMock(locationManager!!)) {
-                        showToast("禁用WLAN扫描失败: 无法连接到系统服务")
-                    }
+                    locationManager?.let { mgr ->
+                        if(!MockServiceHelper.startWifiMock(mgr)) {
+                            showToast("禁用WLAN扫描失败: 无法连接到系统服务")
+                        }
+                    } ?: showToast("定位服务未就绪")
                 } else {
-                    if(!MockServiceHelper.stopWifiMock(locationManager!!)) {
-                        showToast("启用WLAN扫描失败: 无法连接到系统服务")
-                    }
+                    locationManager?.let { mgr ->
+                        if(!MockServiceHelper.stopWifiMock(mgr)) {
+                            showToast("启用WLAN扫描失败: 无法连接到系统服务")
+                        }
+                    } ?: showToast("定位服务未就绪")
                 }
             }
         }
@@ -246,19 +250,22 @@ class SettingsFragment : Fragment() {
     }
 
     private fun showToast(message: String) {
+        val ctx = requireContext().applicationContext
         lifecycleScope.launch(Dispatchers.Main) {
-            Toast.makeText(requireContext(), message, Toast.LENGTH_SHORT).show()
+            Toast.makeText(ctx, message, Toast.LENGTH_SHORT).show()
         }
     }
 
     private fun updateRemoteConfig() {
         val context = requireContext()
         with(mockServiceViewModel) {
-            if(!MockServiceHelper.putConfig(locationManager!!, context)) {
-                showToast("更新远程配置失败")
-            } else {
-                showToast("同步配置成功")
-            }
+            locationManager?.let { mgr ->
+                if(!MockServiceHelper.putConfig(mgr, context)) {
+                    showToast("更新远程配置失败")
+                } else {
+                    showToast("同步配置成功")
+                }
+            } ?: showToast("定位服务未就绪")
         }
     }
 

@@ -1,6 +1,6 @@
 package tv.kyshu.android.coro
 
-import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.withTimeoutOrNull
 
 class CoroutineController {
     private val controlChannel = Channel<ControlCommand>(Channel.UNLIMITED)
@@ -15,8 +15,8 @@ class CoroutineController {
             when (it) {
                 ControlCommand.Pause -> {
                     isPaused = true
-                    while (controlChannel.receive() != ControlCommand.Resume) {
-                        // do nothing
+                    withTimeoutOrNull(30_000) {
+                        while (controlChannel.receive() != ControlCommand.Resume) { }
                     }
                     isPaused = false
                 }

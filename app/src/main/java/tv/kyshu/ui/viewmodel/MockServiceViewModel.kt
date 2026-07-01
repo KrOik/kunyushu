@@ -4,10 +4,9 @@ import android.app.Activity
 import android.location.LocationManager
 import android.util.Log
 import androidx.lifecycle.ViewModel
-import kotlinx.coroutines.GlobalScope
+import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import tv.kyshu.android.coro.CoroutineController
 import tv.kyshu.android.coro.CoroutineRouteMock
@@ -25,8 +24,8 @@ import net.sf.geographiclib.Geodesic
 
 class MockServiceViewModel : ViewModel() {
     lateinit var rocker: Rocker
-    private lateinit var rockerJob: Job
-    private lateinit var routeMockJob: Job
+    private var rockerJob: Job? = null
+    private var routeMockJob: Job? = null
     var isRockerLocked = false
     var routeStage = 0
     val rockerCoroutineController = CoroutineController()
@@ -50,25 +49,21 @@ class MockServiceViewModel : ViewModel() {
             rocker = Rocker(activity)
         }
 
-        if (!::rockerJob.isInitialized || rockerJob.isCancelled) {
+        if (rockerJob == null || rockerJob!!.isCancelled) {
             rockerCoroutineController.pause()
             val delayTime = activity.reportDuration.toLong()
             val applicationContext = activity.applicationContext
-            rockerJob = GlobalScope.launch {
-                do {
+            rockerJob = viewModelScope.launch {
+                while (true) {
                     rockerCoroutineController.controlledCoroutine()
                     delay(delayTime)
 
-                    if(!MockServiceHelper.move(locationManager!!, FakeLoc.speed / (1000 / delayTime) / 0.85, FakeLoc.bearing)) {
-                        Log.e("MockServiceViewModel", "Failed to move")
-                    }
-
-//                    if (MockServiceHelper.broadcastLocation(locationManager!!)) {
-//                        Log.d("MockServiceViewModel", "Broadcast location")
-//                    } else {
-//                        Log.e("MockServiceViewModel", "Failed to broadcast location")
-//                    }
-                } while (isActive)
+                    locationManager?.let { mgr ->
+                        if (!MockServiceHelper.move(mgr, FakeLoc.speed / (1000 / delayTime) / 0.85, FakeLoc.bearing)) {
+                            Log.e("MockServiceViewModel", "Failed to move")
+                        }
+                    } ?: break
+                }
             }
         }
 
@@ -76,30 +71,27 @@ class MockServiceViewModel : ViewModel() {
         FakeLoc.altitude = activity.altitude
         FakeLoc.accuracy = activity.accuracy
 
-        if (!::routeMockJob.isInitialized || routeMockJob.isCancelled) {
+        if (routeMockJob == null || routeMockJob!!.isCancelled) {
             routeMockCoroutine.pause()
             val delayTime = activity.reportDuration.toLong()
-            routeMockJob = GlobalScope.launch {
-                do {
+            routeMockJob = viewModelScope.launch {
+                while (true) {
                     routeMockCoroutine.routeMockCoroutine()
                     delay(delayTime)
                     // 如果是第0阶段，定位到第一个点
                     if (routeStage == 0) {
-                        MockServiceHelper.setLocation(
-                            locationManager!!,
-                            selectedRoute!!.route[0].first,
-                            selectedRoute!!.route[0].second
-                        )
+                        val route0 = selectedRoute?.route?.get(0) ?: break
+                        locationManager?.let { mgr ->
+                            MockServiceHelper.setLocation(mgr, route0.first, route0.second)
+                        } ?: break
                         routeStage++
                     }
-                    val route = selectedRoute!!.route
-
-                    // 处理所有已到达的阶段
+                    val route = selectedRoute?.route ?: break
                     while (routeStage < route.size) {
                         val target = route[routeStage]
-                        val location = MockServiceHelper.getLocation(locationManager!!)
-                        val currentLat = location!!.first
-                        val currentLon = location.second
+                        val loc = MockServiceHelper.getLocation(locationManager)
+                        val currentLat = loc?.first ?: break
+                        val currentLon = loc?.second ?: break
 
                         val inverse = Geodesic.WGS84.Inverse(
                             currentLat,
@@ -110,19 +102,15 @@ class MockServiceViewModel : ViewModel() {
                         // 判断距离是否小于1米（可根据需要调整阈值）
                         if (inverse.s12 < 1.0) {
                             // 精确设置位置到目标点并进入下一阶段
-                            MockServiceHelper.setLocation(
-                                locationManager!!,
-                                target.first,
-                                target.second
-                            )
+                            locationManager?.let { mgr ->
+                                MockServiceHelper.setLocation(mgr, target.first, target.second)
+                            } ?: break
                             routeStage++
                         } else if (inverse.s12 < FakeLoc.speed / (1000 / delayTime) / 0.85) {
                             // 如果距离小于速度，直接移动到目标点
-                            MockServiceHelper.setLocation(
-                                locationManager!!,
-                                target.first,
-                                target.second
-                            )
+                            locationManager?.let { mgr ->
+                                MockServiceHelper.setLocation(mgr, target.first, target.second)
+                            } ?: break
                             routeStage++
 
                         } else {
@@ -141,9 +129,9 @@ class MockServiceViewModel : ViewModel() {
 
                     // 处理当前目标点的移动
                     val target = route[routeStage]
-                    val location = MockServiceHelper.getLocation(locationManager!!)
-                    val currentLat = location!!.first
-                    val currentLon = location.second
+                    val loc = MockServiceHelper.getLocation(locationManager)
+                    val currentLat = loc?.first ?: break
+                    val currentLon = loc?.second ?: break
 
                     val inverse = Geodesic.WGS84.Inverse(
                         currentLat,
@@ -157,15 +145,12 @@ class MockServiceViewModel : ViewModel() {
                     }
 
                     Log.d("MockServiceViewModel", "从 $currentLat, $currentLon 移动到 ${target.first}, ${target.second}, 方位角: $azimuth")
-                    if (!MockServiceHelper.move(
-                            locationManager!!,
-                            FakeLoc.speed / (1000 / delayTime) / 0.85,
-                            azimuth
-                        )
-                    ) {
-                        Log.e("MockServiceViewModel", "移动失败")
-                    }
-                } while (isActive)
+                    locationManager?.let { mgr ->
+                        if (!MockServiceHelper.move(mgr, FakeLoc.speed / (1000 / delayTime) / 0.85, azimuth)) {
+                            Log.e("MockServiceViewModel", "移动失败")
+                        }
+                    } ?: break
+                }
             }
         }
 
@@ -173,8 +158,14 @@ class MockServiceViewModel : ViewModel() {
     }
 
     fun isServiceStart(): Boolean {
-        return locationManager != null && MockServiceHelper.isServiceInit() && MockServiceHelper.isMockStart(
-            locationManager!!
-        )
+        return if (locationManager != null) {
+            MockServiceHelper.isServiceInit() && MockServiceHelper.isMockStart(locationManager!!)
+        } else {
+            false
+        }
     }
-}
+
+    override fun onCleared() {
+        super.onCleared()
+        runCatching { rocker.hide() }
+    }

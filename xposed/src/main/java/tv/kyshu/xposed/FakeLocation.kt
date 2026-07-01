@@ -173,6 +173,14 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                     FlightRecorder.setContext(systemContext)
                     CrashForensics.setContext(systemContext)
                     FlightRecorder.bootstrapState("system_server")
+                    // Uncaught exception handler — captures any missed crash
+                    val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
+                    Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+                        CrashForensics.crash("UNCAUGHT", thread.name, throwable)
+                        FlightRecorder.execFail("UNCAUGHT", thread.name,
+                            mapOf("error" to throwable.javaClass.simpleName))
+                        defaultHandler?.uncaughtException(thread, throwable)
+                    }
                     runCatching {
                         tv.kyshu.dobby.Dobby.initSafetyFramework(systemContext.cacheDir.absolutePath)
                     }.onFailure { e ->
