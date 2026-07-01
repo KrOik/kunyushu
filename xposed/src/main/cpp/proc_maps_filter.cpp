@@ -43,23 +43,6 @@
 #include <mutex>
 #include <unordered_set>
 
-// ============================================================================
-// Close hook: remove tracked FDs from g_memfd_set when they are closed,
-// preventing fd exhaustion from leaked memfd descriptors.
-// ============================================================================
-
-// Original close function pointer
-static int (*orig_close)(int) = nullptr;
-
-static int new_close(int fd) {
-    {
-        std::lock_guard<std::mutex> lock(g_memfd_mutex);
-        g_memfd_set.erase(fd);
-    }
-    if (orig_close)
-        return orig_close(fd);
-    return syscall(__NR_close, fd);
-}
 
 // ============================================================================
 // Original function pointers
@@ -86,6 +69,24 @@ static int call_unhooked_openat(int dirfd, const char* pathname, int flags, mode
 // ============================================================================
 static std::unordered_set<int> g_memfd_set;
 static std::mutex g_memfd_mutex;
+
+// ============================================================================
+// Close hook: remove tracked FDs from g_memfd_set when they are closed,
+// preventing fd exhaustion from leaked memfd descriptors.
+// ============================================================================
+
+// Original close function pointer
+static int (*orig_close)(int) = nullptr;
+
+static int new_close(int fd) {
+    {
+        std::lock_guard<std::mutex> lock(g_memfd_mutex);
+        g_memfd_set.erase(fd);
+    }
+    if (orig_close)
+        return orig_close(fd);
+    return syscall(__NR_close, fd);
+}
 
 static bool parse_proc_self_fd(const char* path, int& out_fd) {
     if (!path) return false;

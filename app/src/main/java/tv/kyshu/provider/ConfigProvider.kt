@@ -80,6 +80,8 @@ class ConfigProvider : ContentProvider() {
     override fun update(uri: Uri, values: ContentValues?, selection: String?, selectionArgs: Array<String>?): Int {
         return 1 // Report 1 row updated to prevent unnecessary fallback-to-insert
     }
+    override fun delete(uri: Uri, selection: String?, selectionArgs: Array<String>?): Int = 0
+
 
     // ---- Auth ----
 
@@ -186,4 +188,11 @@ class ConfigProvider : ContentProvider() {
         return cursor
     }
 
+
+    private fun addRow(cursor: MatrixCursor, key: String, value: String, type: String) {
+        cursor.addRow(arrayOf(key, value, type))
+    }
+
 }
+
+

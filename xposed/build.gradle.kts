@@ -18,7 +18,9 @@ android {
                 cppFlags += ""
             }
         }
-                abiFilters.addAll(arrayOf("arm64-v8a", "x86_64"))
+        ndk {
+            abiFilters.addAll(arrayOf("arm64-v8a", "x86_64"))
+        }
     }
 
     buildTypes {

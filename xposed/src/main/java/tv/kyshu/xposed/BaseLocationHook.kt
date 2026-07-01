@@ -228,7 +228,8 @@ abstract class BaseLocationHook: BaseDivineService() {
                     return null
                 }
             }
-        Logger.error("NMEA parse failed: ${it.message}")
+        }.onFailure {
+            Logger.error("NMEA parse failed: ${it.message}")
             return null
         }
         return null

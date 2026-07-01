@@ -6,6 +6,11 @@
 -renamesourcefileattribute SourceFile
 -keepattributes Signature,Exceptions,*Annotations*,InnerClasses
 
+# R8: StringConcatFactory is not available on older Android versions (API < 26),
+# but may be referenced by Kotlin compiled code targeting JDK 9+ bytecode.
+# Safe to ignore — Android runtime provides its own string concatenation.
+-dontwarn java.lang.invoke.StringConcatFactory
+
 # Custom obfuscation dictionary
 -obfuscationdictionary dictionary.txt
 -classobfuscationdictionary dictionary.txt
@@ -42,6 +47,13 @@
 
 # ClassNameStore constants (string keys for reflection)
 -keep class tv.kyshu.xposed.utils.ClassNameStore { *; }
+
+# Config data classes (referenced from app module)
+-keep class tv.kyshu.xposed.config.** { *; }
+
+# Internal utilities (Log, ChannelIdentity, etc. — referenced from app module via :xposed dependency)
+-keep class tv.kyshu.xposed.utils.Log { *; }
+-keep class tv.kyshu.xposed.utils.ChannelIdentity { *; }
 
 # @Keep-annotated members
 -keepclassmembers class * {

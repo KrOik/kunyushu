@@ -17,6 +17,7 @@ import tv.kyshu.xposed.utils.beforeHook
 import tv.kyshu.xposed.utils.hookAllMethods
 import tv.kyshu.xposed.utils.hookMethodAfter
 import tv.kyshu.xposed.utils.toClass
+import kotlin.random.Random
 
 object WlanHook {
     operator fun invoke(classLoader: ClassLoader) {

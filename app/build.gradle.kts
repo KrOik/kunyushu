@@ -174,7 +174,7 @@ dependencies {
 
     implementation(libs.fastjson)
     implementation(libs.kotlinx.serialization)
-    implementation(libs.kotlin.reflect)
+    implementation(libs.reflect)
 
     implementation(libs.geotools)
     implementation(fileTree(mapOf(
@@ -191,11 +191,7 @@ dependencies {
 
 fun getVersionCode(): Int {
     // Semantic version -> versionCode: major*10000 + minor*100 + patch
-    val vm = versionName.split(".").map { it.toIntOrNull() ?: 0 }
-    val major = vm.getOrElse(0) { 1 }
-    val minor = vm.getOrElse(1) { 0 }
-    val patch = vm.getOrElse(2) { 0 }
-    return major * 10000 + minor * 100 + patch
+    return 10004
 }
 
 fun getGitCommitHash(): String {

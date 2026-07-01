@@ -36,3 +36,10 @@
 
 # Keep JSON parsing
 -keep class org.json.** { *; }
+
+
+# Xposed API is compileOnly — not present in APK, provided by framework at runtime
+-dontwarn de.robv.android.xposed.**
+
+# Xposed module classes (bundled via :xposed dependency)
+-keep class tv.kyshu.xposed.** { *; }

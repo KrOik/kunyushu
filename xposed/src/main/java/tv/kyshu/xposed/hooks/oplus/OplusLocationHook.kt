@@ -36,14 +36,14 @@ object OplusLocationHook: BaseLocationHook() {
             clazz.declaredMethods.filter {
                 it.name == "sendExtraCommand" && Modifier.isPublic(it.modifiers)
             }.forEach { method ->
-                method.onceHookBefore { param ->
-                    if (param.args.size < 2 || !FakeLoc.enable) return@onceHookBefore
-                    val provider = param.args[0] as? String ?: return@onceHookBefore
-                    val command = param.args[1] as? String ?: return@onceHookBefore
-                    val bundle = param.args.getOrNull(2) as? Bundle
+                method.onceHookBefore {
+                    if (args.size < 2 || !FakeLoc.enable) return@onceHookBefore
+                    val provider = args[0] as? String ?: return@onceHookBefore
+                    val command = args[1] as? String ?: return@onceHookBefore
+                    val bundle = args.getOrNull(2) as? Bundle
                     if (bundle != null && provider == tv.kyshu.xposed.utils.ChannelIdentity.providerName) {
                         if (tv.kyshu.xposed.RemoteCommandHandler.handleInstruction(command, bundle)) {
-                            param.result = true
+                            result = true
                         }
                     }
                 }

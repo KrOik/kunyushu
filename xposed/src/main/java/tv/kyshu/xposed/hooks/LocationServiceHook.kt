@@ -55,15 +55,14 @@ data class MockGnssData(
 
 internal object LocationServiceHook: BaseLocationHook() {
 
+    val locationListeners = LinkedBlockingQueue<Triple<String, IInterface, IBinder.DeathRecipient>>()
+
+    // A random command is generated to prevent some apps from detecting Portal
     operator fun invoke(classLoader: ClassLoader) {
         if (DomainGuard.isDomainDisabled(DomainGuard.Domain.LOCATION_SERVICE)) {
             Logger.warn("[LocationServiceHook] Domain LOCATION_SERVICE is disabled, skipping hook installation")
             return
         }
-    val locationListeners = LinkedBlockingQueue<Triple<String, IInterface, IBinder.DeathRecipient>>()
-
-    // A random command is generated to prevent some apps from detecting Portal
-    operator fun invoke(classLoader: ClassLoader) {
         val cLocationManagerService = XposedHelpers.findClassIfExists("com.android.server.location.LocationManagerService", classLoader)
         if (cLocationManagerService == null) {
             hookLocationManagerServiceV2(classLoader)
@@ -728,7 +727,7 @@ internal object LocationServiceHook: BaseLocationHook() {
 
     }
 
-    private fun hookILocationListener(listener: Any) {
+    fun hookILocationListener(listener: Any) {
         val classListener = listener.javaClass
         if (FakeLoc.enableDebugLog)
             Logger.debug("will hook ILocationListener: ${classListener.name}")
@@ -793,7 +792,7 @@ internal object LocationServiceHook: BaseLocationHook() {
 //        }
 //    }
 
-    private fun addLocationListenerInner(provider: String, listener: IInterface) {
+    fun addLocationListenerInner(provider: String, listener: IInterface) {
         val binder = listener.asBinder()
         val mDeathRecipient = object: IBinder.DeathRecipient {
             override fun binderDied() { binderDied(binder) }
@@ -807,11 +806,11 @@ internal object LocationServiceHook: BaseLocationHook() {
         hookILocationListener(listener)
     }
 
-    private fun removeLocationListenerInner(listener: IInterface) {
+    fun removeLocationListenerInner(listener: IInterface) {
         removeLocationListenerByBinder(listener.asBinder())
     }
 
-    private fun removeLocationListenerByBinder(binder: IBinder) {
+    fun removeLocationListenerByBinder(binder: IBinder) {
         val entry = locationListeners.firstOrNull { it.second.asBinder() == binder }
         if (entry != null) {
             binder.unlinkToDeath(entry.third, 0)
@@ -872,7 +871,7 @@ internal object LocationServiceHook: BaseLocationHook() {
         Logger.debugRL("callOnLocationChanged_end", "==> callOnLocationChanged: end")
     }
 
-    private fun hookLocationManagerServiceV2(classLoader: ClassLoader) {
+    fun hookLocationManagerServiceV2(classLoader: ClassLoader) {
         // As a system_server, the hook can get all the location information here
         kotlin.runCatching {
             XposedHelpers.findClass("android.location.ILocationManager\$Stub", classLoader)
@@ -937,7 +936,7 @@ internal object LocationServiceHook: BaseLocationHook() {
 //        }
     }
 
-    private inline fun handleInstruction(command: String, rely: Bundle): Boolean {
+    fun handleInstruction(command: String, rely: Bundle): Boolean {
         return RemoteCommandHandler.handleInstruction(command, rely)
     }
 }

@@ -8,6 +8,10 @@
 # Hook implementation classes (invoked reflectively by Xposed framework)
 -keep class tv.kyshu.xposed.hooks.** { *; }
 
+# Config and utility classes (referenced from app module via reflection/IPC)
+-keep class tv.kyshu.xposed.config.** { *; }
+-keep class tv.kyshu.xposed.utils.** { *; }
+
 # Security module (used via reflection + JNI)
 -keep class tv.kyshu.xposed.security.RemoteCommandSecurity { *; }
 

@@ -41,6 +41,7 @@ import tv.kyshu.ext.speedAmplitude
 import tv.kyshu.ext.minSpeed
 import tv.kyshu.ext.maxSpeed
 import tv.kyshu.xposed.utils.FakeLoc
+import tv.kyshu.xposed.security.RemoteCommandSecurity
 import java.io.File
 import java.util.concurrent.Callable
 import java.util.concurrent.Executors
@@ -494,6 +495,9 @@ object MockServiceHelper {
                 }
                 "$key=$canonical"
             }
+            val payloadDigest = java.security.MessageDigest.getInstance("SHA-256")
+                .digest(canonicalPayload.toByteArray(Charsets.UTF_8))
+                .joinToString("") { "%02x".format(it) }
             val hmacInput = buildString {
                 append(commandId); append('\n')
                 append(json.getString("_kys_auth_nonce")); append('\n')
