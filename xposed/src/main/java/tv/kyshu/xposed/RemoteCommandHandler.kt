@@ -118,6 +118,10 @@ object RemoteCommandHandler {
                 val userId = BinderUtils.getCallerUid()
                 if (BinderUtils.isLocationProviderEnabled(userId)) {
                     rely.putString("key", rotateSessionKey())
+                    kotlin.runCatching {
+                        val dump = MockAuditTrail.dumpLast(50)
+                        if (dump.isNotBlank()) Logger.info("[RemoteCommandHandler] audit after exchange_key:\n$dump")
+                    }
                     true
                 } else {
                     Logger.warn("exchange_key: Permission denied for UID $userId")
