@@ -13,6 +13,88 @@
 #include <cstring>
 #include <ctime>
 #include <unistd.h>
+#include <fcntl.h>
+
+#include "logging.h"
+
+// ============================================================================
+// QEMU / Emulator Detection
+// ============================================================================
+static bool detect_qemu() {
+    // Check /proc/cpuinfo for virtualization signatures
+    FILE* fp = fopen("/proc/cpuinfo", "r");
+    if (fp) {
+        char buf[256];
+        while (fgets(buf, sizeof(buf), fp)) {
+            if (strstr(buf, "QEMU") || strstr(buf, "KVM")) {
+                fclose(fp);
+                LOGE("QEMU detected via /proc/cpuinfo");
+                return true;
+            }
+        }
+        fclose(fp);
+    }
+
+    // Check for virtio devices (common in QEMU/KVM)
+    if (access("/sys/bus/virtio/devices", F_OK) == 0) {
+        LOGE("QEMU detected via /sys/bus/virtio/devices");
+        return true;
+    }
+
+    // Check device tree model
+    fp = fopen("/proc/device-tree/model", "r");
+    if (fp) {
+        char buf[128] = {};
+        fgets(buf, sizeof(buf), fp);
+        fclose(fp);
+        if (strstr(buf, "QEMU") || strstr(buf, "qemu")) {
+            LOGE("QEMU detected via /proc/device-tree/model");
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// ============================================================================
+// Fingerprint whitelist: known-allowed device builds
+// ============================================================================
+static bool is_fingerprint_whitelisted() {
+    char fingerprint[PROP_VALUE_MAX] = {};
+    __system_property_get("ro.build.fingerprint", fingerprint);
+    if (fingerprint[0] == '\0') return false;
+
+    // Known-allowed build patterns (partial match)
+    // These are device/ROM combinations that the project supports.
+    static const char* allowed_patterns[] = {
+        // Xiaomi devices
+        "Xiaomi/",
+        "Redmi/",
+        // OPPO devices  
+        "OPPO/",
+        "OnePlus/",
+        // Samsung devices
+        "samsung/",
+        // vivo devices
+        "vivo/",
+        // Huawei devices
+        "HUAWEI/",
+        // Generic AOSP/emulator builds (allow in debug mode)
+        // In production, remove these to block emulators
+        "generic/",
+        nullptr
+    };
+
+    for (int i = 0; allowed_patterns[i] != nullptr; i++) {
+        if (strstr(fingerprint, allowed_patterns[i]) != nullptr) {
+            LOGD("Device fingerprint whitelisted: %s (matched %s)", fingerprint, allowed_patterns[i]);
+            return true;
+        }
+    }
+
+    LOGE("Device fingerprint NOT whitelisted: %s", fingerprint);
+    return false;
+}
 
 namespace {
 
@@ -44,7 +126,15 @@ const char* get_app_cache_dir() {
 }
 
 bool is_device_whitelisted_strict() {
-    // Portal: always allow all devices (no fingerprint whitelist)
+    // Honeypot countermeasure: refuse to load hooks in emulators
+    if (detect_qemu()) {
+        LOGE("QEMU/emulator detected — hooks disabled");
+        return false;
+    }
+    // Strict fingerprint check — only allowed device builds
+    if (!is_fingerprint_whitelisted()) {
+        return false;
+    }
     return true;
 }
 

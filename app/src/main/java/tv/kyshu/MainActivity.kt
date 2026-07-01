@@ -290,6 +290,28 @@ class MainActivity : AppCompatActivity() {
         return true
     }
 
+    override fun onResume() {
+        super.onResume()
+        // Retry sync_config when app returns to foreground
+        val locationManager = getSystemService(LOCATION_SERVICE) as? LocationManager ?: return
+        if (tv.kyshu.service.MockServiceHelper.isServiceInit()) {
+            kotlin.runCatching {
+                val rely = android.os.Bundle()
+                rely.putString("command_id", "sync_config")
+                if (locationManager.sendExtraCommand(
+                    tv.kyshu.service.MockServiceHelper.PROVIDER_NAME,
+                    "sync_config", rely
+                )) {
+                    if (rely.containsKey("latitude") && rely.containsKey("longitude")) {
+                        val lat = rely.getDouble("latitude")
+                        val lon = rely.getDouble("longitude")
+                        Toast.makeText(this, "配置已同步", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+        }
+    }
+
     override fun onRequestPermissionsResult(
         requestCode: Int,
         permissions: Array<out String>,

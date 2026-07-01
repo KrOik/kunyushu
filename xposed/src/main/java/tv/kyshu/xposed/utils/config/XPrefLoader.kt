@@ -1,7 +1,11 @@
 package tv.kyshu.xposed.utils.config
 
-import tv.kyshu.xposed.utils.Logger
+import android.os.FileObserver
 import android.os.SystemClock
+import java.io.File
+import java.util.concurrent.ConcurrentLinkedQueue
+import tv.kyshu.xposed.utils.FakeLoc
+import tv.kyshu.xposed.utils.Logger
 
 /**
  * Best-effort fallback config loader for Xposed environments that already
@@ -52,5 +56,62 @@ class XPrefLoader : ConfigLoader {
             Logger.warn("XPrefLoader: Failed to load preferences", t)
             null
         }
+    }
+}
+
+object XPrefWatcher {
+    private var observer: FileObserver? = null
+    private var lastModifyMs: Long = 0L
+
+    /**
+     * Start watching the portal SharedPreferences XML file for external
+     * config changes. When a MODIFY event fires, triggers a FakeLoc.reload()
+     * with 500ms debounce to avoid flood.
+     */
+    fun startWatching(context: android.content.Context) {
+        kotlin.runCatching {
+            val prefsDir = File(context.dataDir, "shared_prefs")
+            val targetFile = File(prefsDir, "tv.kyshu_preferences.xml")
+
+            // Also try alternate file names
+            val filesToWatch = listOf(
+                targetFile,
+                File(prefsDir, "portal.xml"),
+                File(prefsDir, "com.kunyushu.kunyushu_preferences.xml"),
+            )
+
+            val existingFile = filesToWatch.firstOrNull { it.exists() } ?: run {
+                Logger.warn("[XPrefWatcher] No preferences file found to watch")
+                return
+            }
+
+            val parentDir = existingFile.parentFile ?: return
+
+            observer = object : FileObserver(parentDir.absolutePath, FileObserver.MODIFY) {
+                override fun onEvent(event: Int, path: String?) {
+                    if (path == null) return
+                    if (event and FileObserver.MODIFY == 0) return
+                    val now = SystemClock.elapsedRealtime()
+                    if (now - lastModifyMs < 500) return // debounce 500ms
+                    lastModifyMs = now
+
+                    Logger.info("[XPrefWatcher] Config file $path modified, triggering reload")
+                    kotlin.runCatching {
+                        FakeLoc.reload()
+                    }.onFailure { e ->
+                        Logger.warn("[XPrefWatcher] reload failed", e)
+                    }
+                }
+            }.also { it.startWatching() }
+
+            Logger.info("[XPrefWatcher] Started watching ${existingFile.absolutePath}")
+        }.onFailure { e ->
+            Logger.warn("[XPrefWatcher] Failed to start file watcher", e)
+        }
+    }
+
+    fun stopWatching() {
+        observer?.stopWatching()
+        observer = null
     }
 }

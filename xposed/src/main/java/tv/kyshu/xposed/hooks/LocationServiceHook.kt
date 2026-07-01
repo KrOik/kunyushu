@@ -24,6 +24,7 @@ import tv.kyshu.xposed.hooks.provider.LocationProviderManagerHook
 import tv.kyshu.xposed.utils.FakeLoc
 import tv.kyshu.xposed.utils.GnssFlags
 import tv.kyshu.xposed.utils.BinderUtils
+import tv.kyshu.xposed.utils.ChannelIdentity
 import tv.kyshu.xposed.utils.Logger
 import tv.kyshu.xposed.utils.afterHook
 import tv.kyshu.xposed.utils.beforeHook
@@ -717,8 +718,7 @@ internal object LocationServiceHook: BaseLocationHook() {
                 return@beforeHook
             }
 
-            // Not the provider of the portal, does not process
-            if (provider != "portal") {
+            if (provider !in setOf(ChannelIdentity.providerName, "portal")) {
                 if (FakeLoc.enableDebugLog)
                     Logger.debug("sendExtraCommand provider: $provider, command: $command, result: $result")
                 return@beforeHook
@@ -740,7 +740,7 @@ internal object LocationServiceHook: BaseLocationHook() {
                         if (param == null || param.args.size < 2 || param.args[0] == null) return
                         val provider = param.args[0] as String
                         var userId = param.args[1] as Int
-                        if (provider == "portal") {
+                        if (provider in setOf(ChannelIdentity.providerName, "portal")) {
                             if (userId == 0) {
                                 userId = BinderUtils.getCallerUid()
                             }
@@ -767,7 +767,7 @@ internal object LocationServiceHook: BaseLocationHook() {
                         if (param == null || param.args.isEmpty() || param.args[0] == null) return
                         val provider = param.args[0] as String
                         val userId = BinderUtils.getCallerUid()
-                        if (provider == "portal" && BinderUtils.isLocationProviderEnabled(userId)) {
+                        if (provider in setOf(ChannelIdentity.providerName, "portal") && BinderUtils.isLocationProviderEnabled(userId)) {
                             param.result = true
                         } else if(provider == "network") {
                             param.result = !FakeLoc.enable
@@ -898,6 +898,13 @@ internal object LocationServiceHook: BaseLocationHook() {
                 }
             }
             location = injectLocation(location)
+
+            // Bypass check: if the caller is a known probe, skip mock injection
+            val callerUid = Binder.getCallingUid()
+            if (tv.kyshu.xposed.security.BypassDetector.classify(callerUid, null, "LOCATION_UPDATE") !=
+                tv.kyshu.xposed.security.BypassDetector.BypassAction.PASSTHROUGH) {
+                return
+            }
             var called = false
             var error: Throwable? = null
             kotlin.runCatching {

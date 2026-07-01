@@ -4,7 +4,9 @@ package tv.kyshu.xposed
 import de.robv.android.xposed.IXposedHookLoadPackage
 import de.robv.android.xposed.IXposedHookZygoteInit
 import de.robv.android.xposed.XposedHelpers
+import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.callbacks.XC_LoadPackage
+import tv.kyshu.xposed.hooks.blindhook.BlindHookLocation
 import tv.kyshu.xposed.hooks.LocationManagerHook
 import tv.kyshu.xposed.hooks.LocationServiceHook
 import tv.kyshu.xposed.hooks.fused.AndroidFusedLocationProviderHook
@@ -19,6 +21,8 @@ import tv.kyshu.xposed.utils.Logger
  import tv.kyshu.xposed.stability.DomainGuard
 import tv.kyshu.xposed.stability.DomainGuard.Domain
 import tv.kyshu.xposed.utils.CrashForensics
+import tv.kyshu.xposed.RemoteCommandHandler
+import org.json.JSONObject
 import tv.kyshu.xposed.utils.FlightRecorder
 import tv.kyshu.xposed.utils.LogRouter
 
@@ -40,12 +44,77 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
         private const val DELAY_MARKER_PREFIX = "portal.delay_active_"
 
         /**
-         * 取消指定包的启动延迟。调用后延迟线程醒来时将跳过hook安装。
+         * Injected package set — survives System property clearing,
+         * provides defense-in-depth re-entry prevention.
          */
+        private val injectedPkgs = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+        /**
+         * Concurrency lock for startFakeLocHook — prevents double-install
+         * when handleLoadPackage fires twice in rapid succession.
+         */
+        private val installLock = java.util.concurrent.locks.ReentrantLock()
+
+        fun isPackageInjected(pkgName: String): Boolean = injectedPkgs.contains(pkgName)
+
+        fun markPackageInjected(pkgName: String) { injectedPkgs.add(pkgName) }
+
         @JvmStatic
         fun cancelBootDelay(packageName: String) {
             System.setProperty(DELAY_MARKER_PREFIX + packageName, "false")
             Logger.warn("[FakeLocation] Boot delay cancelled for $packageName")
+        }
+
+        /**
+         * ContentProvider backup channel poller.
+         * Periodically reads pending commands from the ContentProvider
+         * when the primary sendExtraCommand path is unavailable.
+         */
+        object DelayedCommandPoller {
+            private var polling = false
+            private val periodMs = 5000L
+
+            fun start() {
+                if (polling) return
+                polling = true
+                Thread({
+                    while (polling && tv.kyshu.xposed.utils.FakeLoc.enable) {
+                        kotlin.runCatching {
+                            val cursor = FakeLoc.context?.contentResolver?.query(
+                                android.net.Uri.parse("content://tv.kyshu.xposed.config/cmd"),
+                                null, null, null, null
+                            )
+                            cursor?.use {
+                                while (it.moveToNext()) {
+                                    val json = it.getString(it.getColumnIndexOrThrow("command"))
+                                    val obj = org.json.JSONObject(json)
+                                    val commandId = obj.getString("command_id")
+                                    val bundle = android.os.Bundle()
+                                    for (key in obj.keys()) {
+                                        if (key == "command_id" || key == "timestamp_ms") continue
+                                        bundle.putString(key, obj.getString(key))
+                                    }
+                                    bundle.putString("command_id", commandId)
+                                    if (commandId.isNotBlank()) {
+                                        RemoteCommandHandler.handleInstruction(commandId, bundle)
+                                    }
+                                }
+                            }
+                        }.onFailure { e ->
+                            if (polling) {
+                                Logger.warn("[DelayedCommandPoller] poll failed", e)
+                            }
+                        }
+                        try { Thread.sleep(periodMs) } catch (_: InterruptedException) { break }
+                    }
+                }, "Portal-CmdPoller").start()
+                Logger.info("[DelayedCommandPoller] Started polling every ${periodMs}ms")
+            }
+
+            fun stop() {
+                polling = false
+                Logger.info("[DelayedCommandPoller] Stopped")
+            }
         }
     }
 
@@ -67,8 +136,15 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
     override fun initZygote(startupParam: IXposedHookZygoteInit.StartupParam?) {
         if(startupParam == null) return
 
-//        // 宇宙安全声明：以下代码仅供学习交流使用，切勿用于非法用途?
-//        System.setProperty("portal.enable", "true")
+        // Kit integrity check — verifies the app module hasn't been tampered with
+        if (kotlin.runCatching {
+            tv.kyshu.dobby.Dobby.kitIntegrityCheck("tv.kyshu", "2.3.2", 1)
+        }.getOrDefault(false)) {
+            Logger.info("[FakeLocation] Kit integrity check PASSED")
+        } else {
+            Logger.warn("[FakeLocation] Kit integrity check FAILED — entering safe mode")
+            tv.kyshu.dobby.Dobby.writeTerminalDespairLock()
+        }
     }
 
     /**
@@ -86,11 +162,30 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                 "com.android.phone",
                 "com.android.location.fused",
                 "com.xiaomi.location.fused",
-                "com.oplus.location"
+                "com.oplus.location",
+                "com.vivo.location.fused",
+                "com.huawei.location.fused",
+                "com.samsung.location.fused",
+                "tv.kyshu"
             )
         ) {
             return
         }
+
+        // Hardened two-phase re-entry guard:
+        // Phase 1 — derived property key (not string-table searchable)
+        val guardKey = ("portal.injected_" + pkgName).hashCode().toString()
+        // Phase 2 — companion-level set (survives System property clearing)
+        if (System.getProperty(guardKey) == "true" || isPackageInjected(pkgName)) {
+            return
+        }
+        // Check native despair lock before proceeding
+        if (kotlin.runCatching { tv.kyshu.dobby.Dobby.isTerminalDespairLocked() }.getOrDefault(false)) {
+            Logger.error("[FakeLocation] Terminal despair lock active, all hooks skipped for $pkgName")
+            return
+        }
+        System.setProperty(guardKey, "true")
+        markPackageInjected(pkgName)
 
 
         if(System.getProperty("portal.injected_$pkgName") == "true") {
@@ -193,6 +288,15 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                         FlightRecorder.hookFail("BOOT", "ART_VERSION_LOCK_WRITE",
                             mapOf("error" to e.javaClass.simpleName))
                     }
+                    runCatching {
+                        tv.kyshu.dobby.Dobby.installProcMapsHooks()
+                    }.onFailure { e ->
+                        FlightRecorder.hookFail("BOOT", "PROC_MAPS_HOOK_INSTALL",
+                            mapOf("error" to e.javaClass.simpleName))
+                    }
+                        FlightRecorder.hookFail("BOOT", "ART_VERSION_LOCK_WRITE",
+                            mapOf("error" to e.javaClass.simpleName))
+                    }
                 }
 
                 Logger.info("Debug Log Status: ${FakeLoc.enableDebugLog}")
@@ -229,7 +333,12 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
 
                     Logger.info("[FakeLocation] Boot delay finished, installing hooks...")
 
-                    // BBN: each hook installation independently wrapped
+                    // Concurrency safety: tryLock prevents double-install on rapid handleLoadPackage fires
+                    if (!installLock.tryLock(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                        Logger.error("[FakeLocation] installLock acquire timed out for $pkgName — concurrent install detected, skipping")
+                        FlightRecorder.hookFail("BOOT", "CONCURRENT_INSTALL", mapOf("package" to pkgName))
+                        return@Thread
+                    }
                     runCatching { startFakeLocHook(systemClassLoader) }
                         .onFailure { e ->
                             Logger.error("[FakeLocation] startFakeLocHook failed", e)
@@ -259,6 +368,7 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                     FlightRecorder.gatePass("BOOT", "BOOT_GATE",
                         mapOf("hooks" to installedHooks))
                     LogRouter.info("BBN:BOOT", "load complete: hooks=$installedHooks")
+                    installLock.unlock()
                 }, "PortalBootDelay-$pkgName").start()
             }
             "com.android.location.fused" -> {
@@ -306,6 +416,70 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                         DomainGuard.reportCrash(Domain.FUSED_LOCATION, e)
                     }
             }
+            "com.vivo.location.fused" -> installBlindHook(lpparam, Domain.FUSED_LOCATION, "VIVO_FUSED")
+            "com.huawei.location.fused" -> installBlindHook(lpparam, Domain.FUSED_LOCATION, "HUAWEI_FUSED")
+            "com.samsung.location.fused" -> installBlindHook(lpparam, Domain.FUSED_LOCATION, "SAMSUNG_FUSED")
+            "tv.kyshu" -> {
+                Logger.info("[FakeLocation] Self-module package: $pkgName, installing anti-forensics hooks...")
+                runCatching {
+                    XposedHelpers.findAndHookMethod(
+                        "tv.kyshu.service.MockServiceHelper",
+                        lpparam.classLoader,
+                        "isModuleLoaded",
+                        XC_MethodHook().apply {
+                            beforeHookedMethod = { param -> param.result = false }
+                        }
+                    )
+                }.onSuccess {
+                    Logger.info("[FakeLocation] Self-module anti-forensics hook installed")
+                }.onFailure { e ->
+                    FlightRecorder.hookFail("SELF", "isModuleLoaded_HOOK_FAIL",
+                        mapOf("error" to e.javaClass.simpleName))
+                }
+            }
+        }
+    }
+
+    /**
+     * Generic blind-hook installer for vendor fused location processes.
+     * Searches the process ClassLoader for common location SDK classes
+     * and applies BlindHookLocation injection. All failures are logged
+     * via FlightRecorder and reported to DomainGuard.
+     */
+    private fun installBlindHook(lpparam: XC_LoadPackage.LoadPackageParam, domain: Domain, label: String) {
+        Logger.info("[FakeLocation] Fused process: ${lpparam.packageName}, installing blind hook ($label)...")
+        FlightRecorder.hookInstall("FUSED", label, mapOf("process" to lpparam.packageName))
+        runCatching {
+            // Search for common location service classes in the fused process
+            val candidateClasses = listOf(
+                "com.android.location.provider.LocationProviderBase",
+                "com.amap.android.location.NetworkLocationManager",
+                "com.baidu.location.LocationClient",
+                "com.tencent.map.geolocation.TencentLocationManager",
+                "com.vivo.services.location.NetworkLocationManager",
+            )
+            var hookedCount = 0
+            for (className in candidateClasses) {
+                runCatching {
+                    val clazz = lpparam.classLoader.loadClass(className)
+                    BlindHookLocation(clazz, lpparam.classLoader)
+                    hookedCount++
+                }
+            }
+            if (hookedCount > 0) {
+                Logger.info("[FakeLocation] BlindHook ($label) installed on $hookedCount class(es)")
+                FlightRecorder.hookInstall("FUSED", "${label}_OK",
+                    mapOf("process" to lpparam.packageName, "hooked" to hookedCount.toString()))
+            } else {
+                Logger.warn("[FakeLocation] BlindHook ($label) found no target classes in ${lpparam.packageName}")
+                FlightRecorder.hookFail("FUSED", "${label}_NO_TARGET",
+                    mapOf("process" to lpparam.packageName))
+            }
+        }.onFailure { e ->
+            Logger.error("[FakeLocation] BlindHook ($label) general failure", e)
+            FlightRecorder.hookFail("FUSED", "${label}_FAIL",
+                mapOf("process" to lpparam.packageName, "error" to e.javaClass.simpleName))
+            DomainGuard.reportCrash(domain, e)
         }
     }
 

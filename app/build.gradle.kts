@@ -12,7 +12,7 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "moe.fuqiuluo.portal"
+        applicationId = "com.kunyushu.kunyushu"
         minSdk = 26
         targetSdk = 35
         versionCode = getVersionCode()
@@ -35,7 +35,7 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

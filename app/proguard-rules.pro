@@ -1,5 +1,24 @@
-# Keep all classes in tv.kyshu package
--keep class tv.kyshu.** { *; }
+# Targeted keep rules for app module
+# IPC client — must preserve method names
+-keep class tv.kyshu.service.MockServiceHelper { *; }
+
+# Launcher activity
+-keep class tv.kyshu.MainActivity { *; }
+
+# Baidu Map integration
+-keep class tv.kyshu.bdmap.** { *; }
+
+# UI fragments and adapters (referenced from XML layouts)
+-keep class tv.kyshu.ui.** { *; }
+
+# Application class
+-keep class tv.kyshu.PortalApplication { *; }
+
+# Native library loader
+-keep class tv.kyshu.ext.** { *; }
+
+# ViewModel classes
+-keep class tv.kyshu.ui.viewmodel.** { *; }
 
 # Keep Baidu map SDK classes (used reflectively)
 -keep class com.baidu.** {*;}

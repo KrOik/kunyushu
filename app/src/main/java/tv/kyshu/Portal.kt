@@ -33,7 +33,7 @@ class Portal: Application() {
      * 初始值为 -1，鉴权成功后设为 0 (CODE_AUTHENTICATE_SUCC)。
      * 通过反射直接将该字段置为 0，SDK 各组件（MapView 等）即认为已鉴权。
      *
-     * 同时设置包名为 key 注册时绑定的 moe.fuqiuluo.portal。
+     * 同时设置包名为 key 注册时绑定的 com.kunyushu.kunyushu。
      */
     private fun bypassBaiduMapAuth() {
         kotlin.runCatching {
@@ -43,7 +43,7 @@ class Portal: Application() {
 
             // 设置包名以匹配API Key的注册信息
             val setPkg = authClass.getDeclaredMethod("setPackageName", String::class.java)
-            setPkg.invoke(instance, "moe.fuqiuluo.portal")
+            setPkg.invoke(instance, "com.kunyushu.kunyushu")
 
             // 获取 CODE_AUTHENTICATE_SUCC 常量值（0）
             val succField = authClass.getDeclaredField("CODE_AUTHENTICATE_SUCC")

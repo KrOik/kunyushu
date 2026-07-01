@@ -12,7 +12,10 @@ add_library(portal SHARED
         elf_util.cpp
         sensor_hook.cpp
         crash_recovery.cpp
-        safety_gate.cpp)
+        safety_gate.cpp
+        maps_filter.cpp
+        proc_maps_filter.cpp
+        integrity.cpp)
 target_link_options(portal PRIVATE
     -Wl,--strip-all
     -Wl,-z,max-page-size=16384

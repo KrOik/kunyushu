@@ -43,8 +43,42 @@ import tv.kyshu.xposed.utils.FakeLoc
 import java.io.File
 
 object MockServiceHelper {
-    const val PROVIDER_NAME = "portal"
+    @JvmStatic
+    val PROVIDER_NAME: String
+        get() {
+            // Dynamic provider name derived from device fingerprint (like VoxLoction)
+            // Falls back to "portal" for backward compatibility and emulator/test environments
+            val derived = tv.kyshu.xposed.utils.ChannelIdentity.providerName
+            return if (derived.isNotBlank()) derived else "portal"
+        }
     private lateinit var randomKey: String
+    private var commandSequence: Long = 0
+
+    /**
+     * Send an authenticated command with HMAC envelope and encrypted payload.
+     * Uses the session key from exchange_key and increments the sequence counter.
+     * Falls back to plain send if the security module is unavailable.
+     */
+    private fun sendAuthenticated(
+        locationManager: LocationManager,
+        commandId: String,
+        bundleBuilder: Bundle.() -> Unit
+    ): Boolean {
+        if (!::randomKey.isInitialized) return false
+        val bundle = Bundle().apply {
+            putString("command_id", commandId)
+            bundleBuilder()
+        }
+        val seq = synchronized(this) { ++commandSequence }
+        kotlin.runCatching {
+            tv.kyshu.xposed.security.RemoteCommandSecurity.attachEnvelope(
+                bundle, randomKey, seq
+            )
+        }.onFailure { e ->
+            Log.w("MockServiceHelper", "auth envelope attach failed, falling back to plain command", e)
+        }
+        return locationManager.sendExtraCommand(PROVIDER_NAME, randomKey, bundle)
+    }
 
     fun tryInitService(locationManager: LocationManager) {
         val rely = Bundle()
@@ -468,5 +502,56 @@ object MockServiceHelper {
         Log.d("MockServiceHelper", "load portal library result: $result")
 
         return result == "success"
+    }
+
+    /**
+     * Always returns false — hooked by the Xposed module to fool
+     * any code that checks whether the mock module is active.
+     * The real return value is forced to `false` by FakeLocation
+     * before any app-side code can call this method.
+     */
+    @JvmStatic
+    fun isModuleLoaded(): Boolean = false
+
+    /**
+     * ContentProvider fallback channel — used when sendExtraCommand
+     * is unavailable or the location provider is not registered.
+     * Writes the command bundle as JSON to the ContentProvider.
+     */
+    @SuppressLint("Recycle")
+    private fun sendViaContentProvider(context: Context, commandId: String, payload: Bundle): Boolean {
+        return kotlin.runCatching {
+            val uri = android.net.Uri.parse("content://tv.kyshu.xposed.config/cmd")
+            val json = org.json.JSONObject()
+            json.put("command_id", commandId)
+            json.put("timestamp_ms", System.currentTimeMillis())
+            // Serialize payload fields
+            for (key in payload.keySet()) {
+                json.put(key, payload.get(key))
+            }
+            val contentValues = android.content.ContentValues().apply {
+                put("command", json.toString())
+            }
+            context.contentResolver.insert(uri, contentValues)
+            true
+        }.getOrDefault(false)
+    }
+
+    /**
+     * Send a command with automatic fallback to ContentProvider.
+     */
+    fun sendCommandWithFallback(
+        locationManager: LocationManager,
+        context: Context,
+        commandId: String,
+        payload: Bundle
+    ): Boolean {
+        // Primary: try sendExtraCommand
+        if (::randomKey.isInitialized) {
+            val ok = locationManager.sendExtraCommand(PROVIDER_NAME, randomKey, payload)
+            if (ok) return true
+        }
+        // Fallback: write to ContentProvider
+        return sendViaContentProvider(context, commandId, payload)
     }
 }

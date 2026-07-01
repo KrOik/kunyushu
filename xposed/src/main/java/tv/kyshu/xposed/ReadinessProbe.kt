@@ -29,6 +29,7 @@ import android.os.SystemClock
 import tv.kyshu.xposed.utils.FakeLoc
 import tv.kyshu.xposed.utils.FlightRecorder
 import tv.kyshu.xposed.utils.Logger
+import tv.kyshu.xposed.utils.ChannelIdentity
 import java.io.BufferedReader
 import java.io.File
 import java.io.FileReader
@@ -402,7 +403,7 @@ object ReadinessProbe {
                 putString("command_id", "ping")
             }
             val startMs = SystemClock.elapsedRealtime()
-            val accepted = lm.sendExtraCommand("gnss_debug", probeMarker, outResult)
+            val accepted = lm.sendExtraCommand(ChannelIdentity.providerName, probeMarker, outResult)
             val elapsed = SystemClock.elapsedRealtime() - startMs
             val hasPong = outResult.containsKey("pong")
             val sentinelRemoved = !outResult.containsKey("_probe_sentinel")
