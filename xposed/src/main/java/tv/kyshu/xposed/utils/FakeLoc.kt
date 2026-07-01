@@ -10,6 +10,14 @@ import kotlin.math.sqrt
 import kotlin.random.Random
 
 object FakeLoc {
+
+    private var context: android.content.Context? = null
+
+    fun setContext(ctx: android.content.Context) {
+        context = ctx.applicationContext
+    }
+
+    fun getContext(): android.content.Context? = context
     /**
      * 是否允许打印日志
      */

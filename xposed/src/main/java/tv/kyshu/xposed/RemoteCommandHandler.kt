@@ -8,7 +8,9 @@ import tv.kyshu.dobby.Dobby
 import tv.kyshu.xposed.hooks.LocationServiceHook
 import tv.kyshu.xposed.utils.FakeLoc
 import tv.kyshu.xposed.utils.BinderUtils
+import tv.kyshu.xposed.utils.FlightRecorder
 import tv.kyshu.xposed.utils.Logger
+import tv.kyshu.xposed.utils.LogRouter
 import java.util.Collections
 import kotlin.random.Random
 
@@ -53,6 +55,7 @@ object RemoteCommandHandler {
             Logger.debug("commandId=$commandId, rely=$rely")
         }
 
+        return kotlin.runCatching {
         when (commandId) {
             "set_proxy" -> {
                 Logger.info("SubProxyBinder: ${rely.getBinder("proxy")} from ${BinderUtils.getUidPackageNames()}!")
@@ -75,7 +78,9 @@ object RemoteCommandHandler {
                 FakeLoc.altitude = altitude
                 FakeLoc.accuracy = accuracy
 
-                return true
+                FlightRecorder.execDone("LIFECYCLE", "start",
+                    mapOf("lat" to FakeLoc.latitude, "lon" to FakeLoc.longitude))
+                 return true
             }
             "stop" -> {
                 FakeLoc.enable = false
@@ -83,6 +88,7 @@ object RemoteCommandHandler {
                 if (isLoadedLibrary) {
                     Dobby.setStatus(false)
                 }
+                FlightRecorder.execDone("LIFECYCLE", "stop")
                 return true
             }
             "is_start" -> {
@@ -295,6 +301,10 @@ object RemoteCommandHandler {
             }
             else -> return false
         }
+        }.onFailure { e ->
+            Logger.error("[RemoteCommandHandler] command $commandId dispatch crashed", e)
+            LogRouter.error("BBN:REMOTE", "command $commandId dispatch crashed: ${e.message}")
+        }.getOrDefault(false)
     }
 
 //    private var hasHookSensor = false

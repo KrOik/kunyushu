@@ -1,3 +1,4 @@
+@file:Suppress("UNCHECKED_CAST", "PrivateApi")
 package tv.kyshu.xposed.hooks.telephony
 
 import android.os.Build
@@ -14,6 +15,7 @@ import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
 import tv.kyshu.xposed.utils.BinderUtils
 import tv.kyshu.xposed.utils.FakeLoc
+import tv.kyshu.xposed.stability.DomainGuard
 import tv.kyshu.xposed.utils.Logger
 import tv.kyshu.xposed.utils.afterHook
 import tv.kyshu.xposed.utils.beforeHook
@@ -27,6 +29,7 @@ import java.lang.reflect.Modifier
 
 object TelephonyHook: BaseTelephonyHook() {
     operator fun invoke(classLoader: ClassLoader) {
+        runCatching {
         if(!initDivineService("TelephonyHook")) {
             Logger.error("Failed to init mock service in TelephonyHook")
             return
@@ -229,6 +232,10 @@ object TelephonyHook: BaseTelephonyHook() {
             Logger.error("TelephonyRegistry not found")
         } else {
             hookTelephonyRegistry(cTelephonyRegistry)
+            }
+        }.onFailure { e ->
+            Logger.error("[TelephonyHook] invoke failed", e)
+            DomainGuard.reportCrash(DomainGuard.Domain.TELEPHONY, e)
         }
 
     }
