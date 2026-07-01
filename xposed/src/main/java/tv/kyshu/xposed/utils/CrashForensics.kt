@@ -63,4 +63,16 @@ object CrashForensics {
         val digest = MessageDigest.getInstance("SHA-256").digest(Build.FINGERPRINT.orEmpty().toByteArray())
         return digest.take(4).joinToString("") { "%02x".format(it) }
     }
+
+    /**
+     * 读取当前 crash 日志内容，用于统一日志导出。
+     * 返回空字符串表示无 crash 记录。
+     */
+    fun readCrashLog(): String {
+        return lock.withLock {
+            try {
+                crashFile?.takeIf { it.exists() && it.length() > 0L }?.readText()?.trim() ?: ""
+            } catch (_: Exception) { "" }
+        }
+    }
 }

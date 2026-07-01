@@ -23,6 +23,7 @@ object MockCommandContract {
         const val PING = "ping"
         const val DUMP_AUDIT = "dump_audit"
         const val TELEMETRY_DUMP = "telemetry_dump"
+        const val EXPORT_LOGS = "export_logs"
         const val GET_SPEED = "get_speed"
         const val GET_BEARING = "get_bearing"
     }

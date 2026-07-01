@@ -21,6 +21,8 @@ import android.os.Bundle
 import tv.kyshu.dobby.Dobby
 import tv.kyshu.xposed.hooks.LocationServiceHook
 import tv.kyshu.xposed.security.RemoteCommandSecurity
+import tv.kyshu.xposed.utils.LogRouter
+import java.io.File
 import tv.kyshu.xposed.utils.FakeLoc
 import tv.kyshu.xposed.utils.BinderUtils
 import tv.kyshu.xposed.utils.CrashForensics
@@ -239,6 +241,11 @@ object RemoteCommandHandler {
                 Logger.info("[RemoteCommandHandler] telemetry dump requested, ${dump.lines().size} lines")
                 true
             }
+            MockCommandContract.Commands.EXPORT_LOGS -> {
+                val result = handleExportLogs(rely)
+                Logger.info("[RemoteCommandHandler] export_logs completed, result=$result")
+                result
+            }
             MockCommandContract.Commands.GET_SPEED -> {
                 rely.putFloat("speed", FakeLoc.speed.toFloat())
                 true
@@ -397,5 +404,94 @@ object RemoteCommandHandler {
     private fun clearMalformedWifiPayload(): Boolean {
         FakeLoc.mockWifiList = emptyList()
         return false
+    }
+
+    private fun handleExportLogs(rely: Bundle): Boolean {
+        return kotlin.runCatching {
+            val context = FakeLoc.getContext() ?: run {
+                Logger.error("[RemoteCommandHandler] export_logs: no context")
+                rely.putString("export_error", "no context")
+                return@runCatching false
+            }
+
+            val sb = StringBuilder(64 * 1024)
+            val ts = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US).format(java.util.Date())
+
+            sb.appendLine("============================================")
+            sb.appendLine("Portal Log Export — $ts")
+            sb.appendLine("============================================")
+            sb.appendLine()
+
+            // 1) FlightRecorder telemetry (include previous boot)
+            sb.appendLine("=== FlightRecorder Telemetry ===")
+            val telemetry = FlightRecorder.dump(lastN = 256, includePreviousBoot = true)
+            sb.appendLine(telemetry.ifEmpty { "(no telemetry)" })
+            sb.appendLine()
+
+            // 2) MockAuditTrail
+            sb.appendLine("=== MockAuditTrail ===")
+            val audit = MockAuditTrail.dump()
+            sb.appendLine(audit.ifEmpty { "(no audit events)" })
+            sb.appendLine()
+
+            // 3) CrashForensics
+            sb.appendLine("=== CrashForensics ===")
+            val crash = CrashForensics.readCrashLog()
+            sb.appendLine(crash.ifEmpty { "(no crash log)" })
+            sb.appendLine()
+
+            // 4) LogRouter files (latest 3)
+            sb.appendLine("=== LogRouter Files ===")
+            val logDir = context.filesDir.resolve("logs")
+            if (logDir.isDirectory) {
+                val logFiles = logDir.listFiles()
+                    ?.filter { it.isFile && it.name.startsWith("portal_") }
+                    ?.sortedByDescending { it.lastModified() }
+                    ?.take(3) ?: emptyList()
+                if (logFiles.isEmpty()) {
+                    sb.appendLine("(no LogRouter files)")
+                } else {
+                    for (file in logFiles) {
+                        sb.appendLine("--- ${file.name} (${file.length() / 1024}KB) ---")
+                        try {
+                            // Cap each file at 16KB to keep export bounded
+                            val content = if (file.length() > 16 * 1024) {
+                                file.readText(Charsets.UTF_8).takeLast(16 * 1024)
+                                    .let { "(truncated to last 16KB)\n$it" }
+                            } else {
+                                file.readText(Charsets.UTF_8)
+                            }
+                            sb.appendLine(content)
+                        } catch (e: Exception) {
+                            sb.appendLine("(read error: ${e.message})")
+                        }
+                        sb.appendLine()
+                    }
+                }
+            } else {
+                sb.appendLine("(LogRouter directory not found)")
+            }
+
+            // Write export file
+            val exportDir = context.filesDir.resolve("logs/export").also { it.mkdirs() }
+            val exportFile = File(exportDir, "export_$ts.log")
+            exportFile.writeText(sb.toString(), Charsets.UTF_8)
+
+            val summary = mapOf(
+                "telemetry_lines" to telemetry.lines().size,
+                "audit_lines" to audit.lines().size,
+                "crash_lines" to crash.lines().size,
+                "total_bytes" to sb.length,
+            ).entries.joinToString(", ") { "${it.key}=${it.value}" }
+
+            rely.putString("export_path", exportFile.absolutePath)
+            rely.putString("export_summary", summary)
+            rely.putInt("export_size_bytes", sb.length)
+            Logger.info("[RemoteCommandHandler] export_logs: $summary")
+            true
+        }.onFailure { e ->
+            Logger.error("[RemoteCommandHandler] export_logs failed", e)
+            rely.putString("export_error", e.message ?: e.javaClass.simpleName)
+        }.getOrDefault(false)
     }
 }
