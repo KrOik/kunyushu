@@ -33,6 +33,7 @@
 #include "dobby_hook.h"
 
 #include <cstdio>
+#include <jni.h>
 #include <cstring>
 #include <cstdarg>
 #include <dlfcn.h>
@@ -249,9 +250,9 @@ bool portal_install_proc_maps_hooks_jni(void) {
     });
 
     if (ok) {
-        LOGD("G2_MAPS: hooks installed successfully");
+    LOGI("G2_MAPS: hooks installed successfully");
     } else {
-        LOGD("G2_MAPS: hooks partially installed");
+    LOGI("G2_MAPS: hooks partially installed");
     }
     return ok;
 }

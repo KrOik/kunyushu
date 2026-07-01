@@ -21,7 +21,7 @@ import kotlin.concurrent.withLock
 object FlightRecorder {
     private const val MAX_EVENTS = 256
     private const val RETENTION_MS = 7L * 24L * 60L * 60L * 1000L
-    private val persistTypes = setOf("HOOK_INSTALL", "EXEC_DONE", "CRASH_MARKER")
+    private val persistTypes = setOf("HOOK_INSTALL", "EXEC_DONE", "CRASH_MARKER", "GATE_SKIP", "EXEC_FAIL", "HOOK_FAIL")
 
     data class TelemetryEvent(
         val timestampMs: Long,

@@ -16,7 +16,7 @@ import java.util.concurrent.ConcurrentHashMap
  * the hook lifecycle via cached entries.
  */
 object ClassNameStore {
-    private val cache = ConcurrentHashMap<String, Class<*>>()
+    private val cache = ConcurrentHashMap<String, Class<*>?>()
 
     // --- System Service Classes ---
     const val SERVICE_MANAGER = "android.os.ServiceManager"
@@ -54,7 +54,7 @@ object ClassNameStore {
         return cache.computeIfAbsent(className) { key ->
             kotlin.runCatching {
                 Class.forName(key, false, classLoader)
-            }.getOrNull()
+            }.getOrNull() ?: return@computeIfAbsent null
         }
     }
 

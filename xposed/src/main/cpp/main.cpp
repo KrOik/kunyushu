@@ -22,7 +22,7 @@ static bool is_system_server_process() {
 
 JNIEXPORT jint JNICALL
 JNI_OnLoad(JavaVM* vm, void* reserved) {
-    LOGD("JNI_OnLoad called: Portal Native Hook is loading...");
+    LOGI("JNI_OnLoad called: Portal Native Hook is loading...");
     JNIEnv* env;
     if (vm->GetEnv((void**) &env, JNI_VERSION_1_6) != JNI_OK) {
         LOGD("JNI_OnLoad failed: GetEnv failed");
@@ -34,7 +34,7 @@ JNI_OnLoad(JavaVM* vm, void* reserved) {
 
         // Sensor hooks: ELF parsing + Dobby inline hook.
         doSensorHook();
-        LOGD("doSensorHook complete");
+    LOGI("doSensorHook complete");
     }
     return JNI_VERSION_1_6;
 }
@@ -86,7 +86,7 @@ Java_tv_kyshu_dobby_Dobby_initSafetyFramework(JNIEnv *env, jobject thiz, jstring
     strncpy(g_app_cache_dir, utf, sizeof(g_app_cache_dir) - 1);
     g_app_cache_dir[sizeof(g_app_cache_dir) - 1] = '\0';
     env->ReleaseStringUTFChars(cacheDir, utf);
-    LOGD("initSafetyFramework: cache dir set to %s", g_app_cache_dir);
+    LOGI("initSafetyFramework: cache dir set to %s", g_app_cache_dir);
 }
 
 extern "C"
@@ -94,7 +94,7 @@ JNIEXPORT void JNICALL
 Java_tv_kyshu_dobby_Dobby_writeArtVersionLock(JNIEnv *env, jobject thiz) {
     (void)env; (void)thiz;
     write_art_version_lock();
-    LOGD("ART version lock written");
+    LOGI("ART version lock written");
 }
 
 extern "C"
@@ -102,7 +102,7 @@ JNIEXPORT void JNICALL
 Java_tv_kyshu_dobby_Dobby_writeTerminalDespairLock(JNIEnv *env, jobject thiz) {
     (void)env; (void)thiz;
     write_terminal_despair_lock();
-    LOGD("Terminal despair lock written");
+    LOGI("Terminal despair lock written");
 }
 
 extern "C"

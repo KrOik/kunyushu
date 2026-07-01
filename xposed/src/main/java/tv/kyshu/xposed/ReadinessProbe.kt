@@ -424,7 +424,18 @@ object ReadinessProbe {
         }
     }
 
-    private fun probeFingerprintWhitelist(fingerprint: String): Boolean = false
+    private fun probeFingerprintWhitelist(fingerprint: String): Boolean {
+        if (fingerprint.isBlank()) return false
+        val allowedPrefixes = listOf(
+            "Xiaomi/", "Redmi/",
+            "OPPO/", "OnePlus/",
+            "samsung/",
+            "vivo/",
+            "HUAWEI/",
+            "generic/",
+        )
+        return allowedPrefixes.any { fingerprint.startsWith(it) }
+    }
 
     // ---- FlightRecorder integration (enhanced with deep probe data) ----
 

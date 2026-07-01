@@ -17,7 +17,7 @@
                                                 ? page_align(n) + page_size : page_align(n),       \
                                             PROT_READ | PROT_WRITE | PROT_EXEC)
 
-void* InlineHook(void* target, void* hooker) {
+inline void* InlineHook(void* target, void* hooker) {
     make_rwx(target, page_size);
     void* origin_call;
     if (DobbyHook(target, hooker, &origin_call) == RS_SUCCESS) {

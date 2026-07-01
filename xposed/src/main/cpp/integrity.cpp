@@ -127,7 +127,7 @@ Java_tv_kyshu_dobby_Dobby_kitIntegrityCheck(
         LOGE("kitIntegrityCheck FAILED: computed=0x%016llX, expected=0x%016llX",
              (unsigned long long)hash, (unsigned long long)kExpectedHash);
     } else {
-        LOGD("kitIntegrityCheck PASSED");
+        LOGI("kitIntegrityCheck PASSED");
     }
 
     return match ? JNI_TRUE : JNI_FALSE;

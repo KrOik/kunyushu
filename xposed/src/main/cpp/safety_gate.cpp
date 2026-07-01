@@ -87,7 +87,7 @@ static bool is_fingerprint_whitelisted() {
 
     for (int i = 0; allowed_patterns[i] != nullptr; i++) {
         if (strstr(fingerprint, allowed_patterns[i]) != nullptr) {
-            LOGD("Device fingerprint whitelisted: %s (matched %s)", fingerprint, allowed_patterns[i]);
+            LOGI("Device fingerprint whitelisted: %s (matched %s)", fingerprint, allowed_patterns[i]);
             return true;
         }
     }

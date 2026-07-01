@@ -23,7 +23,7 @@ object MiuiLocationManagerHook: BaseLocationHook() {
 
         for (className in candidateClassNames) {
             runCatching {
-                val clazz = XposedHelpers.findClassIfExists(className, classLoader) ?: continue
+                val clazz = XposedHelpers.findClassIfExists(className, classLoader) ?: return@runCatching
                 Logger.info("[MiuiLocationManagerHook] Found class: $className, installing hooks")
 
                 // Hook deviceConfig / configProvider to block MIUI-specific location customization

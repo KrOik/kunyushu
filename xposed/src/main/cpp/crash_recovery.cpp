@@ -204,7 +204,6 @@ bool install_crash_handlers() {
         LOGE("Failed to install SIGILL handler");
     }
 
-    LOGD("Crash recovery handlers installed, %zu code ranges",
+    LOGI("Crash recovery handlers installed, %zu code ranges",
          g_code_range_count);
-    return true;
 }

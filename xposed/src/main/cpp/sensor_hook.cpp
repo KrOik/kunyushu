@@ -88,8 +88,8 @@ void doSensorHook() {
 
     auto convertToSensorEvent = sensorService.getSymbolAddress<void*>("_ZN7android8hardware7sensors4V1_014implementation20convertToSensorEventERKNS2_5EventEP15sensors_event_t");
 
-    LOGD("Dobby SensorEventQueue::write found at %p", sensorWrite);
-    LOGD("Dobby convertToSensorEvent found at %p", convertToSensorEvent);
+    LOGI("Dobby SensorEventQueue::write found at %p", sensorWrite);
+    LOGI("Dobby convertToSensorEvent found at %p", convertToSensorEvent);
 
     if (sensorWrite != nullptr) {
         auto orig = InlineHook(sensorWrite, (void *)SensorEventQueueWrite);

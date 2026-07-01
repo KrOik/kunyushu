@@ -294,9 +294,6 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                         FlightRecorder.hookFail("BOOT", "PROC_MAPS_HOOK_INSTALL",
                             mapOf("error" to e.javaClass.simpleName))
                     }
-                        FlightRecorder.hookFail("BOOT", "ART_VERSION_LOCK_WRITE",
-                            mapOf("error" to e.javaClass.simpleName))
-                    }
                 }
 
                 Logger.info("Debug Log Status: ${FakeLoc.enableDebugLog}")
@@ -426,8 +423,10 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                         "tv.kyshu.service.MockServiceHelper",
                         lpparam.classLoader,
                         "isModuleLoaded",
-                        XC_MethodHook().apply {
-                            beforeHookedMethod = { param -> param.result = false }
+                        object : XC_MethodHook() {
+                            override fun beforeHookedMethod(param: MethodHookParam) {
+                                param.result = false
+                            }
                         }
                     )
                 }.onSuccess {
