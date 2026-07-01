@@ -373,7 +373,7 @@ class RouteEditFragment : Fragment() {
 
 
     private fun markMap(moveEyes: Boolean = false) = with(baiduMapViewModel) {
-        val loc = markedLoc!!.gcj02
+        val loc = markedLoc?.gcj02 ?: return
         val ooA = MarkerOptions()
             .position(loc)
             .icon(mMapIndicator)
@@ -499,5 +499,13 @@ class RouteEditFragment : Fragment() {
             .show()
 
         return true
+    }
+
+    override fun onDestroyView() {
+        super.onDestroyView()
+        if (::mLocationClient.isInitialized && mLocationClient.isStarted) {
+            mLocationClient.stop()
+        }
+        _binding = null
     }
 }

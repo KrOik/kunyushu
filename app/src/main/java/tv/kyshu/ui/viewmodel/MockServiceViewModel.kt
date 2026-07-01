@@ -89,9 +89,9 @@ class MockServiceViewModel : ViewModel() {
                     val route = selectedRoute?.route ?: break
                     while (routeStage < route.size) {
                         val target = route[routeStage]
-                        val loc = MockServiceHelper.getLocation(locationManager)
-                        val currentLat = loc?.first ?: break
-                        val currentLon = loc?.second ?: break
+                        val loc = locationManager?.let { MockServiceHelper.getLocation(it) } ?: break
+                        val currentLat = loc.first
+                        val currentLon = loc.second
 
                         val inverse = Geodesic.WGS84.Inverse(
                             currentLat,
@@ -129,9 +129,9 @@ class MockServiceViewModel : ViewModel() {
 
                     // 处理当前目标点的移动
                     val target = route[routeStage]
-                    val loc = MockServiceHelper.getLocation(locationManager)
-                    val currentLat = loc?.first ?: break
-                    val currentLon = loc?.second ?: break
+                    val loc = locationManager?.let { MockServiceHelper.getLocation(it) } ?: break
+                    val currentLat = loc.first
+                    val currentLon = loc.second
 
                     val inverse = Geodesic.WGS84.Inverse(
                         currentLat,
@@ -158,14 +158,13 @@ class MockServiceViewModel : ViewModel() {
     }
 
     fun isServiceStart(): Boolean {
-        return if (locationManager != null) {
-            MockServiceHelper.isServiceInit() && MockServiceHelper.isMockStart(locationManager!!)
-        } else {
-            false
-        }
+        return locationManager?.let { mgr ->
+            MockServiceHelper.isServiceInit() && MockServiceHelper.isMockStart(mgr)
+        } ?: false
     }
 
     override fun onCleared() {
         super.onCleared()
         runCatching { rocker.hide() }
     }
+}

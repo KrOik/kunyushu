@@ -1,5 +1,6 @@
 package tv.kyshu.android.coro
 
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.withTimeoutOrNull
 
 class CoroutineRouteMock {

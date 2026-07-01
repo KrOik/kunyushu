@@ -42,7 +42,9 @@ class BaiduMapViewModel: ViewModel() {
     var perspectiveState = MyLocationConfiguration.LocationMode.NORMAL
         set(value) {
             field = value
-            baiduMap.setMapConfig(value, null)
+            if (::baiduMap.isInitialized) {
+                baiduMap.setMapConfig(value, null)
+            }
         }
 
     val mMapIndicator: BitmapDescriptor? by lazy {
@@ -50,4 +52,11 @@ class BaiduMapViewModel: ViewModel() {
     }
 
     var mGeoCoder: GeoCoder? = null
+
+    override fun onCleared() {
+        super.onCleared()
+        mGeoCoder?.destroy()
+        mGeoCoder = null
+        mNotification = null
+    }
 }

@@ -885,10 +885,7 @@ internal object LocationServiceHook: BaseLocationHook() {
         locationListeners.removeIf { it.second.asBinder() == binder }
     }
 
-    fun callOnLocationChanged() {
-        if (FakeLoc.enableDebugLog) {
-            Logger.debug("==> callOnLocationChanged: ${locationListeners.size}")
-        }
+        Logger.debugRL("callOnLocationChanged", "==> callOnLocationChanged: ${locationListeners.size}")
         locationListeners.forEach { listenerWithProvider ->
             val listener = listenerWithProvider.second
             var location = FakeLoc.lastLocation

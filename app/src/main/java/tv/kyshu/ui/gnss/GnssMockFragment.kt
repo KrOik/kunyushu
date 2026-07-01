@@ -268,41 +268,30 @@ class GnssMockFragment : Fragment() {
             // Register the callback with the LocationManager
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 // For Android 11 and above
-                locationManager.registerGnssStatusCallback(requireContext().mainExecutor, gnssStatusCallback!!)
+                locationManager.registerGnssStatusCallback(requireContext().mainExecutor, gnssStatusCallback ?: return)
             } else {
                 // For Android versions before 11
                 @Suppress("DEPRECATION")
-                locationManager.registerGnssStatusCallback(gnssStatusCallback!!, null)
+                locationManager.registerGnssStatusCallback(gnssStatusCallback ?: return, null)
             }
         } catch (e: SecurityException) {
             Log.e("GnssMockFragment", "registerGnssStatusCallback failed", e)
         }
     }
 
-    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
-        super.onViewCreated(view, savedInstanceState)
-    }
 
-    override fun onResume() {
-        super.onResume()
-    }
 
-    override fun onDestroy() {
-        super.onDestroy()
-    }
 
-    override fun onPause() {
-        super.onPause()
-    }
 
-    override fun onSaveInstanceState(outState: Bundle) {
-        super.onSaveInstanceState(outState)
-    }
 
     override fun onDestroyView() {
         super.onDestroyView()
+        gnssStatusCallback?.let { cb ->
+            if (::locationManager.isInitialized) {
+                locationManager.unregisterGnssStatusCallback(cb)
+            }
+        }
+        gnssStatusCallback = null
         _binding = null
-        if (gnssStatusCallback != null)
-            locationManager.unregisterGnssStatusCallback(gnssStatusCallback!!)
     }
 }

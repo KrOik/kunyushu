@@ -95,7 +95,7 @@ class RockerView(context: Context, attributeSet: AttributeSet): View(context, at
         trianglePaint2.style = Paint.Style.FILL
         trianglePaint2.isAntiAlias = true
 
-        lockBitmap = ResourcesCompat.getDrawable(resources, R.drawable.baseline_lock_24, null)!!.toBitmap()
+        lockBitmap = (ResourcesCompat.getDrawable(resources, R.drawable.baseline_lock_24, null) ?: throw IllegalStateException("lock bitmap not found")).toBitmap()
 
         lockPaint.isAntiAlias = true
     }
@@ -235,11 +235,11 @@ class RockerView(context: Context, attributeSet: AttributeSet): View(context, at
                             lockRunnable = null
                             invalidate()
                         }
-                        handler.postDelayed(lockRunnable!!, 3000)
+                        lockRunnable?.let { handler.postDelayed(it, 3000) }
                     }
 
                     if (!w.first && lockRunnable != null) {
-                        handler.removeCallbacks(lockRunnable!!)
+                        lockRunnable?.let { handler.removeCallbacks(it) }
                         lockRunnable = null
                     }
                 }
@@ -330,6 +330,12 @@ class RockerView(context: Context, attributeSet: AttributeSet): View(context, at
     fun auto(enable: Boolean) {
         isAuto.set(enable)
         invalidate()
+    }
+
+    override fun onDetachedFromWindow() {
+        super.onDetachedFromWindow()
+        lockRunnable?.let { handler.removeCallbacks(it) }
+        lockRunnable = null
     }
 
     companion object {

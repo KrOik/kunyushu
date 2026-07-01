@@ -519,7 +519,7 @@ class HomeFragment : Fragment() {
     }
 
     private fun markMap(moveEyes: Boolean = false) = with(baiduMapViewModel) {
-        val loc = markedLoc!!.gcj02
+        val loc = markedLoc?.gcj02 ?: return
         val ooA = MarkerOptions()
             .position(loc)
             .icon(mMapIndicator)

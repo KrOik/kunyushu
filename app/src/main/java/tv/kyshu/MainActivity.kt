@@ -460,8 +460,10 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-
         mSuggestionSearch?.destroy()
+        mSuggestionSearch = null
+        baiduMapViewModel.mGeoCoder?.destroy()
+        baiduMapViewModel.mGeoCoder = null
     }
 
     companion object {
