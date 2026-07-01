@@ -37,7 +37,8 @@ object NmeaGenerator {
         lon: Double,
         alt: Double,
         satellitesCount: Int,
-        accuracy: Float
+        accuracy: Float,
+        fixQuality: Int = 1
     ): String {
         val now = Date()
         val timeStr = timeFormat.format(now)
@@ -52,7 +53,6 @@ object NmeaGenerator {
         val lonStr = String.format(Locale.US, "%03d%07.4f", lonDeg, lonMin)
         val lonDir = if (lon >= 0) "E" else "W"
 
-        val fixQuality = 1 // GPS fix
         
         // Approximate HDOP from accuracy (assuming 5m UERE)
         // Ensure HDOP is within realistic bounds (0.5 - 5.0 usually)
@@ -98,6 +98,59 @@ object NmeaGenerator {
         // $GPRMC,hhmmss.ss,A,llll.ll,a,yyyyy.yy,a,x.x,x.x,ddmmyy,,,a*hh
         val content = "GPRMC,$timeStr,A,$latStr,$latDir,$lonStr,$lonDir,$speedStr,$courseStr,$dateStr,,,"
 
+        return "\$$content*${calculateChecksum(content)}"
+    }
+
+    fun generateGSA(
+        fixType: Int = 3,
+        satelliteIds: List<Int> = emptyList(),
+        pdop: Double = 1.5,
+        hdop: Double = 0.8,
+        vdop: Double = 1.2
+    ): String {
+        val sb = StringBuilder("GPGSA,A,$fixType")
+        // Pad exactly 12 satellite slots (blank if unused)
+        for (i in 0 until 12) {
+            if (i < satelliteIds.size) {
+                sb.append(String.format(Locale.US, ",%02d", satelliteIds[i]))
+            } else {
+                sb.append(",")
+            }
+        }
+        sb.append(String.format(Locale.US, ",%.1f,%.1f,%.1f", pdop, hdop, vdop))
+        val content = sb.toString()
+        return "\$$content*${calculateChecksum(content)}"
+    }
+
+    fun generateVTG(
+        bearing: Double,
+        speedMPS: Double
+    ): String {
+        val speedKnots = speedMPS * 1.94384
+        val speedKph = speedMPS * 3.6
+        // $GPVTG,{course},T,,M,{knots},N,{kph},K*checksum
+        val content = String.format(Locale.US,
+            "GPVTG,%.1f,T,,M,%.1f,N,%.1f,K",
+            bearing, speedKnots, speedKph
+        )
+        return "\$$content*${calculateChecksum(content)}"
+    }
+
+    fun generateGST(
+        lat: Double,
+        lon: Double,
+        accuracy: Float
+    ): String {
+        val now = Date()
+        val timeStr = timeFormat.format(now)
+        // Pseudorange residual RMS derived from accuracy estimate
+        val rms = (accuracy / 2.0f).coerceAtLeast(0.5f)
+        // $GPGST,hhmmss.ss,{rms},{semi-major},{semi-minor},{orient},{latErr},{lonErr},{altErr}*cs
+        val content = String.format(Locale.US,
+            "GPGST,$timeStr,%.2f,%.2f,%.2f,%.1f,%.2f,%.2f,%.2f",
+            rms, rms * 1.2, rms * 0.8, 0.0,
+            accuracy / 3.0f, accuracy / 3.0f, accuracy / 2.0f
+        )
         return "\$$content*${calculateChecksum(content)}"
     }
 

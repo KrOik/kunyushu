@@ -34,6 +34,11 @@ import tv.kyshu.xposed.hooks.LocationServiceHook
 import java.util.Locale
 
 object LocationNMEAHook: BaseLocationHook() {
+
+    // GSV 多句替换缓存: 有序列表, 每次收到 GSV 第 1 句时全量生成并缓存
+    private val gsvSentenceCache = mutableListOf<String>()
+    private var gsvSequenceTotal: Int = 0
+    private var gsvSequenceSent: Int = 0
     operator fun invoke(classILocationManager: Class<*>) {
         hookGnssNmea(classILocationManager)
 
@@ -99,16 +104,27 @@ object LocationNMEAHook: BaseLocationHook() {
     override fun injectNMEA(nmea: String): String? {
         if (!FakeLoc.enable) return null
         
-        // Handle GSV injection
+        // Handle GSV injection with multi-sentence caching
         if (nmea.contains("GSV")) {
             val parts = nmea.split(",")
             if (parts.size >= 3) {
                 val msgNum = parts[2].toIntOrNull()
                 if (msgNum != null && msgNum > 1) {
+                    // Return cached sentence for multi-sentence GSV
+                    if (gsvSequenceSent < gsvSequenceTotal && gsvSentenceCache.isNotEmpty()) {
+                        val cached = gsvSentenceCache.getOrNull(gsvSequenceSent)
+                        gsvSequenceSent++
+                        if (gsvSequenceSent >= gsvSequenceTotal) {
+                            // Last sentence served, clear cache
+                            gsvSentenceCache.clear()
+                            gsvSequenceTotal = 0
+                        }
+                        return cached
+                    }
                     return null
                 }
             }
-            
+
             val constellation = when {
                 nmea.startsWith("\$GPGSV") -> GnssFlags.CONSTELLATION_GPS
                 nmea.startsWith("\$GLGSV") -> GnssFlags.CONSTELLATION_GLONASS
@@ -117,23 +133,42 @@ object LocationNMEAHook: BaseLocationHook() {
                 nmea.startsWith("\$GQGSV") -> GnssFlags.CONSTELLATION_QZSS
                 else -> return null
             }
-            
-            return runCatching { generateGSV(constellation) }.getOrNull()
+
+            // Generate complete GSV sequence, split into individual sentences, cache them
+            val fullSequence = runCatching { generateGSV(constellation) }.getOrNull() ?: return null
+            val sentences = fullSequence.split("\r\n")
+            gsvSentenceCache.clear()
+            gsvSentenceCache.addAll(sentences)
+            gsvSequenceTotal = sentences.size
+            gsvSequenceSent = 1 // 第 0 句即将返回
+
+            return sentences.getOrNull(0)
         }
 
-        // Generate realistic GGA/RMC using NmeaGenerator
+        // Generate realistic GGA with probabilistic fix quality
         if (nmea.startsWith("\$GPGGA") || nmea.startsWith("\$GNGGA")) {
-             val usedSatellitesCount = FakeLoc.minSatellites +
-                 kotlin.random.Random.nextInt(0, 8)
-             return runCatching {
-                 tv.kyshu.xposed.utils.NmeaGenerator.generateGGA(
-                     FakeLoc.latitude,
-                     FakeLoc.longitude,
-                     FakeLoc.altitude,
-                     usedSatellitesCount.coerceAtMost(35),
-                     FakeLoc.accuracy
-                 )
-             }.getOrNull()
+            // Parse original fix quality (7th field, 0-index=6)
+            val originalFixQuality = nmea.split(",").getOrNull(6)?.toIntOrNull() ?: 1
+            // Probabilistic fix quality: 70% → 1 (standard), 10% → 2 (differential), 20% → keep original
+            val rand = kotlin.random.Random.nextFloat()
+            val fixQuality = when {
+                rand < 0.70f -> 1
+                rand < 0.80f -> 2
+                else -> originalFixQuality
+            }
+
+            val usedSatellitesCount = FakeLoc.minSatellites +
+                kotlin.random.Random.nextInt(0, 8)
+            return runCatching {
+                tv.kyshu.xposed.utils.NmeaGenerator.generateGGA(
+                    FakeLoc.latitude,
+                    FakeLoc.longitude,
+                    FakeLoc.altitude,
+                    usedSatellitesCount.coerceAtMost(35),
+                    FakeLoc.accuracy,
+                    fixQuality
+                )
+            }.getOrNull()
         }
 
         if (nmea.startsWith("\$GPRMC") || nmea.startsWith("\$GNRMC")) {
@@ -145,6 +180,42 @@ object LocationNMEAHook: BaseLocationHook() {
                      FakeLoc.bearing
                  )
              }.getOrNull()
+        }
+
+        // Generate GSA: mode+fix type + PRN of used satellites + PDOP/HDOP/VDOP
+        if (nmea.startsWith("\$GPGSA") || nmea.startsWith("\$GNGSA")) {
+            val usedCount = FakeLoc.minSatellites + kotlin.random.Random.nextInt(0, 8)
+            val satelliteIds = (1..usedCount.coerceIn(4, 24)).map { kotlin.random.Random.nextInt(1, 33) }
+            return runCatching {
+                tv.kyshu.xposed.utils.NmeaGenerator.generateGSA(
+                    fixType = if (usedCount >= 4) 3 else if (usedCount >= 3) 2 else 1,
+                    satelliteIds = satelliteIds.take(12),
+                    pdop = 1.0 + kotlin.random.Random.nextDouble() * 2.0,
+                    hdop = 0.5 + kotlin.random.Random.nextDouble() * 1.5,
+                    vdop = 0.5 + kotlin.random.Random.nextDouble() * 2.0
+                )
+            }.getOrNull()
+        }
+
+        // Generate VTG: course + speed
+        if (nmea.startsWith("\$GPVTG") || nmea.startsWith("\$GNVTG")) {
+            return runCatching {
+                tv.kyshu.xposed.utils.NmeaGenerator.generateVTG(
+                    FakeLoc.bearing,
+                    FakeLoc.speed
+                )
+            }.getOrNull()
+        }
+
+        // Generate GST: pseudorange residual statistics
+        if (nmea.startsWith("\$GPGST") || nmea.startsWith("\$GNGST")) {
+            return runCatching {
+                tv.kyshu.xposed.utils.NmeaGenerator.generateGST(
+                    FakeLoc.latitude,
+                    FakeLoc.longitude,
+                    FakeLoc.accuracy
+                )
+            }.getOrNull()
         }
 
         return super.injectNMEA(nmea)
@@ -176,7 +247,7 @@ object LocationNMEAHook: BaseLocationHook() {
             GnssFlags.CONSTELLATION_GPS -> "GP"
             GnssFlags.CONSTELLATION_GLONASS -> "GL"
             GnssFlags.CONSTELLATION_GALILEO -> "GA"
-            GnssFlags.CONSTELLATION_BEIDOU -> "GB"
+            GnssFlags.CONSTELLATION_BEIDOU -> "BD"
             GnssFlags.CONSTELLATION_QZSS -> "GQ"
             else -> "GP"
         }
