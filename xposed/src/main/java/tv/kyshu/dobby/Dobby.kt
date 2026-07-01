@@ -1,6 +1,10 @@
 package tv.kyshu.dobby
 
 object Dobby {
+    init {
+        System.loadLibrary("portal")
+    }
+
     external fun setStatus(status: Boolean)
     external fun checkCrashMeltdown(): Int
     external fun recordCrashRecovery()

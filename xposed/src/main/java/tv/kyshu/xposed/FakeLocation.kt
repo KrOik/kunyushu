@@ -184,7 +184,11 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
             Logger.info("[FakeLocation] Kit integrity check PASSED")
         } else {
             Logger.warn("[FakeLocation] Kit integrity check FAILED — entering safe mode")
-            tv.kyshu.dobby.Dobby.writeTerminalDespairLock()
+            kotlin.runCatching {
+                tv.kyshu.dobby.Dobby.writeTerminalDespairLock()
+            }.onFailure { e ->
+                Logger.error("[FakeLocation] Failed to write terminal despair lock", e)
+            }
         }
     }
 
