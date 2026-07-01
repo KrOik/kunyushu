@@ -76,6 +76,7 @@ object MockCommandContract {
         const val ENABLE_LOG = "enable_log"
         const val ENABLE_DEBUG_LOG = "enable_debug_log"
         const val HIDE_MOCK = "hide_mock"
+        const val DISABLE_NETWORK_LOCATION = "disable_network_location"
         const val TELEMETRY_JSONL = "telemetry_jsonl"
     }
 
@@ -150,8 +151,11 @@ object MockCommandContract {
 
             if (rely.containsKey(Keys.MIN_SPEED)) FakeLoc.minSpeed = double(rely, Keys.MIN_SPEED)
             if (rely.containsKey(Keys.MAX_SPEED)) FakeLoc.maxSpeed = double(rely, Keys.MAX_SPEED)
-            if (rely.containsKey(Keys.ENABLE_LOG)) FakeLoc.enableLog = boolean(rely, Keys.ENABLE_LOG)
             if (rely.containsKey(Keys.ENABLE_DEBUG_LOG)) FakeLoc.enableDebugLog = boolean(rely, Keys.ENABLE_DEBUG_LOG)
+            if (rely.containsKey(Keys.HOOK_WIFI)) FakeLoc.wifiData.hookWifi = boolean(rely, Keys.HOOK_WIFI)
+            if (rely.containsKey(Keys.SPEED_AMPLITUDE)) FakeLoc.speedAmplitude = double(rely, Keys.SPEED_AMPLITUDE)
+            if (rely.containsKey(Keys.HIDE_MOCK)) FakeLoc.locationData.hideMock = boolean(rely, Keys.HIDE_MOCK)
+            if (rely.containsKey(Keys.DISABLE_NETWORK_LOCATION)) FakeLoc.disableNetworkLocation = boolean(rely, Keys.DISABLE_NETWORK_LOCATION)
 
             if (!rely.containsKey(Keys.DISABLE_REGISTER_LOCATION_LISTENER) && rely.containsKey(LegacyKeys.DISABLE_REGISTER_MISSPELLED)) {
                 FakeLoc.disableRegisterLocationListener = boolean(rely, LegacyKeys.DISABLE_REGISTER_MISSPELLED)
@@ -209,6 +213,7 @@ object MockCommandContract {
             rely.putBoolean(Keys.ENABLE_LOG, enableLog)
             rely.putBoolean(Keys.ENABLE_DEBUG_LOG, enableDebugLog)
             rely.putBoolean(Keys.HIDE_MOCK, hideMock)
+            rely.putBoolean(Keys.DISABLE_NETWORK_LOCATION, disableNetworkLocation)
         }
     }
 }

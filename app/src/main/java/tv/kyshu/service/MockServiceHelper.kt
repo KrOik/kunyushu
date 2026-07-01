@@ -19,6 +19,26 @@ import tv.kyshu.ext.enableRequestGeofence
 import tv.kyshu.ext.minSatelliteCount
 import tv.kyshu.ext.needDowngradeToCdma
 import tv.kyshu.ext.speed
+import tv.kyshu.ext.hookWifi
+import tv.kyshu.ext.mockSSID
+import tv.kyshu.ext.mockBSSID
+import tv.kyshu.ext.mockMac
+import tv.kyshu.ext.mockIp
+import tv.kyshu.ext.mockWifiScanCount
+import tv.kyshu.ext.enableStepCountMock
+import tv.kyshu.ext.stepCount
+import tv.kyshu.ext.enableShakeMock
+import tv.kyshu.ext.keepWalkingWaveform
+import tv.kyshu.ext.dozeSensorIntervalMs
+import tv.kyshu.ext.gaitFreq
+import tv.kyshu.ext.gaitAmpScale
+import tv.kyshu.ext.hideBaseStation
+import tv.kyshu.ext.loopBroadcastLocation
+import tv.kyshu.ext.hideMock
+import tv.kyshu.ext.disableNetworkLocation
+import tv.kyshu.ext.speedAmplitude
+import tv.kyshu.ext.minSpeed
+import tv.kyshu.ext.maxSpeed
 import tv.kyshu.xposed.utils.FakeLoc
 import java.io.File
 
@@ -315,6 +335,26 @@ object MockServiceHelper {
         FakeLoc.enableNMEA = context.enableNMEA
         FakeLoc.disableRequestGeofence = !context.enableRequestGeofence
         FakeLoc.disableGetFromLocation = !context.enableGetFromLocation
+        FakeLoc.wifiData.hookWifi = context.hookWifi
+        FakeLoc.wifiData.mockSSID = context.mockSSID
+        FakeLoc.wifiData.mockBSSID = context.mockBSSID
+        FakeLoc.wifiData.mockMac = context.mockMac
+        FakeLoc.wifiData.mockIp = context.mockIp
+        FakeLoc.wifiData.mockWifiScanCount = context.mockWifiScanCount
+        FakeLoc.sensorData.enableStepCountMock = context.enableStepCountMock
+        FakeLoc.sensorData.stepCount = context.stepCount
+        FakeLoc.sensorData.enableShakeMock = context.enableShakeMock
+        FakeLoc.sensorData.keepWalkingWaveform = context.keepWalkingWaveform
+        FakeLoc.sensorData.dozeSensorIntervalMs = context.dozeSensorIntervalMs
+        FakeLoc.gaitData.gaitFreq = context.gaitFreq
+        FakeLoc.gaitData.gaitAmpScale = context.gaitAmpScale
+        FakeLoc.hideBaseStation = context.hideBaseStation
+        FakeLoc.loopBroadcastLocation = context.loopBroadcastLocation
+        FakeLoc.locationData.hideMock = context.hideMock
+        FakeLoc.disableNetworkLocation = context.disableNetworkLocation
+        FakeLoc.speedAmplitude = context.speedAmplitude
+        FakeLoc.minSpeed = context.minSpeed
+        FakeLoc.maxSpeed = context.maxSpeed
 
         val rely = Bundle()
         rely.putString("command_id", "put_config")
@@ -331,6 +371,26 @@ object MockServiceHelper {
         rely.putBoolean("enable_nmea", FakeLoc.enableNMEA)
         rely.putBoolean("disable_request_geofence", FakeLoc.disableRequestGeofence)
         rely.putBoolean("disable_get_from_location", FakeLoc.disableGetFromLocation)
+        rely.putBoolean("hook_wifi", FakeLoc.wifiData.hookWifi)
+        rely.putString("mock_ssid", FakeLoc.wifiData.mockSSID)
+        rely.putString("mock_bssid", FakeLoc.wifiData.mockBSSID)
+        rely.putString("mock_mac", FakeLoc.wifiData.mockMac)
+        rely.putString("mock_ip", FakeLoc.wifiData.mockIp)
+        rely.putInt("mock_wifi_scan_count", FakeLoc.wifiData.mockWifiScanCount)
+        rely.putBoolean("enable_step_count_mock", FakeLoc.sensorData.enableStepCountMock)
+        rely.putInt("step_count", FakeLoc.sensorData.stepCount)
+        rely.putBoolean("enable_shake_mock", FakeLoc.sensorData.enableShakeMock)
+        rely.putBoolean("keep_walking_waveform", FakeLoc.sensorData.keepWalkingWaveform)
+        rely.putLong("doze_sensor_interval_ms", FakeLoc.sensorData.dozeSensorIntervalMs)
+        rely.putFloat("gait_freq", FakeLoc.gaitData.gaitFreq)
+        rely.putFloat("gait_amp_scale", FakeLoc.gaitData.gaitAmpScale)
+        rely.putBoolean("hide_base_station", FakeLoc.hideBaseStation)
+        rely.putBoolean("loop_broadcast_location", FakeLoc.loopBroadcastLocation)
+        rely.putBoolean("hide_mock", FakeLoc.locationData.hideMock)
+        rely.putBoolean("disable_network_location", FakeLoc.disableNetworkLocation)
+        rely.putDouble("speed_amplitude", FakeLoc.speedAmplitude)
+        rely.putDouble("min_speed", FakeLoc.minSpeed)
+        rely.putDouble("max_speed", FakeLoc.maxSpeed)
 
         return locationManager.sendExtraCommand(PROVIDER_NAME, randomKey, rely)
     }
@@ -361,7 +421,7 @@ object MockServiceHelper {
 
         val soDir = File("/data/local/portal-lib")
         if (!soDir.exists()) {
-            ShellUtils.executeCommand("mkdir ${soDir.absolutePath}")
+            ShellUtils.executeCommand("mkdir -m 755 ${soDir.absolutePath}")
         }
         val soFile = File(soDir, "libportal.so")
         runCatching {
@@ -376,11 +436,16 @@ object MockServiceHelper {
                 }
             }
             if (soFile.exists()) {
-                val originalHash = ShellUtils.executeCommandToBytes("head -c 4096 ${soFile.absolutePath}")
-                val newHash = ShellUtils.executeCommandToBytes("head -c 4096 ${tmpSoFile.absolutePath}")
-                if (originalHash.contentEquals(newHash)) {
-                    ShellUtils.executeCommand("rm ${soFile.absolutePath}")
-                    ShellUtils.executeCommand("mv ${tmpSoFile.absolutePath} ${soFile.absolutePath}")
+                val newHash = ShellUtils.executeCommand("sha256sum ${tmpSoFile.absolutePath}").substringBefore(' ')
+                val oldHash = ShellUtils.executeCommand("sha256sum ${soFile.absolutePath}").substringBefore(' ')
+                if (newHash == oldHash || oldHash.isBlank()) {
+                    if (newHash.isNotEmpty()) {
+                        ShellUtils.executeCommand("rm ${soFile.absolutePath}")
+                        ShellUtils.executeCommand("mv ${tmpSoFile.absolutePath} ${soFile.absolutePath}")
+                    }
+                } else {
+                    Log.w("MockServiceHelper", "SO hash mismatch, new: $newHash, old: $oldHash")
+                    ShellUtils.executeCommand("rm ${tmpSoFile.absolutePath}")
                 }
             } else if (tmpSoFile.exists()) {
                 ShellUtils.executeCommand("mv ${tmpSoFile.absolutePath} ${soFile.absolutePath}")
@@ -389,7 +454,14 @@ object MockServiceHelper {
             Log.w("MockServiceHelper", "Failed to copy portal library", it)
         }
 
-        ShellUtils.executeCommand("chmod 777 ${soFile.absolutePath}")
+        // TOCTOU guard: verify canonical path is within expected directory
+        val resolvedPath = soFile.canonicalPath
+        val resolvedDir = soDir.canonicalPath
+        if (!resolvedPath.startsWith(resolvedDir)) {
+            Log.e("MockServiceHelper", "Symlink attack detected: $resolvedPath not under $resolvedDir")
+            return false
+        }
+        ShellUtils.executeCommand("chmod 755 ${soFile.absolutePath}")
 
         val result = loadLibrary(context.getSystemService(Context.LOCATION_SERVICE) as LocationManager, soFile.absolutePath)
 

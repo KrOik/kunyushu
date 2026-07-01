@@ -20,7 +20,11 @@
 #include "safety_gate.h"
 
 // ---- Code range tracking ----
-static std::vector<CodeRange> g_our_code_ranges;
+// Async-signal-safe: fixed-size C array, no STL containers or algorithms.
+// Typical count is 1-2 ranges (libportal), so linear scan is fine.
+static constexpr int kMaxCodeRanges = 8;
+static CodeRange g_our_code_ranges[kMaxCodeRanges];
+static int g_code_range_count = 0;
 static volatile sig_atomic_t g_ranges_initialized = 0;
 
 void init_our_code_ranges() {
@@ -38,25 +42,24 @@ void init_our_code_ranges() {
                     if (seg_end > end) end = seg_end;
                 }
             }
-            if (end > info->dlpi_addr) {
-                g_our_code_ranges.push_back({info->dlpi_addr, end});
+            if (end > info->dlpi_addr && g_code_range_count < kMaxCodeRanges) {
+                g_our_code_ranges[g_code_range_count++] = {info->dlpi_addr, end};
             }
         }
         return 0;
     }, nullptr);
-    std::sort(g_our_code_ranges.begin(), g_our_code_ranges.end(),
-              [](const CodeRange& a, const CodeRange& b) {
-                  return a.start < b.start;
-              });
     g_ranges_initialized = 1;
 }
 
+// Async-signal-safe: linear scan, no STL, no heap allocations.
 bool is_our_address(uintptr_t pc) {
     if (!g_ranges_initialized) return false;
-    auto it = std::lower_bound(g_our_code_ranges.begin(),
-        g_our_code_ranges.end(), pc,
-        [](const CodeRange& r, uintptr_t v) { return r.end <= v; });
-    return it != g_our_code_ranges.end() && pc >= it->start && pc < it->end;
+    for (int i = 0; i < g_code_range_count; i++) {
+        if (pc >= g_our_code_ranges[i].start && pc < g_our_code_ranges[i].end) {
+            return true;
+        }
+    }
+    return false;
 }
 
 // ---- Per-step recovery state ----
@@ -202,6 +205,6 @@ bool install_crash_handlers() {
     }
 
     LOGD("Crash recovery handlers installed, %zu code ranges",
-         g_our_code_ranges.size());
+         g_code_range_count);
     return true;
 }

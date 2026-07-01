@@ -50,7 +50,9 @@ ElfImg::ElfImg(std::string_view base_name) : elf(base_name) {
     auto sectionOffset = reinterpret_cast<uintptr_t>(sectionHeader);
 
     char *section = offsetOf<char *>(header, sectionHeader[header->e_shstrndx].sh_offset);
-    for (int i = 0; i < header->e_shnum; i++, sectionOffset += header->e_shentsize) {
+    int shnum = header->e_shnum;
+    if (shnum < 0 || shnum > 128) shnum = 128;
+    for (int i = 0; i < shnum; i++, sectionOffset += header->e_shentsize) {
         auto *section_h = (ElfW(Shdr) *) sectionOffset;
         char *sectionName = section_h->sh_name + section;
 
@@ -226,7 +228,7 @@ void ElfImg::initModuleBase() {
             if (line.find(elf) != std::string::npos) {
                 std::string baseAddress = line.substr(0, line.find('-'));
                 std::string elfPath = line.substr(line.find('/'));
-                base = reinterpret_cast<void *>(std::stol(baseAddress, nullptr, 16));
+                base = reinterpret_cast<void *>(strtoull(baseAddress.c_str(), nullptr, 16));
                 elf = elfPath;
                 break;
             }

@@ -60,7 +60,8 @@ dependencies {
     //noinspection GradleDynamicVersion
     //implementation("org.lsposed.lsplant:lsplant-standalone:+")
     //noinspection UseTomlInstead
-    implementation("io.github.vvb2060.ndk:dobby:1.2")
+    // Dobby: update with care — verify ABI compatibility across all targets
+    implementation("io.github.vvb2060.ndk:dobby:1.2")  // Tracked via ndk/dobby; semver stable
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)

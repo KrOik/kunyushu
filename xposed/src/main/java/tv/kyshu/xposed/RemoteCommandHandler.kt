@@ -179,6 +179,12 @@ object RemoteCommandHandler {
         rely: Bundle,
         replayGuard: RemoteCommandSecurity.ReplayGuard,
     ): Boolean {
+        // Bundle size cap: prevent OOM DoS on large payloads
+        val bundleSize = rely.size()
+        if (bundleSize > 64_000) {
+            Logger.warn("[RemoteCommandHandler] oversized bundle: ${bundleSize} bytes, rejecting")
+            return false
+        }
         if (!replayGuard.accept(sessionKey, rely)) {
             Logger.warn("[RemoteCommandHandler] rejected unauthenticated or replayed command: $commandId")
             return false

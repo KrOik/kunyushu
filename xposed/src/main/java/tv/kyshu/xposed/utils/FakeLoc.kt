@@ -456,19 +456,13 @@ object FakeLoc {
         isDeviceIdleMode = map.getVal("isDeviceIdleMode", isDeviceIdleMode)
 
         disableGetCurrentLocation = map.getVal("disableGetCurrentLocation", disableGetCurrentLocation)
-        disableRegisterLocationListener = when {
-            map.containsKey("disableRegisterLocationListener") ->
-                map.getVal("disableRegisterLocationListener", disableRegisterLocationListener)
-            map.containsKey("disableRegitserLocationListener") ->
-                map.getVal("disableRegitserLocationListener", disableRegisterLocationListener)
-            else -> disableRegisterLocationListener
-        }
+        disableRegisterLocationListener = map.getVal("disableRegisterLocationListener", disableRegisterLocationListener)
         disableFusedLocation = map.getVal("disableFusedProvider", disableFusedLocation)
         disableRequestGeofence = !map.getVal("enableRequestGeofence", !disableRequestGeofence)
         disableGetFromLocation = !map.getVal("enableGetFromLocation", !disableGetFromLocation)
 
         enableAGPS = map.getVal("enableAGPS", enableAGPS)
-        loopBroadcastLocation = map.getVal("loopBroadcastlocation", loopBroadcastLocation)
+        loopBroadcastLocation = map.getVal("loopBroadcastLocation", loopBroadcastLocation)
         needDowngradeToCdma = map.getVal("needDowngradeToCdma", needDowngradeToCdma)
         hideBaseStation = map.getVal("hideBaseStation", hideBaseStation)
 

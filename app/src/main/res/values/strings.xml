@@ -72,4 +72,56 @@
     <string name="zero">0 G</string>
     <string name="in_view_left_item">可用卫星数量</string>
     <string name="in_use_satellite">在用卫星数量</string>
+
+    <!-- WiFi模拟参数 -->
+    <string name="section_wifi">WiFi模拟参数</string>
+    <string name="hook_wifi">WiFi劫持</string>
+    <string name="hook_wifi_desc">是否拦截系统WiFi扫描</string>
+    <string name="mock_ssid">伪造SSID</string>
+    <string name="mock_ssid_desc">伪造WiFi热点的名称</string>
+    <string name="mock_bssid">伪造BSSID</string>
+    <string name="mock_bssid_desc">伪造WiFi热点的MAC地址</string>
+    <string name="mock_mac">伪造MAC地址</string>
+    <string name="mock_mac_desc">伪造本机MAC地址</string>
+    <string name="mock_ip">伪造IP地址</string>
+    <string name="mock_ip_desc">伪造本机IP地址</string>
+    <string name="mock_wifi_scan_count">伪造WiFi扫描数量</string>
+    <string name="mock_wifi_scan_count_desc">伪造的WiFi扫描结果个数</string>
+
+    <!-- 传感器高级 -->
+    <string name="section_sensor">传感器模拟</string>
+    <string name="step_count_mock">计步模拟</string>
+    <string name="step_count_mock_desc">启用步数模拟（需开启传感器劫持）</string>
+    <string name="step_count">目标步数</string>
+    <string name="step_count_desc">模拟步数的目标值</string>
+    <string name="shake_mock">摇一摇模拟</string>
+    <string name="shake_mock_desc">启用摇一摇传感器模拟</string>
+    <string name="keep_walking_waveform">持续步行波形</string>
+    <string name="keep_walking_waveform_desc">模拟持续步行产生的加速度波形</string>
+    <string name="doze_sensor_interval_ms">Doze传感器间隔</string>
+    <string name="doze_sensor_interval_ms_desc">Doze模式下传感器采样间隔(ms)</string>
+
+    <!-- 步态参数 -->
+    <string name="section_gait">步态参数</string>
+    <string name="gait_freq">步态频率</string>
+    <string name="gait_freq_desc">步态基础频率(Hz)</string>
+    <string name="gait_amp_scale">振幅缩放</string>
+    <string name="gait_amp_scale_desc">步态振幅缩放倍数</string>
+
+    <!-- 其他 -->
+    <string name="section_other">其他</string>
+    <string name="hide_base_station">屏蔽基站信息</string>
+    <string name="hide_base_station_desc">阻止应用获取真实基站数据</string>
+    <string name="loop_broadcast_location">反定位复原加强</string>
+    <string name="loop_broadcast_location_desc">关闭模拟后持续注入上次位置（部分应用需重启才能恢复）</string>
+    <string name="hide_mock">隐藏模拟标记</string>
+    <string name="hide_mock_desc">在返回的位置数据中移除模拟标记</string>
+    <string name="disable_network_location">禁用网络定位</string>
+    <string name="disable_network_location_desc">禁用基于网络的位置提供者</string>
+    <string name="speed_amplitude">速度振幅</string>
+    <string name="speed_amplitude_desc">模拟速度的波动幅度</string>
+    <string name="min_speed">最小速度</string>
+    <string name="min_speed_desc">模拟移动的最小速度(m/s)</string>
+    <string name="max_speed">最大速度</string>
+    <string name="max_speed_desc">模拟移动的最大速度(m/s)</string>
 </resources>

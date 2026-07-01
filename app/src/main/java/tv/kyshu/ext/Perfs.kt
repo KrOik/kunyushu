@@ -221,3 +221,151 @@ var Context.disableWifiScan: Boolean
     }
 
 
+
+// ==================== WiFi模拟参数 ====================
+
+var Context.hookWifi: Boolean
+    get() = sharedPrefs.getBoolean("hookWifi", FakeLoc.wifiData.hookWifi)
+    set(value) = sharedPrefs.edit {
+        putBoolean("hookWifi", value)
+        FakeLoc.wifiData.hookWifi = value
+    }
+
+var Context.mockSSID: String
+    get() = sharedPrefs.getString("mockSSID", FakeLoc.wifiData.mockSSID) ?: FakeLoc.wifiData.mockSSID
+    set(value) = sharedPrefs.edit {
+        putString("mockSSID", value)
+        FakeLoc.wifiData.mockSSID = value
+    }
+
+var Context.mockBSSID: String
+    get() = sharedPrefs.getString("mockBSSID", FakeLoc.wifiData.mockBSSID) ?: FakeLoc.wifiData.mockBSSID
+    set(value) = sharedPrefs.edit {
+        putString("mockBSSID", value)
+        FakeLoc.wifiData.mockBSSID = value
+    }
+
+var Context.mockMac: String
+    get() = sharedPrefs.getString("mockMac", FakeLoc.wifiData.mockMac) ?: FakeLoc.wifiData.mockMac
+    set(value) = sharedPrefs.edit {
+        putString("mockMac", value)
+        FakeLoc.wifiData.mockMac = value
+    }
+
+var Context.mockIp: String
+    get() = sharedPrefs.getString("mockIp", FakeLoc.wifiData.mockIp) ?: FakeLoc.wifiData.mockIp
+    set(value) = sharedPrefs.edit {
+        putString("mockIp", value)
+        FakeLoc.wifiData.mockIp = value
+    }
+
+var Context.mockWifiScanCount: Int
+    get() = sharedPrefs.getInt("mockWifiScanCount", FakeLoc.wifiData.mockWifiScanCount)
+    set(value) = sharedPrefs.edit {
+        putInt("mockWifiScanCount", value)
+        FakeLoc.wifiData.mockWifiScanCount = value
+    }
+
+// ==================== 传感器模拟 ====================
+
+var Context.enableStepCountMock: Boolean
+    get() = sharedPrefs.getBoolean("enableStepCountMock", FakeLoc.sensorData.enableStepCountMock)
+    set(value) = sharedPrefs.edit {
+        putBoolean("enableStepCountMock", value)
+        FakeLoc.sensorData.enableStepCountMock = value
+    }
+
+var Context.stepCount: Int
+    get() = sharedPrefs.getInt("stepCount", FakeLoc.sensorData.stepCount)
+    set(value) = sharedPrefs.edit {
+        putInt("stepCount", value)
+        FakeLoc.sensorData.stepCount = value
+    }
+
+var Context.enableShakeMock: Boolean
+    get() = sharedPrefs.getBoolean("enableShakeMock", FakeLoc.sensorData.enableShakeMock)
+    set(value) = sharedPrefs.edit {
+        putBoolean("enableShakeMock", value)
+        FakeLoc.sensorData.enableShakeMock = value
+    }
+
+var Context.keepWalkingWaveform: Boolean
+    get() = sharedPrefs.getBoolean("keepWalkingWaveform", FakeLoc.sensorData.keepWalkingWaveform)
+    set(value) = sharedPrefs.edit {
+        putBoolean("keepWalkingWaveform", value)
+        FakeLoc.sensorData.keepWalkingWaveform = value
+    }
+
+var Context.dozeSensorIntervalMs: Long
+    get() = sharedPrefs.getLong("dozeSensorIntervalMs", FakeLoc.sensorData.dozeSensorIntervalMs)
+    set(value) = sharedPrefs.edit {
+        putLong("dozeSensorIntervalMs", value)
+        FakeLoc.sensorData.dozeSensorIntervalMs = value
+    }
+
+// ==================== 步态参数 ====================
+
+var Context.gaitFreq: Float
+    get() = sharedPrefs.getFloat("gaitFreq", FakeLoc.gaitData.gaitFreq)
+    set(value) = sharedPrefs.edit {
+        putFloat("gaitFreq", value)
+        FakeLoc.gaitData.gaitFreq = value
+    }
+
+var Context.gaitAmpScale: Float
+    get() = sharedPrefs.getFloat("gaitAmpScale", FakeLoc.gaitData.gaitAmpScale)
+    set(value) = sharedPrefs.edit {
+        putFloat("gaitAmpScale", value)
+        FakeLoc.gaitData.gaitAmpScale = value
+    }
+
+// ==================== 其他 ====================
+
+var Context.hideBaseStation: Boolean
+    get() = sharedPrefs.getBoolean("hideBaseStation", FakeLoc.hideBaseStation)
+    set(value) = sharedPrefs.edit {
+        putBoolean("hideBaseStation", value)
+        FakeLoc.hideBaseStation = value
+    }
+
+var Context.loopBroadcastLocation: Boolean
+    get() = sharedPrefs.getBoolean("loopBroadcastLocation", FakeLoc.loopBroadcastLocation)
+    set(value) = sharedPrefs.edit {
+        putBoolean("loopBroadcastLocation", value)
+        FakeLoc.loopBroadcastLocation = value
+    }
+
+var Context.hideMock: Boolean
+    get() = sharedPrefs.getBoolean("hideMock", FakeLoc.locationData.hideMock)
+    set(value) = sharedPrefs.edit {
+        putBoolean("hideMock", value)
+        FakeLoc.locationData.hideMock = value
+    }
+
+var Context.disableNetworkLocation: Boolean
+    get() = sharedPrefs.getBoolean("disableNetworkLocation", FakeLoc.disableNetworkLocation)
+    set(value) = sharedPrefs.edit {
+        putBoolean("disableNetworkLocation", value)
+        FakeLoc.disableNetworkLocation = value
+    }
+
+var Context.speedAmplitude: Double
+    get() = sharedPrefs.getFloat("speedAmplitude", FakeLoc.speedAmplitude.toFloat()).toDouble()
+    set(value) = sharedPrefs.edit {
+        putFloat("speedAmplitude", value.toFloat())
+        FakeLoc.speedAmplitude = value
+    }
+
+var Context.minSpeed: Double
+    get() = sharedPrefs.getFloat("minSpeed", FakeLoc.minSpeed.toFloat()).toDouble()
+    set(value) = sharedPrefs.edit {
+        putFloat("minSpeed", value.toFloat())
+        FakeLoc.minSpeed = value
+    }
+
+var Context.maxSpeed: Double
+    get() = sharedPrefs.getFloat("maxSpeed", FakeLoc.maxSpeed.toFloat()).toDouble()
+    set(value) = sharedPrefs.edit {
+        putFloat("maxSpeed", value.toFloat())
+        FakeLoc.maxSpeed = value
+    }

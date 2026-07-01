@@ -31,10 +31,29 @@ import tv.kyshu.ext.needDowngradeToCdma
 import tv.kyshu.ext.needOpenSELinux
 import tv.kyshu.ext.reportDuration
 import tv.kyshu.ext.speed
+import tv.kyshu.ext.hookWifi
+import tv.kyshu.ext.mockSSID
+import tv.kyshu.ext.mockBSSID
+import tv.kyshu.ext.mockMac
+import tv.kyshu.ext.mockIp
+import tv.kyshu.ext.mockWifiScanCount
+import tv.kyshu.ext.enableStepCountMock
+import tv.kyshu.ext.stepCount
+import tv.kyshu.ext.enableShakeMock
+import tv.kyshu.ext.keepWalkingWaveform
+import tv.kyshu.ext.dozeSensorIntervalMs
+import tv.kyshu.ext.gaitFreq
+import tv.kyshu.ext.gaitAmpScale
+import tv.kyshu.ext.hideBaseStation
+import tv.kyshu.ext.loopBroadcastLocation
+import tv.kyshu.ext.hideMock
+import tv.kyshu.ext.disableNetworkLocation
+import tv.kyshu.ext.speedAmplitude
+import tv.kyshu.ext.minSpeed
+import tv.kyshu.ext.maxSpeed
 import tv.kyshu.service.MockServiceHelper
 import tv.kyshu.ui.viewmodel.MockServiceViewModel
 import tv.kyshu.ui.viewmodel.SettingsViewModel
-import kotlin.getValue
 
 class SettingsFragment : Fragment() {
     private var _binding: FragmentSettingsBinding? = null
@@ -243,6 +262,165 @@ class SettingsFragment : Fragment() {
                         }
                     } ?: showToast("定位服务未就绪")
                 }
+            }
+        }
+
+        // ===================== WiFi模拟参数绑定 =====================
+
+        binding.hookWifiSwitch.isChecked = context.hookWifi
+        binding.hookWifiSwitch.setOnCheckedChangeListener { _, isChecked ->
+            context.hookWifi = isChecked
+            showToast(if (isChecked) "已开启WiFi劫持" else "已关闭WiFi劫持")
+            updateRemoteConfig()
+        }
+
+        binding.mockSsidValue.text = context.mockSSID
+        binding.mockSsidLayout.setOnClickListener {
+            showDialog("伪造SSID", binding.mockSsidValue.text.toString()) {
+                if (it.isBlank()) { showToast("SSID不能为空"); return@showDialog }
+                context.mockSSID = it
+                binding.mockSsidValue.text = it
+                updateRemoteConfig()
+            }
+        }
+
+        binding.mockBssidValue.text = context.mockBSSID
+        binding.mockBssidLayout.setOnClickListener {
+            showDialog("伪造BSSID", binding.mockBssidValue.text.toString()) {
+                if (it.isBlank()) { showToast("BSSID不能为空"); return@showDialog }
+                context.mockBSSID = it
+                binding.mockBssidValue.text = it
+                updateRemoteConfig()
+            }
+        }
+
+        binding.mockMacValue.text = context.mockMac
+        binding.mockMacLayout.setOnClickListener {
+            showDialog("伪造MAC地址", binding.mockMacValue.text.toString()) {
+                if (it.isBlank()) { showToast("MAC不能为空"); return@showDialog }
+                context.mockMac = it
+                binding.mockMacValue.text = it
+                updateRemoteConfig()
+            }
+        }
+
+        binding.mockIpValue.text = context.mockIp
+        binding.mockIpLayout.setOnClickListener {
+            showDialog("伪造IP地址", binding.mockIpValue.text.toString()) {
+                if (it.isBlank()) { showToast("IP不能为空"); return@showDialog }
+                context.mockIp = it
+                binding.mockIpValue.text = it
+                updateRemoteConfig()
+            }
+        }
+
+        binding.mockWifiScanCountValue.text = context.mockWifiScanCount.toString()
+        binding.mockWifiScanCountLayout.setOnClickListener {
+            showDialog("伪造WiFi扫描数量", binding.mockWifiScanCountValue.text.toString()) {
+                val v = it.toIntOrNull()
+                if (v == null || v < 1) { showToast("数量必须 >= 1"); return@showDialog }
+                context.mockWifiScanCount = v
+                binding.mockWifiScanCountValue.text = v.toString()
+                updateRemoteConfig()
+            }
+        }
+
+        // ===================== 传感器模拟绑定 =====================
+
+        binding.stepCountMockSwitch.isChecked = context.enableStepCountMock
+        binding.stepCountMockSwitch.setOnCheckedChangeListener { _, isChecked ->
+            context.enableStepCountMock = isChecked
+            showToast(if (isChecked) "已开启计步模拟" else "已关闭计步模拟")
+            updateRemoteConfig()
+        }
+
+        binding.stepCountValue.text = context.stepCount.toString()
+        binding.stepCountLayout.setOnClickListener {
+            showDialog("目标步数", binding.stepCountValue.text.toString()) {
+                val v = it.toIntOrNull()
+                if (v == null || v < 0) { showToast("步数必须 >= 0"); return@showDialog }
+                context.stepCount = v
+                binding.stepCountValue.text = v.toString()
+                updateRemoteConfig()
+            }
+        }
+
+        binding.shakeMockSwitch.isChecked = context.enableShakeMock
+        binding.shakeMockSwitch.setOnCheckedChangeListener { _, isChecked ->
+            context.enableShakeMock = isChecked
+            showToast(if (isChecked) "已开启摇一摇模拟" else "已关闭摇一摇模拟")
+            updateRemoteConfig()
+        }
+
+        binding.keepWalkingWaveformSwitch.isChecked = context.keepWalkingWaveform
+        binding.keepWalkingWaveformSwitch.setOnCheckedChangeListener { _, isChecked ->
+            context.keepWalkingWaveform = isChecked
+            showToast(if (isChecked) "已开启持续步行波形" else "已关闭持续步行波形")
+            updateRemoteConfig()
+        }
+
+        // ===================== 步态参数绑定 =====================
+
+        binding.gaitFreqValue.text = "%.1f".format(context.gaitFreq)
+        binding.gaitFreqLayout.setOnClickListener {
+            showDialog("步态频率(Hz)", binding.gaitFreqValue.text.toString()) {
+                val v = it.toFloatOrNull()
+                if (v == null || v <= 0f) { showToast("频率必须 > 0"); return@showDialog }
+                context.gaitFreq = v
+                binding.gaitFreqValue.text = "%.1f".format(v)
+                updateRemoteConfig()
+            }
+        }
+
+        binding.gaitAmpScaleValue.text = "%.1f".format(context.gaitAmpScale)
+        binding.gaitAmpScaleLayout.setOnClickListener {
+            showDialog("振幅缩放", binding.gaitAmpScaleValue.text.toString()) {
+                val v = it.toFloatOrNull()
+                if (v == null || v <= 0f) { showToast("缩放必须 > 0"); return@showDialog }
+                context.gaitAmpScale = v
+                binding.gaitAmpScaleValue.text = "%.1f".format(v)
+                updateRemoteConfig()
+            }
+        }
+
+        // ===================== 其他绑定 =====================
+
+        binding.hideBaseStationSwitch.isChecked = context.hideBaseStation
+        binding.hideBaseStationSwitch.setOnCheckedChangeListener { _, isChecked ->
+            context.hideBaseStation = isChecked
+            showToast(if (isChecked) "已屏蔽基站信息" else "已允许基站信息")
+            updateRemoteConfig()
+        }
+
+        binding.loopBroadcastLocationSwitch.isChecked = context.loopBroadcastLocation
+        binding.loopBroadcastLocationSwitch.setOnCheckedChangeListener { _, isChecked ->
+            context.loopBroadcastLocation = isChecked
+            showToast(if (isChecked) "已开启反定位复原" else "已关闭反定位复原")
+            updateRemoteConfig()
+        }
+
+        binding.hideMockSwitch.isChecked = context.hideMock
+        binding.hideMockSwitch.setOnCheckedChangeListener { _, isChecked ->
+            context.hideMock = isChecked
+            showToast(if (isChecked) "已隐藏模拟标记" else "已显示模拟标记")
+            updateRemoteConfig()
+        }
+
+        binding.disableNetworkLocationSwitch.isChecked = context.disableNetworkLocation
+        binding.disableNetworkLocationSwitch.setOnCheckedChangeListener { _, isChecked ->
+            context.disableNetworkLocation = isChecked
+            showToast(if (isChecked) "已禁用网络定位" else "已启用网络定位")
+            updateRemoteConfig()
+        }
+
+        binding.speedAmplitudeValue.text = "%.1f".format(context.speedAmplitude)
+        binding.speedAmplitudeLayout.setOnClickListener {
+            showDialog("速度振幅", binding.speedAmplitudeValue.text.toString()) {
+                val v = it.toDoubleOrNull()
+                if (v == null || v < 0.0) { showToast("振幅必须 >= 0"); return@showDialog }
+                context.speedAmplitude = v
+                binding.speedAmplitudeValue.text = "%.1f".format(v)
+                updateRemoteConfig()
             }
         }
 

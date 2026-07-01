@@ -51,14 +51,18 @@ object BinderUtils {
      * Check whether the `PortalService` is started properly
      */
     fun isLocationProviderEnabled(uid: Int): Boolean {
-        val packageNames = getUidPackageNames(uid = uid)
-        if (uid > 10000 && packageNames?.any {
-                !it.contains("tv.kyshu")
-            } == false) {
+        // System UID (< 10000) always allowed
+        if (uid < 10000) return true
+        // App UID: must exactly belong to tv.kyshu package
+        val packageNames = getUidPackageNames(uid = uid) ?: run {
+            Logger.warn("Someone try to find Portal: uid = $uid, no packages found")
+            return false
+        }
+        if (packageNames.any { it == "tv.kyshu" }) {
             return true
         }
-        Logger.warn("Someone try to find Portal: uid = $uid, packageName = ${packageNames?.joinToString()}")
-        return uid < 10000
+        Logger.warn("Someone try to find Portal: uid = $uid, packageName = ${packageNames.joinToString()}")
+        return false
     }
 
     fun isSystemPackages(packageNames: String): Boolean {

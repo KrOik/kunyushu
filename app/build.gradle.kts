@@ -24,6 +24,7 @@ android {
             abiFilters.clear()
             abiFilters.addAll(listOf("arm64-v8a"))
         }
+        manifestPlaceholders["BAIDU_MAP_KEY"] = getBaiduMapKey()
 
 //        val googleServicesFile = project.file("google-services.json")
 //        if (!googleServicesFile.exists()) {
@@ -214,5 +215,18 @@ fun getVersionCode(): Int {
 
 fun getVersionName(): String {
     return getGitCommitHash()
+}
+
+fun getBaiduMapKey(): String {
+    // Priority: env BAIDU_MAP_KEY > gradle.properties > default development key
+    val envKey = System.getenv("BAIDU_MAP_KEY")
+    if (!envKey.isNullOrBlank()) return envKey
+    val propKey = project.findProperty("baiduMapKey") as? String
+    if (!propKey.isNullOrBlank()) return propKey
+    // Fallback key for development builds only.
+    // For release builds, set BAIDU_MAP_KEY env variable or baiduMapKey in gradle.properties
+    println("[WARN] Baidu Map API key not configured via env BAIDU_MAP_KEY or gradle.properties baiduMapKey")
+    println("[WARN] Using development fallback key. Set BAIDU_MAP_KEY env var for production builds.")
+    return "UzCD3gLYg3M9Ue2749hm1jsHX2DyfMUF"
 }
 
