@@ -13,6 +13,7 @@ import tv.kyshu.xposed.hooks.oplus.OplusLocationHook
 import tv.kyshu.xposed.hooks.telephony.miui.MiuiTelephonyManagerHook
 import tv.kyshu.xposed.hooks.sensor.SystemSensorManagerHook
 import tv.kyshu.xposed.hooks.telephony.TelephonyHook
+import tv.kyshu.xposed.hooks.wlan.WlanHook
 import tv.kyshu.xposed.utils.FakeLoc
 import tv.kyshu.xposed.utils.Logger
  import tv.kyshu.xposed.stability.DomainGuard
@@ -27,7 +28,14 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
         kotlin.runCatching { cServiceManager.getDeclaredField("sCache") }.onSuccess {
             it.isAccessible = true
         }.getOrNull()
-        // the field is not guaranteed to exist
+    }
+
+    companion object {
+        /**
+         * 系统启动后延迟时间（毫秒），在此期间hook不会生效，
+         * 确保用户有充足的操作时间。
+         */
+        const val BOOT_DELAY_MS = 80_000L
     }
 
     /**
@@ -79,17 +87,21 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
 
         when (lpparam.packageName) {
             "com.android.phone" -> {
-                Logger.info("Found com.android.phone")
-                runCatching { TelephonyHook(lpparam.classLoader) }
-                    .onFailure { e ->
-                        Logger.error("[FakeLocation] TelephonyHook install failed", e)
-                        DomainGuard.reportCrash(Domain.TELEPHONY, e)
-                    }
-                runCatching { MiuiTelephonyManagerHook(lpparam.classLoader) }
-                    .onFailure { e ->
-                        Logger.error("[FakeLocation] MiuiTelephonyManagerHook install failed", e)
-                        DomainGuard.reportCrash(Domain.TELEPHONY, e)
-                    }
+                Logger.info("Found com.android.phone, hooks will be installed after ${BOOT_DELAY_MS / 1000}s delay")
+                Thread {
+                    Thread.sleep(BOOT_DELAY_MS)
+                    Logger.info("[FakeLocation] Boot delay finished, installing phone hooks...")
+                    runCatching { TelephonyHook(lpparam.classLoader) }
+                        .onFailure { e ->
+                            Logger.error("[FakeLocation] TelephonyHook install failed", e)
+                            DomainGuard.reportCrash(Domain.TELEPHONY, e)
+                        }
+                    runCatching { MiuiTelephonyManagerHook(lpparam.classLoader) }
+                        .onFailure { e ->
+                            Logger.error("[FakeLocation] MiuiTelephonyManagerHook install failed", e)
+                            DomainGuard.reportCrash(Domain.TELEPHONY, e)
+                        }
+                }.start()
             }
             "android" -> {
                 // Safety mode check: if 3+ consecutive install crashes, enter safe mode
@@ -128,46 +140,54 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                 Logger.info("Debug Log Status: ${FakeLoc.enableDebugLog}")
                 FakeLoc.isSystemServerProcess = true
 
-                // BBN: each hook installation independently wrapped
-                runCatching { startFakeLocHook(systemClassLoader) }
-                    .onFailure { e ->
-                        Logger.error("[FakeLocation] startFakeLocHook failed", e)
-                        DomainGuard.reportCrash(Domain.LOCATION_SERVICE, e)
-                    }
-                runCatching { TelephonyHook.hookSubOnTransact(lpparam.classLoader) }
-                    .onFailure { e ->
-                        Logger.error("[FakeLocation] TelephonyHook.hookSubOnTransact failed", e)
-                        DomainGuard.reportCrash(Domain.TELEPHONY, e)
-                    }
-                runCatching { WlanHook(systemClassLoader) }
-                    .onFailure { e ->
-                        Logger.error("[FakeLocation] WlanHook install failed", e)
-                        DomainGuard.reportCrash(Domain.WLAN, e)
-                    }
-                runCatching { AndroidFusedLocationProviderHook(lpparam.classLoader) }
-                    .onFailure { e ->
-                        Logger.error("[FakeLocation] AndroidFusedLocationProviderHook failed", e)
-                        DomainGuard.reportCrash(Domain.FUSED_LOCATION, e)
-                    }
-                runCatching { SystemSensorManagerHook(lpparam.classLoader) }
-                    .onFailure { e ->
-                        Logger.error("[FakeLocation] SystemSensorManagerHook failed", e)
-                        DomainGuard.reportCrash(Domain.SENSOR, e)
-                    }
-                runCatching { ThirdPartyLocationHook(lpparam.classLoader) }
-                    .onFailure { e ->
-                        Logger.error("[FakeLocation] ThirdPartyLocationHook failed", e)
-                        DomainGuard.reportCrash(Domain.FUSED_LOCATION, e)
-                    }
+                Logger.info("[FakeLocation] Hooks will be installed after ${BOOT_DELAY_MS / 1000}s boot delay")
 
-                // Load complete: reset install guard + report status
-                DomainGuard.resetInstallCrashCount()
-                val installedHooks = Domain.entries.filter { !DomainGuard.isDomainDisabled(it) }
-                    .joinToString(",") { it.label }
-                Logger.info("[FakeLocation] load complete: hooks=$installedHooks")
-                FlightRecorder.gatePass("BOOT", "BOOT_GATE",
-                    mapOf("hooks" to installedHooks))
-                LogRouter.info("BBN:BOOT", "load complete: hooks=$installedHooks")
+                // 延迟安装hook，确保用户有80秒操作时间
+                Thread {
+                    Thread.sleep(BOOT_DELAY_MS)
+                    Logger.info("[FakeLocation] Boot delay finished, installing hooks...")
+
+                    // BBN: each hook installation independently wrapped
+                    runCatching { startFakeLocHook(systemClassLoader) }
+                        .onFailure { e ->
+                            Logger.error("[FakeLocation] startFakeLocHook failed", e)
+                            DomainGuard.reportCrash(Domain.LOCATION_SERVICE, e)
+                        }
+                    runCatching { TelephonyHook.hookSubOnTransact(lpparam.classLoader) }
+                        .onFailure { e ->
+                            Logger.error("[FakeLocation] TelephonyHook.hookSubOnTransact failed", e)
+                            DomainGuard.reportCrash(Domain.TELEPHONY, e)
+                        }
+                    runCatching { WlanHook(systemClassLoader) }
+                        .onFailure { e ->
+                            Logger.error("[FakeLocation] WlanHook install failed", e)
+                            DomainGuard.reportCrash(Domain.WLAN, e)
+                        }
+                    runCatching { AndroidFusedLocationProviderHook(lpparam.classLoader) }
+                        .onFailure { e ->
+                            Logger.error("[FakeLocation] AndroidFusedLocationProviderHook failed", e)
+                            DomainGuard.reportCrash(Domain.FUSED_LOCATION, e)
+                        }
+                    runCatching { SystemSensorManagerHook(lpparam.classLoader) }
+                        .onFailure { e ->
+                            Logger.error("[FakeLocation] SystemSensorManagerHook failed", e)
+                            DomainGuard.reportCrash(Domain.SENSOR, e)
+                        }
+                    runCatching { ThirdPartyLocationHook(lpparam.classLoader) }
+                        .onFailure { e ->
+                            Logger.error("[FakeLocation] ThirdPartyLocationHook failed", e)
+                            DomainGuard.reportCrash(Domain.FUSED_LOCATION, e)
+                        }
+
+                    // Load complete: reset install guard + report status
+                    DomainGuard.resetInstallCrashCount()
+                    val installedHooks = Domain.entries.filter { !DomainGuard.isDomainDisabled(it) }
+                        .joinToString(",") { it.label }
+                    Logger.info("[FakeLocation] load complete: hooks=$installedHooks")
+                    FlightRecorder.gatePass("BOOT", "BOOT_GATE",
+                        mapOf("hooks" to installedHooks))
+                    LogRouter.info("BBN:BOOT", "load complete: hooks=$installedHooks")
+                }.start()
             }
             "com.android.location.fused" -> {
                 runCatching { AndroidFusedLocationProviderHook(lpparam.classLoader) }
