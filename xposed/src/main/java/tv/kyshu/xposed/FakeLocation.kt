@@ -36,6 +36,27 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
          * 确保用户有充足的操作时间。
          */
         const val BOOT_DELAY_MS = 80_000L
+
+        private const val DELAY_MARKER_PREFIX = "portal.delay_active_"
+
+        /**
+         * 取消指定包的启动延迟。调用后延迟线程醒来时将跳过hook安装。
+         */
+        @JvmStatic
+        fun cancelBootDelay(packageName: String) {
+            System.setProperty(DELAY_MARKER_PREFIX + packageName, "false")
+            Logger.warn("[FakeLocation] Boot delay cancelled for $packageName")
+        }
+    }
+
+    /**
+     * 验证ClassLoader是否仍然有效，防止延迟线程醒来后访问已回收的ClassLoader。
+     * 通过尝试加载android.app.ActivityThread基础类来判断。
+     */
+    private fun isClassLoaderValid(classLoader: ClassLoader): Boolean {
+        return kotlin.runCatching {
+            classLoader.loadClass("android.app.ActivityThread")
+        }.isSuccess
     }
 
     /**
@@ -87,9 +108,32 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
 
         when (lpparam.packageName) {
             "com.android.phone" -> {
-                Logger.info("Found com.android.phone, hooks will be installed after ${BOOT_DELAY_MS / 1000}s delay")
-                Thread {
-                    Thread.sleep(BOOT_DELAY_MS)
+                val pkgName = lpparam.packageName
+                Logger.info("Found $pkgName, hooks will be installed after ${BOOT_DELAY_MS / 1000}s delay")
+
+                System.setProperty(DELAY_MARKER_PREFIX + pkgName, "true")
+
+                Thread({
+                    try {
+                        Thread.sleep(BOOT_DELAY_MS)
+                    } catch (e: InterruptedException) {
+                        Logger.warn("[FakeLocation] Boot delay interrupted for $pkgName, hooks skipped")
+                        Thread.currentThread().interrupt()
+                        return@Thread
+                    }
+
+                    if (System.getProperty(DELAY_MARKER_PREFIX + pkgName) != "true") {
+                        Logger.warn("[FakeLocation] Boot delay cancelled for $pkgName, hooks skipped")
+                        return@Thread
+                    }
+
+                    if (!isClassLoaderValid(lpparam.classLoader)) {
+                        Logger.error("[FakeLocation] ClassLoader invalid after delay for $pkgName, hooks skipped")
+                        FlightRecorder.hookFail("BOOT", "CLASSLOADER_INVALID",
+                            mapOf("package" to pkgName))
+                        return@Thread
+                    }
+
                     Logger.info("[FakeLocation] Boot delay finished, installing phone hooks...")
                     runCatching { TelephonyHook(lpparam.classLoader) }
                         .onFailure { e ->
@@ -101,7 +145,7 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                             Logger.error("[FakeLocation] MiuiTelephonyManagerHook install failed", e)
                             DomainGuard.reportCrash(Domain.TELEPHONY, e)
                         }
-                }.start()
+                }, "PortalBootDelay-$pkgName").start()
             }
             "android" -> {
                 // Safety mode check: if 3+ consecutive install crashes, enter safe mode
@@ -142,9 +186,34 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
 
                 Logger.info("[FakeLocation] Hooks will be installed after ${BOOT_DELAY_MS / 1000}s boot delay")
 
+                // 设置生命周期标记，用于外部取消和线程醒来后的状态检查
+                val pkgName = lpparam.packageName
+                System.setProperty(DELAY_MARKER_PREFIX + pkgName, "true")
+
                 // 延迟安装hook，确保用户有80秒操作时间
-                Thread {
-                    Thread.sleep(BOOT_DELAY_MS)
+                Thread({
+                    try {
+                        Thread.sleep(BOOT_DELAY_MS)
+                    } catch (e: InterruptedException) {
+                        Logger.warn("[FakeLocation] Boot delay interrupted for $pkgName, hooks skipped")
+                        Thread.currentThread().interrupt()
+                        return@Thread
+                    }
+
+                    // 检查延迟任务是否已被外部取消
+                    if (System.getProperty(DELAY_MARKER_PREFIX + pkgName) != "true") {
+                        Logger.warn("[FakeLocation] Boot delay cancelled for $pkgName, hooks skipped")
+                        return@Thread
+                    }
+
+                    // 验证ClassLoader有效性，防止访问已回收的ClassLoader
+                    if (!isClassLoaderValid(lpparam.classLoader)) {
+                        Logger.error("[FakeLocation] ClassLoader invalid after delay for $pkgName, hooks skipped")
+                        FlightRecorder.hookFail("BOOT", "CLASSLOADER_INVALID",
+                            mapOf("package" to pkgName))
+                        return@Thread
+                    }
+
                     Logger.info("[FakeLocation] Boot delay finished, installing hooks...")
 
                     // BBN: each hook installation independently wrapped
@@ -187,7 +256,7 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                     FlightRecorder.gatePass("BOOT", "BOOT_GATE",
                         mapOf("hooks" to installedHooks))
                     LogRouter.info("BBN:BOOT", "load complete: hooks=$installedHooks")
-                }.start()
+                }, "PortalBootDelay-$pkgName").start()
             }
             "com.android.location.fused" -> {
                 runCatching { AndroidFusedLocationProviderHook(lpparam.classLoader) }
