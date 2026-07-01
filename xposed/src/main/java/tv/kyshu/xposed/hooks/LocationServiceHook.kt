@@ -885,6 +885,7 @@ internal object LocationServiceHook: BaseLocationHook() {
         locationListeners.removeIf { it.second.asBinder() == binder }
     }
 
+    fun callOnLocationChanged() {
         Logger.debugRL("callOnLocationChanged", "==> callOnLocationChanged: ${locationListeners.size}")
         locationListeners.forEach { listenerWithProvider ->
             val listener = listenerWithProvider.second
@@ -927,10 +928,7 @@ internal object LocationServiceHook: BaseLocationHook() {
                 Logger.error("The listener all methods: " + listener.javaClass.declaredMethods.joinToString { it.name })
             }
         }
-
-        if (FakeLoc.enableDebugLog) {
-            Logger.debug("==> callOnLocationChanged: end")
-        }
+        Logger.debugRL("callOnLocationChanged_end", "==> callOnLocationChanged: end")
     }
 
     private fun hookLocationManagerServiceV2(classLoader: ClassLoader) {
