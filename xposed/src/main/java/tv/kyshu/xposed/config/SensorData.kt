@@ -1,0 +1,76 @@
+/*
+ * Copyright (C) 2025 The KunYuShu Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package tv.kyshu.xposed.config
+
+/**
+ * 传感器模拟 — 计步器、摇一摇、步行波形、Doze 传感器间隔等。
+ */
+class SensorData {
+    // ==================== 传感器开关与参数 ====================
+
+    /**
+     * 传感器模拟总开关
+     */
+    @Volatile
+    var hookSensor = false
+
+    /**
+     * Doze 模式下传感器采样间隔 (ms)
+     */
+    @Volatile
+    var dozeSensorIntervalMs = 200L
+
+    /**
+     * 计步模拟开关
+     */
+    @Volatile
+    var enableStepCountMock = false
+
+    /**
+     * 目标步数
+     */
+    @Volatile
+    var stepCount = 0
+
+    /**
+     * 摇一摇模拟开关
+     */
+    @Volatile
+    var enableShakeMock = false
+
+    /**
+     * 保持步行波形
+     */
+    @Volatile
+    var keepWalkingWaveform = false
+
+    // ==================== 子对象专属更新 ====================
+
+    /**
+     * 从配置 map 更新 [SensorData] 专属字段。
+     */
+    internal fun updateFromMap(map: Map<String, Any?>) {
+        hookSensor = map.getVal("hookSensor", hookSensor)
+        enableStepCountMock = map.getVal("enableStepCountMock", enableStepCountMock)
+        stepCount = map.getVal("stepCount", stepCount)
+        enableShakeMock = map.getVal("enableShakeMock", enableShakeMock)
+        keepWalkingWaveform = map.getVal("keepWalkingWaveform", keepWalkingWaveform)
+        dozeSensorIntervalMs = map.getVal("dozeSensorIntervalMs", dozeSensorIntervalMs)
+
+        if (stepCount < 0) stepCount = 0
+        if (dozeSensorIntervalMs < 20L) dozeSensorIntervalMs = 20L
+    }
+}

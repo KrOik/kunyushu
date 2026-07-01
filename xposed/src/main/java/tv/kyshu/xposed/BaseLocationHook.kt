@@ -127,7 +127,7 @@ abstract class BaseLocationHook: BaseDivineService() {
         return location
     }
 
-    fun injectNMEA(nmeaStr: String): String? {
+    open fun injectNMEA(nmeaStr: String): String? {
         if (!FakeLoc.enable) {
             return null
         }

@@ -22,6 +22,7 @@ import tv.kyshu.xposed.hooks.telephony.miui.MiuiTelephonyManagerHook
 import tv.kyshu.xposed.hooks.nmea.LocationNMEAHook
 import tv.kyshu.xposed.hooks.provider.LocationProviderManagerHook
 import tv.kyshu.xposed.utils.FakeLoc
+import tv.kyshu.xposed.utils.GnssFlags
 import tv.kyshu.xposed.utils.BinderUtils
 import tv.kyshu.xposed.utils.Logger
 import tv.kyshu.xposed.utils.afterHook
@@ -110,29 +111,6 @@ private val satelliteList = listOf(
 //    BDSSatellite(144, OrbitType.GEO),
 )
 
-object GnssFlags {
-    // 基本标志位
-    const val SVID_FLAGS_NONE = 0
-    const val SVID_FLAGS_HAS_EPHEMERIS_DATA = (1 shl 0)
-    const val SVID_FLAGS_HAS_ALMANAC_DATA = (1 shl 1)
-    const val SVID_FLAGS_USED_IN_FIX = (1 shl 2)
-    const val SVID_FLAGS_HAS_CARRIER_FREQUENCY = (1 shl 3)
-    const val SVID_FLAGS_HAS_BASEBAND_CN0 = (1 shl 4)
-
-    // 位移宽度
-    const val SVID_SHIFT_WIDTH = 12
-    const val CONSTELLATION_TYPE_SHIFT_WIDTH = 8
-    const val CONSTELLATION_TYPE_MASK = 0xf
-
-    // 星座类型（与 Android GnssStatus.CONSTELLATION_ 常量对应）
-    const val CONSTELLATION_GPS = 1
-    const val CONSTELLATION_SBAS = 2
-    const val CONSTELLATION_GLONASS = 3
-    const val CONSTELLATION_QZSS = 4
-    const val CONSTELLATION_BEIDOU = 5
-    const val CONSTELLATION_GALILEO = 6
-    const val CONSTELLATION_IRNSS = 7
-}
 
 sealed class OrbitType(val minCn0: Float, val maxCn0: Float, val elevationRange: ClosedRange<Float>) {
     object GEO : OrbitType(GEO_MIN_CN0, GEO_MAX_CN0, 35f..50f)
