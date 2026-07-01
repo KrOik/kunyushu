@@ -33,7 +33,7 @@ import tv.kyshu.xposed.utils.LogRouter
 class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
     private lateinit var cServiceManager: Class<*> // android.os.ServiceManager
     private val mServiceManagerCache by lazy {
-        kotlin.runCatching { cServiceManager.getDeclaredField("sCache") }.onSuccess {
+        kotlin.runCatching { cServiceManager.getDeclaredField("sCache") }.onFailure { Logger.debug("[FakeLocation] sCache reflect failed", it) }.onSuccess {
             it.isAccessible = true
         }.getOrNull()
     }
@@ -77,46 +77,82 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
         object DelayedCommandPoller {
             private var polling = false
             private val periodMs = 5000L
+            @Volatile
+            private var pollerThread: Thread? = null
 
             fun start() {
-                if (polling) return
+                if (polling) {
+                    if (pollerThread?.isAlive == true) return
+                    polling = false
+                }
                 polling = true
-                Thread({
-                    while (polling && tv.kyshu.xposed.utils.FakeLoc.enable) {
-                        kotlin.runCatching {
-                            val cursor = FakeLoc.getContext()?.contentResolver?.query(
-                                android.net.Uri.parse("content://tv.kyshu.xposed.config/cmd"),
-                                null, null, null, null
-                            )
-                            cursor?.use {
-                                while (it.moveToNext()) {
-                                    val json = it.getString(it.getColumnIndexOrThrow("command"))
-                                    val obj = org.json.JSONObject(json)
-                                    val commandId = obj.getString("command_id")
-                                    val bundle = android.os.Bundle()
-                                    for (key in obj.keys()) {
-                                        if (key == "command_id" || key == "timestamp_ms") continue
-                                        bundle.putString(key, obj.getString(key))
-                                    }
-                                    bundle.putString("command_id", commandId)
-                                    if (commandId.isNotBlank()) {
-                                        RemoteCommandHandler.handleInstruction(commandId, bundle)
+                val thread = Thread({
+                    try {
+                        while (polling && tv.kyshu.xposed.utils.FakeLoc.enable) {
+                            kotlin.runCatching {
+                                val cursor = FakeLoc.getContext()?.contentResolver?.query(
+                                    android.net.Uri.parse("content://tv.kyshu.xposed.config/cmd"),
+                                    null, null, null, null
+                                )
+                                cursor?.use {
+                                    while (it.moveToNext()) {
+                                        val json = it.getString(it.getColumnIndexOrThrow("command"))
+                                        val obj = org.json.JSONObject(json)
+                                        val commandId = obj.getString("command_id")
+                                        val bundle = android.os.Bundle()
+
+                                        for (key in obj.keys()) {
+                                            if (key == "timestamp_ms") continue
+                                            val value = obj.get(key)
+                                            when (value) {
+                                                is String -> bundle.putString(key, value)
+                                                is Int -> bundle.putInt(key, value)
+                                                is Long -> bundle.putLong(key, value)
+                                                is Double -> bundle.putDouble(key, value)
+                                                is Boolean -> bundle.putBoolean(key, value)
+                                                else -> {
+                                                    if (key != "command_id") {
+                                                        bundle.putString(key, value.toString())
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        val sessionKey = RemoteCommandHandler.randomKey
+                                        if (sessionKey.isNotBlank()) {
+                                            if (!RemoteCommandHandler.handleSessionInstruction(sessionKey, bundle)) {
+                                                Logger.warn("[DelayedCommandPoller] Auth rejected for command: $commandId")
+                                                return@runCatching
+                                            }
+                                        } else {
+                                            if (commandId != "exchange_key") {
+                                                Logger.warn("[DelayedCommandPoller] No session key, rejecting: $commandId")
+                                                return@runCatching
+                                            }
+                                        }
                                     }
                                 }
+                            }.onFailure { e ->
+                                if (polling) {
+                                    Logger.warn("[DelayedCommandPoller] poll failed", e)
+                                }
                             }
-                        }.onFailure { e ->
-                            if (polling) {
-                                Logger.warn("[DelayedCommandPoller] poll failed", e)
-                            }
+                            try { Thread.sleep(periodMs) } catch (_: InterruptedException) { break }
                         }
-                        try { Thread.sleep(periodMs) } catch (_: InterruptedException) { break }
+                    } finally {
+                        polling = false
+                        pollerThread = null
                     }
-                }, "Portal-CmdPoller").start()
+                }, "Portal-CmdPoller")
+                pollerThread = thread
+                thread.start()
                 Logger.info("[DelayedCommandPoller] Started polling every ${periodMs}ms")
             }
 
             fun stop() {
                 polling = false
+                pollerThread?.interrupt()
+                pollerThread = null
                 Logger.info("[DelayedCommandPoller] Stopped")
             }
         }
@@ -192,10 +228,6 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
         markPackageInjected(pkgName)
 
 
-        if(System.getProperty("portal.injected_$pkgName") == "true") {
-            return
-        }
-        System.setProperty("portal.injected_$pkgName", "true")
 
         when (lpparam.packageName) {
             "com.android.phone" -> {
@@ -280,13 +312,6 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                     Logger.error("Failed to get system class loader")
                     return
                 }
-                // Safety mode check: if 3+ consecutive install crashes, enter safe mode
-                if (DomainGuard.checkInstallCrashLoop()) {
-                    DomainGuard.enterSafeMode("install crash loop (3 consecutive crashes)")
-                    Logger.error("[FakeLocation] Entering SAFE MODE - all hooks skipped")
-                    return
-                }
-
                 // Initialize observability + safety infrastructure
                 val systemContext = runCatching {
                     val atCls = lpparam.classLoader.loadClass("android.app.ActivityThread")
@@ -299,9 +324,17 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                     FlightRecorder.setContext(systemContext)
                     CrashForensics.setContext(systemContext)
                     ChannelIdentity.init(systemContext)
-                    // 持久化状态存储（在崩溃检测之前初始化，确保checkInstallCrashLoop能读到）
+                    // 持久化状态存储 — 必须在 checkInstallCrashLoop 之前初始化
                     BootStateStore.setContext(systemContext)
                     FlightRecorder.bootstrapState("system_server")
+
+                    // Safety mode check: BootStateStore 已加载持久化状态，方可判断安全模式
+                    if (DomainGuard.checkInstallCrashLoop()) {
+                        DomainGuard.enterSafeMode("install crash loop (3 consecutive crashes)")
+                        Logger.error("[FakeLocation] Entering SAFE MODE - all hooks skipped")
+                        return
+                    }
+
                     // Uncaught exception handler — captures any missed crash
                     val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
                     Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->

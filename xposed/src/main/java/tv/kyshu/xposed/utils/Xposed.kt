@@ -35,13 +35,15 @@ private fun <T> ifNotHook(
  * @return Unhook object, you can use it to unhook the method.
  */
 fun Method.onceHook(callback: XC_MethodHook): XC_MethodHook.Unhook? {
-    return ifNotHook(declaringClass.name, name, parameterTypes) {
-        hookOnceLock.lock()
-        hookedMethods.add(it)
-        val unhook = XposedBridge.hookMethod(this, callback)
+    val key = generateOnceHookMethodKey(declaringClass.name, name, parameterTypes)
+    hookOnceLock.lock()
+    try {
+        if (hookedMethods.contains(key)) return null
+        hookedMethods.add(key)
+    } finally {
         hookOnceLock.unlock()
-        return@ifNotHook unhook
     }
+    return XposedBridge.hookMethod(this, callback)
 }
 
 /**

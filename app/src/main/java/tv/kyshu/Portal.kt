@@ -71,7 +71,7 @@ class Portal : Application() {
                 val instance = getInstance.invoke(null, this)
                 val setPkg = authClass.getDeclaredMethod("setPackageName", String::class.java)
                 setPkg.invoke(instance, packageName)
-            }
+            }.onFailure { android.util.Log.w("Portal", "LBSAuthManager packageName set failed", it) }
         }.onFailure { e ->
             android.util.Log.w("Portal", "Auth cache prepare failed", e)
         }

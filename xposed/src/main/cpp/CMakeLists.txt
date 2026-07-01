@@ -4,7 +4,7 @@ project("Portal")
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fvisibility=hidden")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fvisibility=hidden -D_FORTIFY_SOURCE=2 -fstack-protector-strong")
 find_package(dobby REQUIRED CONFIG)
 
 add_library(portal SHARED

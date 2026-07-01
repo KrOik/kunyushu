@@ -2,6 +2,7 @@
 package tv.kyshu.xposed.hooks.wlan
 
 import android.net.wifi.WifiInfo
+import android.net.wifi.ScanResult
 import android.os.Build
 import android.util.ArrayMap
 import dalvik.system.PathClassLoader
@@ -69,8 +70,31 @@ object WlanHook {
 
             if (FakeLoc.enableMockWifi && !BinderUtils.isSystemPackages(packageName)) {
                 val wifiInfo = WifiInfo::class.java.getConstructor().newInstance()
-                XposedHelpers.callMethod(wifiInfo, "setMacAddress", "02:00:00:00:00:00")
-                XposedHelpers.callMethod(wifiInfo, "setBSSID", "02:00:00:00:00:00")
+                val wifiData = FakeLoc.wifiData
+
+                val mac = if (wifiData.mockMac.isNotBlank() && wifiData.mockMac != "02:00:00:00:00:00")
+                    wifiData.mockMac
+                else
+                    String.format("02:%02x:%02x:%02x:%02x:%02x", Random.nextInt(256), Random.nextInt(256), Random.nextInt(256), Random.nextInt(256), Random.nextInt(256))
+                XposedHelpers.callMethod(wifiInfo, "setMacAddress", mac)
+
+                val bssid = if (wifiData.mockBSSID.isNotBlank() && wifiData.mockBSSID != "02:00:00:00:00:00")
+                    wifiData.mockBSSID
+                else
+                    String.format("%02x:%02x:%02x:%02x:%02x:%02x", Random.nextInt(256), Random.nextInt(256), Random.nextInt(256), Random.nextInt(256), Random.nextInt(256), Random.nextInt(256))
+                XposedHelpers.callMethod(wifiInfo, "setBSSID", bssid)
+
+                val ssid = if (wifiData.mockSSID.isNotBlank()) wifiData.mockSSID else "WiFi_${Random.nextInt(1000, 9999)}"
+                XposedHelpers.callMethod(wifiInfo, "setSSID", ssid)
+
+                kotlin.runCatching {
+                    val inetAddr = java.net.InetAddress.getByName(wifiData.mockIp)
+                    XposedHelpers.callMethod(wifiInfo, "setInetAddress", inetAddr)
+                }.onFailure { Logger.warn("[WlanHook] setInetAddress failed", it) }
+
+                wifiData.updateSignalState()
+                XposedHelpers.setIntField(wifiInfo, "mRssi", (-65 + wifiData.currentRssiOffset).coerceIn(-127, -1))
+
                 result = wifiInfo
             }
         })
@@ -88,27 +112,60 @@ object WlanHook {
                 if(result == null) {
                     return@afterHook 
                 }
-                
+
+                val wifiData = FakeLoc.wifiData
+                val count = wifiData.mockWifiScanCount
+                val scanResults = if (count > 0) {
+                    (1..count).map {
+                        val sr = XposedHelpers.newInstance(ScanResult::class.java)
+                        XposedHelpers.setObjectField(sr, "SSID", "WiFi_${Random.nextInt(1000, 9999)}")
+                        val bssid = String.format("%02x:%02x:%02x:%02x:%02x:%02x", Random.nextInt(256), Random.nextInt(256), Random.nextInt(256), Random.nextInt(256), Random.nextInt(256), Random.nextInt(256))
+                        XposedHelpers.setObjectField(sr, "BSSID", bssid)
+                        XposedHelpers.setIntField(sr, "level", Random.nextInt(-90, -29))
+                        XposedHelpers.setIntField(sr, "frequency", 2412 + Random.nextInt(0, 13) * 5)
+                        sr
+                    }
+                } else {
+                    val wifiList = wifiData.mockWifiList
+                    if (wifiList.isNotEmpty()) {
+                        wifiList.map { wifi ->
+                            val sr = XposedHelpers.newInstance(ScanResult::class.java)
+                            XposedHelpers.setObjectField(sr, "SSID", wifi.ssid)
+                            XposedHelpers.setObjectField(sr, "BSSID", wifi.bssid)
+                            XposedHelpers.setIntField(sr, "level", wifi.rssi)
+                            XposedHelpers.setIntField(sr, "frequency", wifi.frequency)
+                            sr
+                        }
+                    } else {
+                        (1..(3 + Random.nextInt(0, 3))).map {
+                            val sr = XposedHelpers.newInstance(ScanResult::class.java)
+                            XposedHelpers.setObjectField(sr, "SSID", "WiFi_${Random.nextInt(1000, 9999)}")
+                            val bssid = String.format("%02x:%02x:%02x:%02x:%02x:%02x", Random.nextInt(256), Random.nextInt(256), Random.nextInt(256), Random.nextInt(256), Random.nextInt(256), Random.nextInt(256))
+                            XposedHelpers.setObjectField(sr, "BSSID", bssid)
+                            XposedHelpers.setIntField(sr, "level", Random.nextInt(-90, -29))
+                            XposedHelpers.setIntField(sr, "frequency", 2412 + Random.nextInt(0, 13) * 5)
+                            sr
+                        }
+                    }
+                }
+
                 if (result is List<*>) {
-                    result = arrayListOf<Any>()
+                    result = scanResults
                     return@afterHook
-                } // 针对小米系列机型的wifi扫描返回
+                }
 
                 if (result is Array<*>) {
-                    result = arrayOf<Any>()
+                    result = scanResults.toTypedArray()
                     return@afterHook
-                } // 针对一加系列机型的wifi扫描返回
+                }
 
-                // 在高于安卓10的版本，Google 引入了 APEX（Android Pony EXpress）文件格式来封装系统组件，包括系统服务~！
-                // 上面的代码在高版本将无效导致应用可以通过网络AGPS到正常的位置（现象就是位置拉回）
-                // 这里针对一个普通的版本进行一个修复
                 val resultClass = result.javaClass
                 if (resultClass.name.contains("ParceledListSlice")) runCatching {
                     val constructor = resultClass.getConstructor(List::class.java)
                     if (!constructor.isAccessible) {
                         constructor.isAccessible = true
                     }
-                    result = constructor.newInstance(emptyList<Any>())
+                    result = constructor.newInstance(scanResults)
                     return@afterHook
                 }.onFailure {
                     Logger.error("getScanResults: ParceledListSlice failed", it)

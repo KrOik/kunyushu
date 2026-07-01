@@ -41,6 +41,10 @@
 #include <sys/syscall.h>
 #include <atomic>
 #include <mutex>
+// TODO: Add a close() hook to remove tracked FDs from g_memfd_set when
+// they are closed, preventing fd exhaustion from leaked memfd descriptors.
+// Hook '__NR_close' via Dobby and call g_memfd_set.erase(fd) before
+// invoking the original close.
 #include <unordered_set>
 
 // ============================================================================

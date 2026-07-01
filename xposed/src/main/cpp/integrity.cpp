@@ -116,9 +116,12 @@ Java_tv_kyshu_dobby_Dobby_kitIntegrityCheck(
     if (pkgName == nullptr || version == nullptr) return JNI_FALSE;
     const char* pkg = env->GetStringUTFChars(pkgName, nullptr);
     const char* ver = env->GetStringUTFChars(version, nullptr);
-
+    if (pkg == nullptr || ver == nullptr) {
+        if (pkg) env->ReleaseStringUTFChars(pkgName, pkg);
+        if (ver) env->ReleaseStringUTFChars(version, ver);
+        return JNI_FALSE;
+    }
     uint64_t hash = portal_compute_integrity(pkg, pkg, ver, versionCode);
-
     env->ReleaseStringUTFChars(pkgName, pkg);
     env->ReleaseStringUTFChars(version, ver);
 

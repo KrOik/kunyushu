@@ -571,14 +571,13 @@ object LogConfig {
 
     // 路由表：按 tag 前缀匹配，第一条命中即停止
     private val routes = mutableListOf(
-        Route("",    channels = CAT or FILE, levels = INFO or WARN or ERROR),   // 兜底
-        Route("*",   channels = CAT or FILE, levels = INFO or WARN or ERROR),
         Route("DEV_", channels = CAT or FILE, levels = INFO or DEBUG or WARN or ERROR),
         Route("TEST_", channels = CAT or FILE, levels = INFO or DEBUG or WARN or ERROR),
         Route("USER", channels = RING, levels = INFO),
         Route("AUDIT", channels = RING, levels = INFO),
         Route("TELEM", channels = RING, levels = INFO),
         Route("CRASH", channels = CRASH, levels = ERROR or WARN),
+        Route("*",   channels = CAT or FILE, levels = INFO or WARN or ERROR),
     )
 
     /** 运行时动态添加路由 */

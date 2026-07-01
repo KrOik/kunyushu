@@ -7,6 +7,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import tv.kyshu.android.coro.CoroutineController
 import tv.kyshu.android.coro.CoroutineRouteMock
@@ -54,7 +55,7 @@ class MockServiceViewModel : ViewModel() {
             val delayTime = activity.reportDuration.toLong()
             val applicationContext = activity.applicationContext
             rockerJob = viewModelScope.launch {
-                while (true) {
+                while (isActive) {
                     rockerCoroutineController.controlledCoroutine()
                     delay(delayTime)
 
@@ -75,7 +76,7 @@ class MockServiceViewModel : ViewModel() {
             routeMockCoroutine.pause()
             val delayTime = activity.reportDuration.toLong()
             routeMockJob = viewModelScope.launch {
-                while (true) {
+                while (isActive) {
                     routeMockCoroutine.routeMockCoroutine()
                     delay(delayTime)
                     // 如果是第0阶段，定位到第一个点

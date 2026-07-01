@@ -44,9 +44,11 @@ object RemoteCommandHandler {
         override var enable: Boolean
             get() = FakeLoc.enable
             set(value) {
-                FakeLoc.enable = value
-                if (value) {
-                    FakeLoc.forceDisable = false
+                synchronized(tv.kyshu.xposed.utils.FakeLoc) {
+                    FakeLoc.enable = value
+                    if (value) {
+                        FakeLoc.forceDisable = false
+                    }
                 }
             }
         override var enableMockGnss: Boolean
@@ -76,12 +78,15 @@ object RemoteCommandHandler {
         override var hasBearings: Boolean
             get() = FakeLoc.hasBearings
             set(value) { FakeLoc.hasBearings = value }
+        override var forceDisable: Boolean
+            get() = FakeLoc.forceDisable
+            set(value) { FakeLoc.forceDisable = value }
     }
 
     private val lifecycleController by lazy {
         HookLifecycleController(
             store = LiveHookRuntimeState,
-            setNativeStatus = { enabled -> runCatching { Dobby.setStatus(enabled) } },
+            setNativeStatus = { enabled -> runCatching { Dobby.setStatus(enabled) }.onFailure { Logger.error("[Hook] Dobby.setStatus failed", it) } },
             clearListeners = { LocationServiceHook.locationListeners.clear() },
             onStart = { },
             refreshGnssStatus = { },
@@ -120,10 +125,6 @@ object RemoteCommandHandler {
                 val userId = BinderUtils.getCallerUid()
                 if (BinderUtils.isLocationProviderEnabled(userId)) {
                     rely.putString("key", rotateSessionKey())
-                    kotlin.runCatching {
-                        val dump = MockAuditTrail.dumpLast(50)
-                        if (dump.isNotBlank()) Logger.info("[RemoteCommandHandler] audit after exchange_key:\n$dump")
-                    }
                     true
                 } else {
                     Logger.warn("exchange_key: Permission denied for UID $userId")
@@ -179,10 +180,34 @@ object RemoteCommandHandler {
         rely: Bundle,
         replayGuard: RemoteCommandSecurity.ReplayGuard,
     ): Boolean {
-        // Bundle size cap: prevent OOM DoS on large payloads
-        val bundleSize = rely.size()
-        if (bundleSize > 64_000) {
-            Logger.warn("[RemoteCommandHandler] oversized bundle: ${bundleSize} bytes, rejecting")
+        // Bundle size cap: use total serialized size estimate to prevent OOM DoS
+        val estimatedByteSize = try {
+            var size = 0
+            for (key in rely.keySet()) {
+                size += key.length * 2 // key chars * 2 bytes
+                val value = rely.get(key)
+                when (value) {
+                    is String -> size += value.length * 2
+                    is ByteArray -> size += value.size
+                    is IntArray -> size += value.size * 4
+                    is LongArray -> size += value.size * 8
+                    is FloatArray -> size += value.size * 4
+                    is DoubleArray -> size += value.size * 8
+                    is Boolean -> size += 1
+                    is Int -> size += 4
+                    is Long -> size += 8
+                    is Float -> size += 4
+                    is Double -> size += 8
+                    is java.util.ArrayList<*> -> {
+                        value.forEach { if (it is String) size += it.length * 2 else size += 4 }
+                    }
+                    else -> size += 64
+                }
+            }
+            size
+        } catch (_: Exception) { 0 }
+        if (estimatedByteSize > 256_000) {
+            Logger.warn("[RemoteCommandHandler] oversized bundle: estimated ${estimatedByteSize} bytes, rejecting")
             return false
         }
         if (!replayGuard.accept(sessionKey, rely)) {
@@ -283,8 +308,10 @@ object RemoteCommandHandler {
                 true
             }
             "set_bearing" -> {
-                FakeLoc.bearing = rely.getDouble("bearing", FakeLoc.bearing)
-                FakeLoc.hasBearings = true
+                synchronized(FakeLoc) {
+                    FakeLoc.bearing = rely.getDouble("bearing", FakeLoc.bearing)
+                    FakeLoc.hasBearings = true
+                }
                 true
             }
             "move" -> {
@@ -295,8 +322,10 @@ object RemoteCommandHandler {
                     n = distance,
                     angle = bearing
                 )
-                FakeLoc.bearing = bearing
-                FakeLoc.hasBearings = true
+                synchronized(FakeLoc) {
+                    FakeLoc.bearing = bearing
+                    FakeLoc.hasBearings = true
+                }
                 if (FakeLoc.isSystemServerProcess) {
                     LocationServiceHook.callOnLocationChanged()
                 }
@@ -336,8 +365,10 @@ object RemoteCommandHandler {
                     }
                     else -> return@handleAuthenticatedInstruction false
                 }
-                FakeLoc.latitude = updatedLat
-                FakeLoc.longitude = updatedLon
+                synchronized(FakeLoc) {
+                    FakeLoc.latitude = updatedLat
+                    FakeLoc.longitude = updatedLon
+                }
                 true
             }
             "broadcast_location" -> {

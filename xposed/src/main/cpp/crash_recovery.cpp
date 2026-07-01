@@ -6,6 +6,7 @@
  */
 
 #include "crash_recovery.h"
+#include <atomic>
 
 #include <signal.h>
 #include <setjmp.h>
@@ -24,7 +25,7 @@
 // Typical count is 1-2 ranges (libportal), so linear scan is fine.
 static constexpr int kMaxCodeRanges = 8;
 static CodeRange g_our_code_ranges[kMaxCodeRanges];
-static int g_code_range_count = 0;
+static volatile sig_atomic_t g_code_range_count = 0;
 static volatile sig_atomic_t g_ranges_initialized = 0;
 
 void init_our_code_ranges() {
@@ -48,12 +49,14 @@ void init_our_code_ranges() {
         }
         return 0;
     }, nullptr);
+    std::atomic_signal_fence(std::memory_order_release);
     g_ranges_initialized = 1;
 }
 
 // Async-signal-safe: linear scan, no STL, no heap allocations.
 bool is_our_address(uintptr_t pc) {
     if (!g_ranges_initialized) return false;
+    std::atomic_signal_fence(std::memory_order_acquire);
     for (int i = 0; i < g_code_range_count; i++) {
         if (pc >= g_our_code_ranges[i].start && pc < g_our_code_ranges[i].end) {
             return true;

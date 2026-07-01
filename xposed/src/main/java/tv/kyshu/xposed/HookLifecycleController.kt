@@ -7,6 +7,7 @@ import tv.kyshu.xposed.utils.Logger
 
 
 interface HookRuntimeStateStore {
+    var forceDisable: Boolean
     var enable: Boolean
     var enableMockGnss: Boolean
     var enableMockWifi: Boolean
@@ -32,6 +33,10 @@ class HookLifecycleController(
     fun handle(commandId: String, rely: Bundle): Boolean {
         val result = when (commandId) {
             "start" -> {
+                if (store.forceDisable) {
+                    Logger.warn("[HookLifecycle] START blocked: forceDisable is active")
+                    return@handle false
+                }
                 if (rely.containsKey("lat") && rely.containsKey("lon")) {
                     store.latitude = rely.getDouble("lat")
                     store.longitude = rely.getDouble("lon")

@@ -104,9 +104,10 @@ bool safe_execute_with_watchdog(const char* step_id, Func&& operation, int timeo
     };
     auto state = std::make_shared<WatchdogState>();
 
-    std::thread worker([state, op = std::forward<Func>(operation)]() mutable {
+    auto op_shared = std::make_shared<std::decay_t<Func>>(std::forward<Func>(operation));
+    std::thread worker([state, op_shared]() {
         try {
-            state->success.store(op(), std::memory_order_release);
+            state->success.store((*op_shared)(), std::memory_order_release);
         } catch (...) {
             state->success.store(false, std::memory_order_release);
         }

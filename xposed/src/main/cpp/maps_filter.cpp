@@ -118,11 +118,18 @@ int filter_proc_file(int real_fd) {
         return -1;
     }
 
-    ssize_t written = write(memfd, filtered.data(), filtered.size());
-    if (written < 0) {
-        LOGE("maps_filter: write to memfd failed: errno=%d", errno);
-        close(memfd);
-        return -1;
+    const char* data = filtered.data();
+    size_t remaining = filtered.size();
+    while (remaining > 0) {
+        ssize_t written = write(memfd, data, remaining);
+        if (written < 0) {
+            if (errno == EINTR) continue;
+            LOGE("maps_filter: write to memfd failed: errno=%d", errno);
+            close(memfd);
+            return -1;
+        }
+        data += written;
+        remaining -= written;
     }
 
     lseek(memfd, 0, SEEK_SET);

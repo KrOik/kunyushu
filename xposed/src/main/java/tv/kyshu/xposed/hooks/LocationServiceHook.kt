@@ -22,6 +22,7 @@ import tv.kyshu.xposed.hooks.miui.MiuiLocationManagerHook
 import tv.kyshu.xposed.hooks.telephony.miui.MiuiTelephonyManagerHook
 import tv.kyshu.xposed.hooks.nmea.LocationNMEAHook
 import tv.kyshu.xposed.hooks.provider.LocationProviderManagerHook
+import tv.kyshu.xposed.stability.DomainGuard
 import tv.kyshu.xposed.utils.FakeLoc
 import tv.kyshu.xposed.utils.GnssFlags
 import tv.kyshu.xposed.utils.BinderUtils
@@ -37,93 +38,11 @@ import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.random.Random
 import kotlin.uuid.ExperimentalUuidApi
+import tv.kyshu.xposed.utils.GnssSatellite
+import tv.kyshu.xposed.utils.OrbitType
+import tv.kyshu.xposed.utils.satelliteList as multiConstellationSatellites
 
-private const val MAX_SATELLITES = 35 // 北斗系统实际可见卫星数上限
-
-// 载噪比范围，考虑不同轨道类型
-private const val GEO_MIN_CN0 = 30.0f  // GEO卫星信号较强
-private const val GEO_MAX_CN0 = 45.0f
-private const val IGSO_MIN_CN0 = 25.0f
-private const val IGSO_MAX_CN0 = 42.0f
-private const val MEO_MIN_CN0 = 20.0f  // MEO卫星信号相对较弱
-private const val MEO_MAX_CN0 = 40.0f
-
-// 北斗频率
-private const val BDS_B1I_FREQ = 1561.098f // MHz
-private const val BDS_B2I_FREQ = 1207.140f
-private const val BDS_B3I_FREQ = 1268.520f
-
-private val satelliteList = listOf(
-    BDSSatellite(1, OrbitType.GEO),
-    BDSSatellite(2, OrbitType.GEO),
-    BDSSatellite(3, OrbitType.GEO),
-    BDSSatellite(4, OrbitType.GEO),
-    BDSSatellite(5, OrbitType.GEO),
-    BDSSatellite(6, OrbitType.IGSO),
-    BDSSatellite(7, OrbitType.IGSO),
-    BDSSatellite(8, OrbitType.IGSO),
-    BDSSatellite(9, OrbitType.IGSO),
-    BDSSatellite(10, OrbitType.IGSO),
-    BDSSatellite(11, OrbitType.MEO),
-    BDSSatellite(12, OrbitType.MEO),
-    BDSSatellite(13, OrbitType.IGSO),
-    BDSSatellite(14, OrbitType.MEO),
-    BDSSatellite(16, OrbitType.IGSO),
-    BDSSatellite(19, OrbitType.MEO),
-    BDSSatellite(20, OrbitType.MEO),
-    BDSSatellite(21, OrbitType.MEO),
-    BDSSatellite(22, OrbitType.MEO),
-    BDSSatellite(23, OrbitType.MEO),
-    BDSSatellite(24, OrbitType.MEO),
-    BDSSatellite(25, OrbitType.MEO),
-    BDSSatellite(26, OrbitType.MEO),
-    BDSSatellite(27, OrbitType.MEO),
-    BDSSatellite(28, OrbitType.MEO),
-    BDSSatellite(29, OrbitType.MEO),
-    BDSSatellite(30, OrbitType.MEO),
-    BDSSatellite(31, OrbitType.IGSO),
-    BDSSatellite(32, OrbitType.MEO),
-    BDSSatellite(33, OrbitType.MEO),
-    BDSSatellite(34, OrbitType.MEO),
-    BDSSatellite(35, OrbitType.MEO),
-    BDSSatellite(36, OrbitType.MEO),
-    BDSSatellite(37, OrbitType.MEO),
-    BDSSatellite(38, OrbitType.IGSO),
-    BDSSatellite(39, OrbitType.IGSO),
-    BDSSatellite(40, OrbitType.IGSO),
-    BDSSatellite(41, OrbitType.MEO),
-    BDSSatellite(42, OrbitType.MEO),
-    BDSSatellite(43, OrbitType.MEO),
-    BDSSatellite(44, OrbitType.MEO),
-    BDSSatellite(45, OrbitType.MEO),
-    BDSSatellite(46, OrbitType.MEO),
-    BDSSatellite(56, OrbitType.IGSO),
-    BDSSatellite(57, OrbitType.MEO),
-    BDSSatellite(58, OrbitType.MEO),
-    BDSSatellite(59, OrbitType.GEO),
-    BDSSatellite(60, OrbitType.GEO),
-    BDSSatellite(61, OrbitType.GEO),
-    BDSSatellite(62, OrbitType.GEO),
-    BDSSatellite(48, OrbitType.MEO),
-    BDSSatellite(50, OrbitType.MEO),
-    BDSSatellite(47, OrbitType.MEO),
-    BDSSatellite(49, OrbitType.MEO),
-//    BDSSatellite(130, OrbitType.GEO),
-//    BDSSatellite(143, OrbitType.GEO),
-//    BDSSatellite(144, OrbitType.GEO),
-)
-
-
-sealed class OrbitType(val minCn0: Float, val maxCn0: Float, val elevationRange: ClosedRange<Float>) {
-    object GEO : OrbitType(GEO_MIN_CN0, GEO_MAX_CN0, 35f..50f)
-    object IGSO : OrbitType(IGSO_MIN_CN0, IGSO_MAX_CN0, 20f..60f)
-    object MEO : OrbitType(MEO_MIN_CN0, MEO_MAX_CN0, 0f..90f)
-}
-
-data class BDSSatellite(
-    val prn: Int,
-    val type: OrbitType,
-)
+private const val MAX_SATELLITES = 56 // BDS 35 + GPS 32 + GLONASS 24 + others
 
 data class MockGnssData(
     val svCount: Int,
@@ -135,7 +54,13 @@ data class MockGnssData(
 )
 
 internal object LocationServiceHook: BaseLocationHook() {
-    val locationListeners = LinkedBlockingQueue<Pair<String, IInterface>>()
+
+    operator fun invoke(classLoader: ClassLoader) {
+        if (DomainGuard.isDomainDisabled(DomainGuard.Domain.LOCATION_SERVICE)) {
+            Logger.warn("[LocationServiceHook] Domain LOCATION_SERVICE is disabled, skipping hook installation")
+            return
+        }
+    val locationListeners = LinkedBlockingQueue<Triple<String, IInterface, IBinder.DeathRecipient>>()
 
     // A random command is generated to prevent some apps from detecting Portal
     operator fun invoke(classLoader: ClassLoader) {
@@ -253,7 +178,7 @@ internal object LocationServiceHook: BaseLocationHook() {
             // remove this method
             val provider = kotlin.runCatching {
                 XposedHelpers.callMethod(args[0], "getProvider") as? String
-            }.getOrNull() ?: "gps"
+            }.onFailure { Logger.debug("[Reflect] getProvider callMethod failed", it) }.getOrNull() ?: "gps"
 
             val listener = args.filterIsInstance<IInterface>().firstOrNull() ?: run {
                 Logger.error("requestLocationUpdates: listener is null: $method")
@@ -300,7 +225,7 @@ internal object LocationServiceHook: BaseLocationHook() {
             val provider = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 kotlin.runCatching {
                     XposedHelpers.callMethod(args[1], "getProvider") as? String
-                }.getOrNull()
+                }.onFailure { Logger.debug("[Reflect] getProvider(API S+) callMethod failed", it) }.getOrNull()
             } else {
                 args[0] as? String
             } ?: "gps"
@@ -471,42 +396,45 @@ internal object LocationServiceHook: BaseLocationHook() {
                             azimuths = FloatArray(svCount),
                             carrierFreqs = FloatArray(svCount)
                         ).apply {
-                            val selectedSatellites = satelliteList.shuffled().take(svCount)
+                            val selectedSatellites = multiConstellationSatellites.shuffled().take(svCount)
 
                             selectedSatellites.forEachIndexed { index, sat ->
                                 svidWithFlags[index] = 0
 
-                                val hasEphemeris = Random.nextFloat() > 0.1f    // 90%概率有星历
-                                val hasAlmanac = Random.nextFloat() > 0.05f     // 95%概率有年历
-                                val usedInFix = Random.nextFloat() > 0.3f       // 70%概率用于定位
-                                val hasCarrierFreq = true                       // 总是有载波频率
-                                val hasBasebandCn0 = true                       // 总是有基带载噪比
+                                val hasEphemeris = Random.nextFloat() > 0.1f
+                                val hasAlmanac = Random.nextFloat() > 0.05f
+                                val usedInFix = Random.nextFloat() > 0.3f
+                                val hasCarrierFreq = true
+                                val hasBasebandCn0 = true
 
                                 var flags = GnssFlags.SVID_FLAGS_NONE
 
-                                // 设置基本标志位
                                 if (hasEphemeris) flags = flags or GnssFlags.SVID_FLAGS_HAS_EPHEMERIS_DATA
                                 if (hasAlmanac) flags = flags or GnssFlags.SVID_FLAGS_HAS_ALMANAC_DATA
                                 if (usedInFix) flags = flags or GnssFlags.SVID_FLAGS_USED_IN_FIX
                                 if (hasCarrierFreq) flags = flags or GnssFlags.SVID_FLAGS_HAS_CARRIER_FREQUENCY
                                 if (hasBasebandCn0) flags = flags or GnssFlags.SVID_FLAGS_HAS_BASEBAND_CN0
 
-                                // 组合SVID、星座类型和标志位
+                                // Use per-satellite constellation type from GnssSatelliteModel
                                 svidWithFlags[index] = (sat.prn shl GnssFlags.SVID_SHIFT_WIDTH) or
-                                        ((GnssFlags.CONSTELLATION_BEIDOU and GnssFlags.CONSTELLATION_TYPE_MASK) shl GnssFlags.CONSTELLATION_TYPE_SHIFT_WIDTH) or
+                                        ((sat.constellation and GnssFlags.CONSTELLATION_TYPE_MASK) shl GnssFlags.CONSTELLATION_TYPE_SHIFT_WIDTH) or
                                         flags
 
-                                cn0s[index] = when (sat.type) {
-                                    is OrbitType.GEO -> Random.nextFloat(GEO_MIN_CN0, GEO_MAX_CN0)
-                                    is OrbitType.IGSO -> Random.nextFloat(IGSO_MIN_CN0, IGSO_MAX_CN0)
-                                    is OrbitType.MEO -> Random.nextFloat(MEO_MIN_CN0, MEO_MAX_CN0)
-                                }
+                                cn0s[index] = Random.nextFloat(sat.type.minCn0, sat.type.maxCn0)
                                 elevations[index] = Random.nextFloat(sat.type.elevationRange.start, sat.type.elevationRange.endInclusive)
                                 azimuths[index] = Random.nextFloat(0f, 360f)
-                                carrierFreqs[index] = when (Random.nextInt(3)) {
-                                    0 -> BDS_B1I_FREQ
-                                    1 -> BDS_B2I_FREQ
-                                    else -> BDS_B3I_FREQ
+                                carrierFreqs[index] = when (sat.constellation) {
+                                    GnssFlags.CONSTELLATION_GPS -> 1575.42f
+                                    GnssFlags.CONSTELLATION_GLONASS -> 1602.0f
+                                    GnssFlags.CONSTELLATION_GALILEO -> 1575.42f
+                                    GnssFlags.CONSTELLATION_QZSS -> 1575.42f
+                                    GnssFlags.CONSTELLATION_SBAS -> 1575.42f
+                                    GnssFlags.CONSTELLATION_IRNSS -> 1176.45f
+                                    else -> when (Random.nextInt(3)) {
+                                        0 -> 1561.098f
+                                        1 -> 1207.140f
+                                        else -> 1268.520f
+                                    }
                                 }
                             }
                         }
@@ -719,7 +647,7 @@ internal object LocationServiceHook: BaseLocationHook() {
                 return@beforeHook
             }
 
-            if (provider !in setOf(ChannelIdentity.providerName, "portal")) {
+            if (provider != ChannelIdentity.providerName) {
                 if (FakeLoc.enableDebugLog)
                     Logger.debug("sendExtraCommand provider: $provider, command: $command, result: $result")
                 return@beforeHook
@@ -741,7 +669,7 @@ internal object LocationServiceHook: BaseLocationHook() {
                         if (param == null || param.args.size < 2 || param.args[0] == null) return
                         val provider = param.args[0] as String
                         var userId = param.args[1] as Int
-                        if (provider in setOf(ChannelIdentity.providerName, "portal")) {
+                        if (provider == ChannelIdentity.providerName) {
                             if (userId == 0) {
                                 userId = BinderUtils.getCallerUid()
                             }
@@ -768,7 +696,7 @@ internal object LocationServiceHook: BaseLocationHook() {
                         if (param == null || param.args.isEmpty() || param.args[0] == null) return
                         val provider = param.args[0] as String
                         val userId = BinderUtils.getCallerUid()
-                        if (provider in setOf(ChannelIdentity.providerName, "portal") && BinderUtils.isLocationProviderEnabled(userId)) {
+                        if (provider == ChannelIdentity.providerName && BinderUtils.isLocationProviderEnabled(userId)) {
                             param.result = true
                         } else if(provider == "network") {
                             param.result = !FakeLoc.enable
@@ -866,15 +794,16 @@ internal object LocationServiceHook: BaseLocationHook() {
 //    }
 
     private fun addLocationListenerInner(provider: String, listener: IInterface) {
+        val binder = listener.asBinder()
         val mDeathRecipient = object: IBinder.DeathRecipient {
-            override fun binderDied() {}
+            override fun binderDied() { binderDied(binder) }
             override fun binderDied(who: IBinder) {
                 who.unlinkToDeath(this, 0)
                 removeLocationListenerByBinder(who)
             }
         }
-        listener.asBinder().linkToDeath(mDeathRecipient, 0)
-        locationListeners.add(provider to listener)
+        binder.linkToDeath(mDeathRecipient, 0)
+        locationListeners.add(Triple(provider, listener, mDeathRecipient))
         hookILocationListener(listener)
     }
 
@@ -883,6 +812,10 @@ internal object LocationServiceHook: BaseLocationHook() {
     }
 
     private fun removeLocationListenerByBinder(binder: IBinder) {
+        val entry = locationListeners.firstOrNull { it.second.asBinder() == binder }
+        if (entry != null) {
+            binder.unlinkToDeath(entry.third, 0)
+        }
         locationListeners.removeIf { it.second.asBinder() == binder }
     }
 

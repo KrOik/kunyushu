@@ -57,12 +57,7 @@ object BinderUtils {
                 Logger.debug("isLocationProviderEnabled: system_server(1000) allowed")
                 return true
             }
-            uid < 10000 -> {
-                // Other system UIDs — log but allow (for compatibility)
-                Logger.warn("isLocationProviderEnabled: system uid=$uid, allowed (audit)")
-                return true
-            }
-            else -> {
+            uid >= 10000 -> {
                 // App UID: must exactly belong to tv.kyshu package
                 val packageNames = getUidPackageNames(uid = uid) ?: run {
                     Logger.warn("isLocationProviderEnabled: uid=$uid no packages, denied")
@@ -73,6 +68,10 @@ object BinderUtils {
                     return true
                 }
                 Logger.warn("isLocationProviderEnabled: uid=$uid $packageNames denied")
+                return false
+            }
+            else -> {
+                Logger.warn("isLocationProviderEnabled: uid=$uid non-system non-app uid, denied")
                 return false
             }
         }

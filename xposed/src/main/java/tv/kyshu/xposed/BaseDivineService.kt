@@ -9,6 +9,7 @@ import android.os.Bundle
 import android.os.Parcel
 import tv.kyshu.xposed.utils.BinderUtils
 import tv.kyshu.xposed.utils.FakeLoc
+import tv.kyshu.xposed.utils.ChannelIdentity
 import tv.kyshu.xposed.utils.Logger
 
 abstract class BaseDivineService {
@@ -41,7 +42,7 @@ abstract class BaseDivineService {
             return false
         }
 
-        if (!locationManager.isProviderEnabled("portal")) {
+        if (!locationManager.isProviderEnabled(ChannelIdentity.providerName)) {
             if (retryCount > 10) {
                 return false
             }
@@ -51,7 +52,7 @@ abstract class BaseDivineService {
 
         var randomKey = ""
         val rely = Bundle()
-        if(locationManager.sendExtraCommand("portal", "exchange_key", rely)) {
+        if(locationManager.sendExtraCommand(ChannelIdentity.providerName, "exchange_key", rely)) {
             rely.getString("key")?.let {
                 randomKey = it
             }
@@ -84,7 +85,7 @@ abstract class BaseDivineService {
             }
         })
         rely.putString("command_id", "set_proxy")
-        if (!locationManager.sendExtraCommand("portal", randomKey, rely)) {
+        if (!locationManager.sendExtraCommand(ChannelIdentity.providerName, randomKey, rely)) {
             Logger.error("Failed to init service proxy in $from")
             return false
         }
@@ -97,7 +98,7 @@ abstract class BaseDivineService {
     private fun syncConfig(locationManager: LocationManager, randomKey: String) {
         val rely = Bundle()
         rely.putString("command_id", "sync_config")
-        if(locationManager.sendExtraCommand("portal", randomKey, rely)) {
+        if(locationManager.sendExtraCommand(ChannelIdentity.providerName, randomKey, rely)) {
             FakeLoc.enable = rely.getBoolean("enable", FakeLoc.enable)
             FakeLoc.latitude = rely.getDouble("latitude", FakeLoc.latitude)
             FakeLoc.longitude = rely.getDouble("longitude", FakeLoc.longitude)

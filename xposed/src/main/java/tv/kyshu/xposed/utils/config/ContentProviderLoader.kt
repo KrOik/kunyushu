@@ -11,7 +11,7 @@ class ContentProviderLoader(private val context: Context?) : ConfigLoader {
     private var lastErrorAt = 0L
 
     companion object {
-        const val AUTHORITY = "com.kunyushu.kunyushu.provider"
+        const val AUTHORITY = "tv.kyshu.xposed.config"
         const val PATH_CONFIG = "config"
         val CONTENT_URI: Uri = Uri.parse("content://$AUTHORITY/$PATH_CONFIG")
     }

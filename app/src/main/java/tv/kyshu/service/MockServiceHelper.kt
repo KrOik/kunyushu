@@ -7,6 +7,7 @@ import android.os.Build
 import android.os.Bundle
 import tv.kyshu.xposed.utils.Log as XLog
 import tv.kyshu.android.root.ShellUtils
+import tv.kyshu.ext.sharedPrefs
 import tv.kyshu.ext.altitude
 import tv.kyshu.ext.debug
 import tv.kyshu.ext.disableFusedProvider
@@ -41,6 +42,10 @@ import tv.kyshu.ext.minSpeed
 import tv.kyshu.ext.maxSpeed
 import tv.kyshu.xposed.utils.FakeLoc
 import java.io.File
+import java.util.concurrent.Callable
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 
 /**
  * Lightweight probe logger for app-side operations.
@@ -89,20 +94,46 @@ object MockServiceHelper {
         }
     private lateinit var randomKey: String
     private var commandSequence: Long = 0
+    private val sendCommandExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "Portal-IPC-Timeout").apply { isDaemon = true }
+    }
+
+    /** Wraps sendExtraCommand with a timeout to prevent permanent Binder blocking. */
+    private fun sendWithTimeout(
+        locationManager: LocationManager,
+        command: String,
+        bundle: Bundle,
+        timeoutMs: Long = 5000L
+    ): Boolean {
+        return try {
+            val future = sendCommandExecutor.submit(Callable<Boolean> {
+                locationManager.sendExtraCommand(PROVIDER_NAME, command, bundle)
+            })
+            future.get(timeoutMs, TimeUnit.MILLISECONDS)
+        } catch (e: TimeoutException) {
+            MockServiceProbe.warn("sendExtraCommand timed out (${timeoutMs}ms) for command=$command")
+            false
+        } catch (e: Exception) {
+            MockServiceProbe.error("sendExtraCommand failed for command=$command", e)
+            false
+        }
+    }
 
     /**
      * Send an authenticated command with HMAC envelope and encrypted payload.
      * Uses the session key from exchange_key and increments the sequence counter.
      * Falls back to plain send if the security module is unavailable.
+     *
+     * @return Pair(success, bundle). On success, bundle contains server response data.
      */
     private fun sendAuthenticated(
         locationManager: LocationManager,
         commandId: String,
         bundleBuilder: Bundle.() -> Unit
-    ): Boolean {
+    ): Pair<Boolean, Bundle> {
         if (!::randomKey.isInitialized) {
             MockServiceProbe.warn("sendAuthenticated: randomKey not initialized for $commandId")
-            return false
+            return false to Bundle()
         }
         val bundle = Bundle().apply {
             putString("command_id", commandId)
@@ -110,22 +141,20 @@ object MockServiceHelper {
         }
         val seq = synchronized(this) { ++commandSequence }
         kotlin.runCatching {
-            tv.kyshu.xposed.security.RemoteCommandSecurity.attachEnvelope(
-                bundle, randomKey, seq
-            )
+            RemoteCommandSecurity.attachEnvelope(bundle, randomKey, seq)
         }.onFailure { e ->
-            MockServiceProbe.warn("sendAuthenticated: auth envelope attach failed for $commandId, falling back")
+            MockServiceProbe.warn("sendAuthenticated: auth envelope attach failed for $commandId: ${e.message}")
         }
         MockServiceProbe.ipcSent(commandId)
-        val result = locationManager.sendExtraCommand(PROVIDER_NAME, randomKey, bundle)
+        val result = sendWithTimeout(locationManager, randomKey, bundle)
         MockServiceProbe.ipcResult(commandId, result)
-        return result
+        return result to bundle
     }
 
     fun tryInitService(locationManager: LocationManager) {
         val rely = Bundle()
         MockServiceProbe.init("exchange_key_start")
-        if(locationManager.sendExtraCommand(PROVIDER_NAME, "exchange_key", rely)) {
+        if(sendWithTimeout(locationManager, "exchange_key", rely)) {
             rely.getString("key")?.let {
                 randomKey = it
                 MockServiceProbe.init("exchange_key_ok")
@@ -136,79 +165,34 @@ object MockServiceHelper {
     }
 
     fun isMockStart(locationManager: LocationManager): Boolean {
-        if (!::randomKey.isInitialized) {
-            return false
-        }
-        val rely = Bundle()
-        rely.putString("command_id", "is_start")
-        if(locationManager.sendExtraCommand(PROVIDER_NAME, randomKey, rely)) {
-            return rely.getBoolean("is_start")
-        }
-        return false
+        val (ok, rely) = sendAuthenticated(locationManager, "is_start") {}
+        return ok && rely.getBoolean("is_start")
     }
 
     fun isGnssMockStart(locationManager: LocationManager): Boolean {
-        if (!::randomKey.isInitialized) {
-            return false
-        }
-        val rely = Bundle()
-        rely.putString("command_id", "is_gnss_start")
-        if(locationManager.sendExtraCommand(PROVIDER_NAME, randomKey, rely)) {
-            return rely.getBoolean("is_gnss_start")
-        }
-        return false
+        val (ok, rely) = sendAuthenticated(locationManager, "is_gnss_start") {}
+        return ok && rely.getBoolean("is_gnss_start")
     }
 
     fun startGnssMock(locationManager: LocationManager): Boolean {
-        if (!::randomKey.isInitialized) return false
-        val rely = Bundle()
-        rely.putString("command_id", "start_gnss_mock")
-        MockServiceProbe.ipcSent("start_gnss_mock")
-        val ok = locationManager.sendExtraCommand(PROVIDER_NAME, randomKey, rely)
-        MockServiceProbe.ipcResult("start_gnss_mock", ok)
-        return ok
+        return sendAuthenticated(locationManager, "start_gnss_mock") {}.first
     }
 
     fun stopGnssMock(locationManager: LocationManager): Boolean {
-        if (!::randomKey.isInitialized) return false
-        val rely = Bundle()
-        rely.putString("command_id", "stop_gnss_mock")
-        MockServiceProbe.ipcSent("stop_gnss_mock")
-        val ok = locationManager.sendExtraCommand(PROVIDER_NAME, randomKey, rely)
-        MockServiceProbe.ipcResult("stop_gnss_mock", ok)
-        return ok
+        return sendAuthenticated(locationManager, "stop_gnss_mock") {}.first
     }
 
     fun isWifiMockStart(locationManager: LocationManager): Boolean {
-        if (!::randomKey.isInitialized) {
-            return false
-        }
-        val rely = Bundle()
-        rely.putString("command_id", "is_wifi_mock_start")
-        if(locationManager.sendExtraCommand(PROVIDER_NAME, randomKey, rely)) {
-            return rely.getBoolean("is_wifi_mock_start")
-        }
-        return false
+        val (ok, rely) = sendAuthenticated(locationManager, "is_wifi_mock_start") {}
+        return ok && rely.getBoolean("is_wifi_mock_start")
     }
 
     fun startWifiMock(locationManager: LocationManager): Boolean {
-        if (!::randomKey.isInitialized) return false
-        val rely = Bundle()
-        rely.putString("command_id", "start_wifi_mock")
-        MockServiceProbe.ipcSent("start_wifi_mock")
-        val ok = locationManager.sendExtraCommand(PROVIDER_NAME, randomKey, rely)
-        MockServiceProbe.ipcResult("start_wifi_mock", ok)
-        return ok
+        return sendAuthenticated(locationManager, "start_wifi_mock") {}.first
     }
 
     fun stopWifiMock(locationManager: LocationManager): Boolean {
-        if (!::randomKey.isInitialized) return false
-        val rely = Bundle()
-        rely.putString("command_id", "stop_wifi_mock")
-        MockServiceProbe.ipcSent("stop_wifi_mock")
-        val ok = locationManager.sendExtraCommand(PROVIDER_NAME, randomKey, rely)
-        MockServiceProbe.ipcResult("stop_wifi_mock", ok)
-        return ok
+        return sendAuthenticated(locationManager, "stop_wifi_mock") {}.first
     }
 
     fun tryOpenMock(
@@ -217,160 +201,87 @@ object MockServiceHelper {
         altitude: Double,
         accuracy: Float,
     ): Boolean {
-        if (!::randomKey.isInitialized) return false
-        val rely = Bundle()
-        rely.putString("command_id", "start")
-        rely.putDouble("speed", speed)
-        rely.putDouble("altitude", altitude)
-        rely.putFloat("accuracy", accuracy)
-        MockServiceProbe.ipcSent("start", "speed=$speed alt=$altitude acc=$accuracy")
-        val ok = locationManager.sendExtraCommand(PROVIDER_NAME, randomKey, rely)
-        if (ok) {
-            val confirmed = isMockStart(locationManager)
-            MockServiceProbe.ipcResult("start", confirmed)
-            return confirmed
+        val (ok, _) = sendAuthenticated(locationManager, "start") {
+            putDouble("speed", speed)
+            putDouble("altitude", altitude)
+            putFloat("accuracy", accuracy)
         }
-        MockServiceProbe.ipcResult("start", false)
-        return false
+        if (!ok) return false
+        return isMockStart(locationManager)
     }
 
     fun tryCloseMock(locationManager: LocationManager): Boolean {
-        if (!::randomKey.isInitialized) return false
-        val rely = Bundle()
-        rely.putString("command_id", "stop")
-        MockServiceProbe.ipcSent("stop")
-        if (locationManager.sendExtraCommand(PROVIDER_NAME, randomKey, rely)) {
-            val stopped = !isMockStart(locationManager)
-            MockServiceProbe.ipcResult("stop", stopped)
-            return stopped
-        }
-        MockServiceProbe.ipcResult("stop", false)
-        return false
+        val (ok, _) = sendAuthenticated(locationManager, "stop") {}
+        if (!ok) return false
+        return !isMockStart(locationManager)
     }
 
     fun getLocation(locationManager: LocationManager): Pair<Double, Double>? {
-        if (!::randomKey.isInitialized) {
-            return null
-        }
-        val rely = Bundle()
-        rely.putString("command_id", "get_location")
-        if(locationManager.sendExtraCommand(PROVIDER_NAME, randomKey, rely)) {
-            return Pair(rely.getDouble("lat"), rely.getDouble("lon"))
-        }
+        val (ok, rely) = sendAuthenticated(locationManager, "get_location") {}
+        if (ok) return Pair(rely.getDouble("lat"), rely.getDouble("lon"))
         return null
     }
 
     fun getLocationListenerSize(locationManager: LocationManager): Int? {
-        if (!::randomKey.isInitialized) {
-            return null
-        }
-        val rely = Bundle()
-        rely.putString("command_id", "get_listener_size")
-        if(locationManager.sendExtraCommand(PROVIDER_NAME, randomKey, rely)) {
-            return rely.getInt("size")
-        }
+        val (ok, rely) = sendAuthenticated(locationManager, "get_listener_size") {}
+        if (ok) return rely.getInt("size")
         return null
     }
 
     fun broadcastLocation(locationManager: LocationManager): Boolean {
-        if (!::randomKey.isInitialized) {
-            return false
-        }
-        val rely = Bundle()
-        rely.putString("command_id", "broadcast_location")
-        return locationManager.sendExtraCommand(PROVIDER_NAME, randomKey, rely)
+        return sendAuthenticated(locationManager, "broadcast_location") {}.first
     }
 
     fun setBearing(locationManager: LocationManager, bearing: Double): Boolean {
-        if (!::randomKey.isInitialized) {
-            return false
-        }
-        val rely = Bundle()
-        rely.putString("command_id", "set_bearing")
-        rely.putDouble("bearing", bearing)
-        return locationManager.sendExtraCommand(PROVIDER_NAME, randomKey, rely)
+        return sendAuthenticated(locationManager, "set_bearing") {
+            putDouble("bearing", bearing)
+        }.first
     }
 
     fun setSpeed(locationManager: LocationManager, speed: Float): Boolean {
-        if (!::randomKey.isInitialized) {
-            return false
-        }
-        val rely = Bundle()
-        rely.putString("command_id", "set_speed")
-        rely.putFloat("speed", speed)
-        return locationManager.sendExtraCommand(PROVIDER_NAME, randomKey, rely)
+        return sendAuthenticated(locationManager, "set_speed") {
+            putFloat("speed", speed)
+        }.first
     }
 
     fun setAltitude(locationManager: LocationManager, altitude: Double): Boolean {
-        if (!::randomKey.isInitialized) {
-            return false
-        }
-        val rely = Bundle()
-        rely.putString("command_id", "set_altitude")
-        rely.putDouble("altitude", altitude)
-        return locationManager.sendExtraCommand(PROVIDER_NAME, randomKey, rely)
+        return sendAuthenticated(locationManager, "set_altitude") {
+            putDouble("altitude", altitude)
+        }.first
     }
 
     fun setSpeedAmplitude(locationManager: LocationManager, speedAmplitude: Double): Boolean {
-        if (!::randomKey.isInitialized) {
-            return false
-        }
-        val rely = Bundle()
-        rely.putString("command_id", "set_speed_amp")
-        rely.putDouble("speed_amplitude", speedAmplitude)
-        return locationManager.sendExtraCommand(PROVIDER_NAME, randomKey, rely)
+        return sendAuthenticated(locationManager, "set_speed_amp") {
+            putDouble("speed_amplitude", speedAmplitude)
+        }.first
     }
 
     fun getSpeed(locationManager: LocationManager): Float? {
-        if (!::randomKey.isInitialized) {
-            return null
-        }
-        val rely = Bundle()
-        rely.putString("command_id", "get_speed")
-        if(locationManager.sendExtraCommand(PROVIDER_NAME, randomKey, rely)) {
-            return rely.getFloat("speed")
-        }
+        val (ok, rely) = sendAuthenticated(locationManager, "get_speed") {}
+        if (ok) return rely.getFloat("speed")
         return null
     }
 
     fun getBearing(locationManager: LocationManager): Float? {
-        if (!::randomKey.isInitialized) {
-            return null
-        }
-        val rely = Bundle()
-        rely.putString("command_id", "get_bearing")
-        if(locationManager.sendExtraCommand(PROVIDER_NAME, randomKey, rely)) {
-            return rely.getFloat("bearing")
-        }
+        val (ok, rely) = sendAuthenticated(locationManager, "get_bearing") {}
+        if (ok) return rely.getFloat("bearing")
         return null
     }
 
     fun getAltitude(locationManager: LocationManager): Double? {
-        if (!::randomKey.isInitialized) {
-            return null
-        }
-        val rely = Bundle()
-        rely.putString("command_id", "get_altitude")
-        if(locationManager.sendExtraCommand(PROVIDER_NAME, randomKey, rely)) {
-            return rely.getDouble("altitude")
-        }
+        val (ok, rely) = sendAuthenticated(locationManager, "get_altitude") {}
+        if (ok) return rely.getDouble("altitude")
         return null
     }
 
     fun move(locationManager: LocationManager, distance: Double, bearing: Double): Boolean {
-        if (!::randomKey.isInitialized) {
-            return false
-        }
-        val rely = Bundle()
-        rely.putString("command_id", "move")
-        rely.putDouble("n", distance)
-        rely.putDouble("bearing", bearing)
-
         if (FakeLoc.enableDebugLog) {
             XLog.d("MockServiceHelper", "move: distance=$distance, bearing=$bearing")
         }
-
-        return locationManager.sendExtraCommand(PROVIDER_NAME, randomKey, rely)
+        return sendAuthenticated(locationManager, "move") {
+            putDouble("n", distance)
+            putDouble("bearing", bearing)
+        }.first
     }
 
     fun setLocation(locationManager: LocationManager, lat: Double, lon: Double): Boolean {
@@ -378,95 +289,57 @@ object MockServiceHelper {
     }
 
     fun updateLocation(locationManager: LocationManager, lat: Double, lon: Double, mode: String): Boolean {
-        if (!::randomKey.isInitialized) {
-            return false
-        }
-        val rely = Bundle()
-        rely.putString("command_id", "update_location")
-        rely.putDouble("lat", lat)
-        rely.putDouble("lon", lon)
-        rely.putString("mode", mode)
-        return locationManager.sendExtraCommand(PROVIDER_NAME, randomKey, rely)
+        return sendAuthenticated(locationManager, "update_location") {
+            putDouble("lat", lat)
+            putDouble("lon", lon)
+            putString("mode", mode)
+        }.first
     }
 
 
     fun putConfig(locationManager: LocationManager, context: Context): Boolean {
-        if (!::randomKey.isInitialized) {
-            return false
-        }
+        return sendAuthenticated(locationManager, "put_config") {
+            putBoolean("enable", context.sharedPrefs.getBoolean("enable", false))
+            putDouble("altitude", context.altitude)
+            putDouble("speed", context.speed)
+            putBoolean("enable_debug_log", context.debug)
+            putBoolean("disable_get_current_location", context.disableGetCurrentLocation)
+            putBoolean("disable_register_location_listener", context.disableRegisterLocationListener)
+            putBoolean("disable_fused_location", context.disableFusedProvider)
+            putBoolean("need_downgrade_to_2g", context.needDowngradeToCdma)
+            putInt("min_satellites", context.minSatelliteCount)
+            putBoolean("enable_agps", context.enableAGPS)
+            putBoolean("enable_nmea", context.enableNMEA)
+            putBoolean("disable_request_geofence", !context.enableRequestGeofence)
+            putBoolean("disable_get_from_location", !context.enableGetFromLocation)
+            putBoolean("hook_wifi", context.hookWifi)
+            putString("mock_ssid", context.mockSSID)
+            putString("mock_bssid", context.mockBSSID)
+            putString("mock_mac", context.mockMac)
+            putString("mock_ip", context.mockIp)
+            putInt("mock_wifi_scan_count", context.mockWifiScanCount)
+            putBoolean("enable_step_count_mock", context.enableStepCountMock)
+            putInt("step_count", context.stepCount)
+            putBoolean("enable_shake_mock", context.enableShakeMock)
+            putBoolean("keep_walking_waveform", context.keepWalkingWaveform)
+            putLong("doze_sensor_interval_ms", context.dozeSensorIntervalMs)
+            putFloat("gait_freq", context.gaitFreq)
+            putFloat("gait_amp_scale", context.gaitAmpScale)
+            putBoolean("hide_base_station", context.hideBaseStation)
+            putBoolean("loop_broadcast_location", context.loopBroadcastLocation)
+            putBoolean("hide_mock", context.hideMock)
+            putBoolean("disable_network_location", context.disableNetworkLocation)
+            putDouble("speed_amplitude", context.speedAmplitude)
+            putDouble("min_speed", context.minSpeed)
+            putDouble("max_speed", context.maxSpeed)
+        }.also { (ok, _) ->
+            MockServiceProbe.configSync("put_config: enable=${context.sharedPrefs.getBoolean("enable", false)} ok=$ok")
+        }.first
+    }
 
-        FakeLoc.altitude = context.altitude
-        FakeLoc.speed = context.speed
-        FakeLoc.enableDebugLog = context.debug
-        FakeLoc.disableGetCurrentLocation = context.disableGetCurrentLocation
-        FakeLoc.disableRegisterLocationListener = context.disableRegisterLocationListener
-        FakeLoc.disableFusedLocation = context.disableFusedProvider
-        FakeLoc.needDowngradeToCdma = context.needDowngradeToCdma
-        FakeLoc.minSatellites = context.minSatelliteCount
-        FakeLoc.enableAGPS = context.enableAGPS
-        FakeLoc.enableNMEA = context.enableNMEA
-        FakeLoc.disableRequestGeofence = !context.enableRequestGeofence
-        FakeLoc.disableGetFromLocation = !context.enableGetFromLocation
-        FakeLoc.wifiData.hookWifi = context.hookWifi
-        FakeLoc.wifiData.mockSSID = context.mockSSID
-        FakeLoc.wifiData.mockBSSID = context.mockBSSID
-        FakeLoc.wifiData.mockMac = context.mockMac
-        FakeLoc.wifiData.mockIp = context.mockIp
-        FakeLoc.wifiData.mockWifiScanCount = context.mockWifiScanCount
-        FakeLoc.sensorData.enableStepCountMock = context.enableStepCountMock
-        FakeLoc.sensorData.stepCount = context.stepCount
-        FakeLoc.sensorData.enableShakeMock = context.enableShakeMock
-        FakeLoc.sensorData.keepWalkingWaveform = context.keepWalkingWaveform
-        FakeLoc.sensorData.dozeSensorIntervalMs = context.dozeSensorIntervalMs
-        FakeLoc.gaitData.gaitFreq = context.gaitFreq
-        FakeLoc.gaitData.gaitAmpScale = context.gaitAmpScale
-        FakeLoc.hideBaseStation = context.hideBaseStation
-        FakeLoc.loopBroadcastLocation = context.loopBroadcastLocation
-        FakeLoc.locationData.hideMock = context.hideMock
-        FakeLoc.disableNetworkLocation = context.disableNetworkLocation
-        FakeLoc.speedAmplitude = context.speedAmplitude
-        FakeLoc.minSpeed = context.minSpeed
-        FakeLoc.maxSpeed = context.maxSpeed
-
-        val rely = Bundle()
-        rely.putString("command_id", "put_config")
-        rely.putBoolean("enable", FakeLoc.enable)
-        rely.putDouble("altitude", FakeLoc.altitude)
-        rely.putDouble("speed", FakeLoc.speed)
-        rely.putBoolean("enable_debug_log", FakeLoc.enableDebugLog)
-        rely.putBoolean("disable_get_current_location", FakeLoc.disableGetCurrentLocation)
-        rely.putBoolean("disable_register_location_listener", FakeLoc.disableRegisterLocationListener)
-        rely.putBoolean("disable_fused_location", FakeLoc.disableFusedLocation)
-        rely.putBoolean("need_downgrade_to_2g", FakeLoc.needDowngradeToCdma)
-        rely.putInt("min_satellites", FakeLoc.minSatellites)
-        rely.putBoolean("enable_agps", FakeLoc.enableAGPS)
-        rely.putBoolean("enable_nmea", FakeLoc.enableNMEA)
-        rely.putBoolean("disable_request_geofence", FakeLoc.disableRequestGeofence)
-        rely.putBoolean("disable_get_from_location", FakeLoc.disableGetFromLocation)
-        rely.putBoolean("hook_wifi", FakeLoc.wifiData.hookWifi)
-        rely.putString("mock_ssid", FakeLoc.wifiData.mockSSID)
-        rely.putString("mock_bssid", FakeLoc.wifiData.mockBSSID)
-        rely.putString("mock_mac", FakeLoc.wifiData.mockMac)
-        rely.putString("mock_ip", FakeLoc.wifiData.mockIp)
-        rely.putInt("mock_wifi_scan_count", FakeLoc.wifiData.mockWifiScanCount)
-        rely.putBoolean("enable_step_count_mock", FakeLoc.sensorData.enableStepCountMock)
-        rely.putInt("step_count", FakeLoc.sensorData.stepCount)
-        rely.putBoolean("enable_shake_mock", FakeLoc.sensorData.enableShakeMock)
-        rely.putBoolean("keep_walking_waveform", FakeLoc.sensorData.keepWalkingWaveform)
-        rely.putLong("doze_sensor_interval_ms", FakeLoc.sensorData.dozeSensorIntervalMs)
-        rely.putFloat("gait_freq", FakeLoc.gaitData.gaitFreq)
-        rely.putFloat("gait_amp_scale", FakeLoc.gaitData.gaitAmpScale)
-        rely.putBoolean("hide_base_station", FakeLoc.hideBaseStation)
-        rely.putBoolean("loop_broadcast_location", FakeLoc.loopBroadcastLocation)
-        rely.putBoolean("hide_mock", FakeLoc.locationData.hideMock)
-        rely.putBoolean("disable_network_location", FakeLoc.disableNetworkLocation)
-        rely.putDouble("speed_amplitude", FakeLoc.speedAmplitude)
-        rely.putDouble("min_speed", FakeLoc.minSpeed)
-        rely.putDouble("max_speed", FakeLoc.maxSpeed)
-        MockServiceProbe.configSync("put_config: enable=${FakeLoc.enable}")
-        val ok = locationManager.sendExtraCommand(PROVIDER_NAME, randomKey, rely)
-        MockServiceProbe.ipcResult("put_config", ok)
-        return ok
+    fun syncConfig(locationManager: LocationManager): Bundle? {
+        val (ok, rely) = sendAuthenticated(locationManager, "sync_config") {}
+        return if (ok) rely else null
     }
 
     fun isServiceInit(): Boolean {
@@ -556,15 +429,58 @@ object MockServiceHelper {
      */
     @SuppressLint("Recycle")
     private fun sendViaContentProvider(context: Context, commandId: String, payload: Bundle): Boolean {
+        if (!::randomKey.isInitialized) {
+            MockServiceProbe.warn("sendViaContentProvider: randomKey not initialized")
+            return false
+        }
         return kotlin.runCatching {
             val uri = android.net.Uri.parse("content://tv.kyshu.xposed.config/cmd")
             val json = org.json.JSONObject()
             json.put("command_id", commandId)
-            json.put("timestamp_ms", System.currentTimeMillis())
+            val nowMs = System.currentTimeMillis()
+            val seq = synchronized(this) { ++commandSequence }
+            json.put("_kys_auth_nonce", java.security.SecureRandom().nextLong().toString(36))
+            json.put("_kys_auth_timestamp_ms", nowMs)
+            json.put("_kys_auth_sequence", seq)
+
             // Serialize payload fields
             for (key in payload.keySet()) {
-                json.put(key, payload.get(key))
+                val value = payload.get(key)
+                when (value) {
+                    is String -> json.put(key, value)
+                    is Int -> json.put(key, value)
+                    is Long -> json.put(key, value)
+                    is Double -> json.put(key, value)
+                    is Boolean -> json.put(key, value)
+                    else -> json.put(key, value.toString())
+                }
             }
+
+            // Compute HMAC (matching signCommand + payloadDigest in RemoteCommandSecurity)
+            val sortedKeys = json.keys().asSequence().filter {
+                !it.startsWith("_kys_")
+            }.sorted().toList()
+            val canonicalPayload = sortedKeys.joinToString("\n") { key ->
+                "$key=${json.get(key)}"
+            }
+            val payloadDigest = java.security.MessageDigest.getInstance("SHA-256")
+                .digest(canonicalPayload.toByteArray(Charsets.UTF_8))
+                .joinToString("") { "%02x".format(it) }
+            val hmacInput = buildString {
+                append(commandId); append('\n')
+                append(json.getString("_kys_auth_nonce")); append('\n')
+                append(nowMs); append('\n')
+                append(seq); append('\n')
+                append(payloadDigest)
+            }
+            val mac = javax.crypto.Mac.getInstance("HmacSHA256")
+            mac.init(javax.crypto.spec.SecretKeySpec(
+                randomKey.toByteArray(Charsets.UTF_8), "HmacSHA256"
+            ))
+            val signature = mac.doFinal(hmacInput.toByteArray(Charsets.UTF_8))
+                .joinToString("") { "%02x".format(it) }
+            json.put("_kys_auth_signature", signature)
+
             val contentValues = android.content.ContentValues().apply {
                 put("command", json.toString())
             }
@@ -584,7 +500,7 @@ object MockServiceHelper {
     ): Boolean {
         // Primary: try sendExtraCommand
         if (::randomKey.isInitialized) {
-            val ok = locationManager.sendExtraCommand(PROVIDER_NAME, randomKey, payload)
+            val ok = sendWithTimeout(locationManager, randomKey, payload)
             if (ok) return true
             MockServiceProbe.warn("sendCommandWithFallback: sendExtraCommand failed for $commandId, falling back to ContentProvider")
         }

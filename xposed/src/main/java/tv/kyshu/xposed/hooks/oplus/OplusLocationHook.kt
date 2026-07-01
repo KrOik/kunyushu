@@ -9,13 +9,56 @@ import tv.kyshu.xposed.hooks.blindhook.BlindHookLocation.invoke
 import tv.kyshu.xposed.hooks.fused.ThirdPartyLocationHook
 import tv.kyshu.xposed.utils.FakeLoc
 import tv.kyshu.xposed.utils.Logger
+import tv.kyshu.xposed.utils.afterHook
+import tv.kyshu.xposed.utils.beforeHook
 import tv.kyshu.xposed.utils.hookMethodAfter
-import tv.kyshu.xposed.utils.onceHookMethodBefore
+import tv.kyshu.xposed.utils.onceHookBefore
 import tv.kyshu.xposed.utils.toClass
 import java.lang.reflect.Modifier
 
 object OplusLocationHook: BaseLocationHook() {
     operator fun invoke(classLoader: ClassLoader) {
         ThirdPartyLocationHook(classLoader)
+
+        // OPlus/Oppo proprietary location services
+        val oplusClasses = listOf(
+            "oplus.location.OplusLocationManager",
+            "com.oplus.location.OplusLocationProvider",
+        )
+        for (className in oplusClasses) {
+            val clazz = XposedHelpers.findClassIfExists(className, classLoader) ?: continue
+            Logger.info("[OplusLocationHook] Found $className, applying BlindHookLocation")
+            val hooked = BlindHookLocation(clazz, classLoader)
+            if (hooked > 0) {
+                Logger.info("[OplusLocationHook] BlindHookLocation hooked $hooked methods on $className")
+            }
+            // Also hook sendExtraCommand if present
+            clazz.declaredMethods.filter {
+                it.name == "sendExtraCommand" && Modifier.isPublic(it.modifiers)
+            }.forEach { method ->
+                method.onceHookBefore { param ->
+                    if (param.args.size < 2 || !FakeLoc.enable) return@onceHookBefore
+                    val provider = param.args[0] as? String ?: return@onceHookBefore
+                    val command = param.args[1] as? String ?: return@onceHookBefore
+                    val bundle = param.args.getOrNull(2) as? Bundle
+                    if (bundle != null && provider == tv.kyshu.xposed.utils.ChannelIdentity.providerName) {
+                        if (tv.kyshu.xposed.RemoteCommandHandler.handleInstruction(command, bundle)) {
+                            param.result = true
+                        }
+                    }
+                }
+            }
+        }
+
+        // OPlus location feature hooks
+        val oplusFeatureClasses = listOf(
+            "oplus.location.OplusDeviceConfig",
+            "oplus.app.OplusAppUtils",
+        )
+        for (className in oplusFeatureClasses) {
+            val clazz = XposedHelpers.findClassIfExists(className, classLoader) ?: continue
+            BlindHookLocation(clazz, classLoader)
+            Logger.debug("[OplusLocationHook] Applied BlindHookLocation to $className")
+        }
     }
 }

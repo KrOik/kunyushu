@@ -268,31 +268,30 @@ object TelephonyHook: BaseTelephonyHook() {
                                     String::class.java,
                                     String::class.java
                                 ).newInstance(
-                                    Int.MAX_VALUE,
-                                    Int.MAX_VALUE,
-                                    Int.MAX_VALUE,
+                                    kotlin.random.Random.nextInt(10000, 65536),
+                                    kotlin.random.Random.nextInt(100, 1000),
+                                    kotlin.random.Random.nextInt(10000, 99999),
                                     (FakeLoc.latitude * 14400.0).toInt(),
                                     (FakeLoc.longitude * 14400.0).toInt(),
-                                    null, null
-                                )
+                                    null, null)
                             }
                         }
                     } else {
                         listener.javaClass.onceHookMethodBefore("onCellLocationChanged", Bundle::class.java) {
                             if (FakeLoc.enable) {
                                 result = Bundle().apply {
-                                    putInt("cid", Int.MAX_VALUE)
-                                    putInt("lac", Int.MAX_VALUE)
-                                    putInt("psc", Int.MAX_VALUE)
+                                    putInt("cid", kotlin.random.Random.nextInt(100000, 999999))
+                                    putInt("lac", kotlin.random.Random.nextInt(1000, 65535))
+                                    putInt("psc", 0)
                                     putInt("baseStationLatitude", (FakeLoc.latitude * 14400.0).toInt())
                                     putInt("baseStationLongitude", (FakeLoc.longitude * 14400.0).toInt())
                                     putBoolean("empty", false)
                                     putBoolean("emptyParcel", false)
                                     putInt("mFlags", 1536)
                                     putBoolean("parcelled", false)
-                                    putInt("baseStationId", Int.MAX_VALUE)
-                                    putInt("systemId", Int.MAX_VALUE)
-                                    putInt("networkId", Int.MAX_VALUE)
+                                    putInt("baseStationId", kotlin.random.Random.nextInt(10000, 99999))
+                                    putInt("systemId", kotlin.random.Random.nextInt(100, 1000))
+                                    putInt("networkId", kotlin.random.Random.nextInt(10000, 65536))
                                     putInt("size", 0)
                                 }
                             }
@@ -378,18 +377,18 @@ object TelephonyHook: BaseTelephonyHook() {
             }
 
             args[0] = Bundle().apply {
-                putInt("cid", Int.MAX_VALUE)
-                putInt("lac", Int.MAX_VALUE)
-                putInt("psc", Int.MAX_VALUE)
+                putInt("cid", kotlin.random.Random.nextInt(100000, 999999))
+                putInt("lac", kotlin.random.Random.nextInt(1000, 65535))
+                putInt("psc", 0)
                 putInt("baseStationLatitude", (FakeLoc.latitude * 14400.0).toInt())
                 putInt("baseStationLongitude", (FakeLoc.longitude * 14400.0).toInt())
                 putBoolean("empty", false)
                 putBoolean("emptyParcel", false)
                 putInt("mFlags", 1536)
                 putBoolean("parcelled", false)
-                putInt("baseStationId", Int.MAX_VALUE)
-                putInt("systemId", Int.MAX_VALUE)
-                putInt("networkId", Int.MAX_VALUE)
+                putInt("baseStationId", kotlin.random.Random.nextInt(10000, 99999))
+                putInt("systemId", kotlin.random.Random.nextInt(100, 1000))
+                putInt("networkId", kotlin.random.Random.nextInt(10000, 65536))
                 putInt("size", 0)
             }
         }
@@ -401,20 +400,19 @@ object TelephonyHook: BaseTelephonyHook() {
             if (FakeLoc.enableDebugLog) {
                 Logger.debug("notifyCellLocationForSubscriber: injected!")
             }
-
             args[1] = Bundle().apply {
-                putInt("cid", Int.MAX_VALUE)
-                putInt("lac", Int.MAX_VALUE)
-                putInt("psc", Int.MAX_VALUE)
+                putInt("cid", kotlin.random.Random.nextInt(100000, 999999))
+                putInt("lac", kotlin.random.Random.nextInt(1000, 65535))
+                putInt("psc", 0)
                 putInt("baseStationLatitude", (FakeLoc.latitude * 14400.0).toInt())
                 putInt("baseStationLongitude", (FakeLoc.longitude * 14400.0).toInt())
                 putBoolean("empty", false)
                 putBoolean("emptyParcel", false)
                 putInt("mFlags", 1536)
                 putBoolean("parcelled", false)
-                putInt("baseStationId", Int.MAX_VALUE)
-                putInt("systemId", Int.MAX_VALUE)
-                putInt("networkId", Int.MAX_VALUE)
+                putInt("baseStationId", kotlin.random.Random.nextInt(10000, 99999))
+                putInt("systemId", kotlin.random.Random.nextInt(100, 1000))
+                putInt("networkId", kotlin.random.Random.nextInt(10000, 65536))
                 putInt("size", 0)
             }
         }

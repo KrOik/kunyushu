@@ -26,6 +26,9 @@ import java.util.concurrent.ConcurrentLinkedQueue
  *   - Other system UID (< 10000): allowed but audit-logged
  */
 class ConfigProvider : ContentProvider() {
+    /** true if the current caller is authorized to read sensitive location data. */
+    @Volatile
+    private var isSensitiveAllowed = true
 
     companion object {
         const val AUTHORITY = "tv.kyshu.xposed.config"
@@ -85,16 +88,20 @@ class ConfigProvider : ContentProvider() {
 
         when {
             uid == 1000 -> {
+                // system_server (UID 1000): always allowed for all data
+                isSensitiveAllowed = true
                 val pkgs = kotlin.runCatching {
                     ctx.packageManager.getPackagesForUid(uid)
                 }.getOrNull()
                 android.util.Log.i("ConfigProvider", "system_server(1000) call packages=$pkgs")
             }
             uid < 10000 -> {
+                // Other system UIDs — deny sensitive data, allow non-sensitive
+                isSensitiveAllowed = false
                 val pkgs = kotlin.runCatching {
                     ctx.packageManager.getPackagesForUid(uid)
                 }.getOrNull()
-                android.util.Log.w("ConfigProvider", "system UID $uid call packages=$pkgs")
+                android.util.Log.w("ConfigProvider", "system UID $uid call packages=$pkgs, sensitive data denied")
             }
             else -> {
                 val packages = ctx.packageManager.getPackagesForUid(uid) ?: emptyArray()
@@ -103,7 +110,7 @@ class ConfigProvider : ContentProvider() {
                 }
                 val ourPkg = ctx.packageManager.getPackagesForUid(
                     android.os.Process.myUid()
-                )?.firstOrNull() ?: return
+                )?.firstOrNull() ?: throw SecurityException("Cannot determine own package")
                 val theirSig = kotlin.runCatching {
                     ctx.packageManager.getPackageInfo(
                         packages.first(),
@@ -121,6 +128,7 @@ class ConfigProvider : ContentProvider() {
                         "tv.kyshu package $uid signature mismatch — rejecting")
                     throw SecurityException("UID $uid signature mismatch")
                 }
+                isSensitiveAllowed = true
             }
         }
     }
@@ -149,116 +157,35 @@ class ConfigProvider : ContentProvider() {
         val cursor = MatrixCursor(arrayOf("key", "value", "type"))
         val ctx = context ?: return cursor
 
+        fun safeRead(key: String, block: () -> Unit) {
+            try { block() } catch (e: Exception) {
+                android.util.Log.w("ConfigProvider", "Failed to read config key '$key': ${e.message}")
+            }
+        }
+
         // Read config values from FakeLoc (static cached state synced from xposed module)
-        try {
-            val enableLog = FakeLoc.enableLog
-            addRow(cursor, "enable_log", enableLog.toString(), "boolean")
-        } catch (_: Exception) {}
-
-        try {
-            val enableDebugLog = FakeLoc.enableDebugLog
-            addRow(cursor, "enable_debug_log", enableDebugLog.toString(), "boolean")
-        } catch (_: Exception) {}
-
-        try {
-            val enable = FakeLoc.enable
-            addRow(cursor, "enable", enable.toString(), "boolean")
-        } catch (_: Exception) {}
-
-        try {
-            val enableMockGnss = FakeLoc.enableMockGnss
-            addRow(cursor, "enable_mock_gnss", enableMockGnss.toString(), "boolean")
-        } catch (_: Exception) {}
-
-        try {
-            val enableMockWifi = FakeLoc.enableMockWifi
-            addRow(cursor, "enable_mock_wifi", enableMockWifi.toString(), "boolean")
-        } catch (_: Exception) {}
-
-        try {
-            val latitude = FakeLoc.latitude
-            addRow(cursor, "latitude", latitude.toString(), "double")
-        } catch (_: Exception) {}
-
-        try {
-            val longitude = FakeLoc.longitude
-            addRow(cursor, "longitude", longitude.toString(), "double")
-        } catch (_: Exception) {}
-
-        try {
-            val altitude = FakeLoc.altitude
-            addRow(cursor, "altitude", altitude.toString(), "double")
-        } catch (_: Exception) {}
-
-        try {
-            val speed = FakeLoc.speed
-            addRow(cursor, "speed", speed.toString(), "double")
-        } catch (_: Exception) {}
-
-        try {
-            val accuracy = FakeLoc.accuracy
-            addRow(cursor, "accuracy", accuracy.toString(), "float")
-        } catch (_: Exception) {}
-
-        try {
-            val bearing = FakeLoc.bearing
-            addRow(cursor, "bearing", bearing.toString(), "double")
-        } catch (_: Exception) {}
-
-        try {
-            val hookSensor = FakeLoc.hookSensor
-            addRow(cursor, "hook_sensor", hookSensor.toString(), "boolean")
-        } catch (_: Exception) {}
-
-        try {
-            val isAppInBackground = FakeLoc.isAppInBackground
-            addRow(cursor, "is_app_in_background", isAppInBackground.toString(), "boolean")
-        } catch (_: Exception) {}
-
-        try {
-            val isScreenOff = FakeLoc.isScreenOff
-            addRow(cursor, "is_screen_off", isScreenOff.toString(), "boolean")
-        } catch (_: Exception) {}
-
-        try {
-            val isDeviceIdleMode = FakeLoc.isDeviceIdleMode
-            addRow(cursor, "is_device_idle_mode", isDeviceIdleMode.toString(), "boolean")
-        } catch (_: Exception) {}
-
-        try {
-            val disableFusedLocation = FakeLoc.disableFusedLocation
-            addRow(cursor, "disable_fused_location", disableFusedLocation.toString(), "boolean")
-        } catch (_: Exception) {}
-
-        try {
-            val hideMock = FakeLoc.locationData.hideMock
-            addRow(cursor, "hide_mock", hideMock.toString(), "boolean")
-        } catch (_: Exception) {}
-
-        try {
-            val disableNetworkLocation = FakeLoc.disableNetworkLocation
-            addRow(cursor, "disable_network_location", disableNetworkLocation.toString(), "boolean")
-        } catch (_: Exception) {}
-
-        try {
-            val speedAmplitude = FakeLoc.speedAmplitude
-            addRow(cursor, "speed_amplitude", speedAmplitude.toString(), "double")
-        } catch (_: Exception) {}
-
-        try {
-            val minSpeed = FakeLoc.minSpeed
-            addRow(cursor, "min_speed", minSpeed.toString(), "double")
-        } catch (_: Exception) {}
-
-        try {
-            val maxSpeed = FakeLoc.maxSpeed
-            addRow(cursor, "max_speed", maxSpeed.toString(), "double")
-        } catch (_: Exception) {}
+        safeRead("enable_log") { val v = FakeLoc.enableLog; addRow(cursor, "enable_log", v.toString(), "boolean") }
+        safeRead("enable_debug_log") { val v = FakeLoc.enableDebugLog; addRow(cursor, "enable_debug_log", v.toString(), "boolean") }
+        safeRead("enable") { val v = FakeLoc.enable; addRow(cursor, "enable", v.toString(), "boolean") }
+        safeRead("enable_mock_gnss") { val v = FakeLoc.enableMockGnss; addRow(cursor, "enable_mock_gnss", v.toString(), "boolean") }
+        safeRead("enable_mock_wifi") { val v = FakeLoc.enableMockWifi; addRow(cursor, "enable_mock_wifi", v.toString(), "boolean") }
+        safeRead("latitude") { val v = FakeLoc.latitude; addRow(cursor, "latitude", v.toString(), "double") }
+        safeRead("longitude") { val v = FakeLoc.longitude; addRow(cursor, "longitude", v.toString(), "double") }
+        safeRead("altitude") { val v = FakeLoc.altitude; addRow(cursor, "altitude", v.toString(), "double") }
+        safeRead("speed") { val v = FakeLoc.speed; addRow(cursor, "speed", v.toString(), "double") }
+        safeRead("accuracy") { val v = FakeLoc.accuracy; addRow(cursor, "accuracy", v.toString(), "float") }
+        safeRead("bearing") { val v = FakeLoc.bearing; addRow(cursor, "bearing", v.toString(), "double") }
+        safeRead("hook_sensor") { val v = FakeLoc.hookSensor; addRow(cursor, "hook_sensor", v.toString(), "boolean") }
+        safeRead("is_app_in_background") { val v = FakeLoc.isAppInBackground; addRow(cursor, "is_app_in_background", v.toString(), "boolean") }
+        safeRead("is_screen_off") { val v = FakeLoc.isScreenOff; addRow(cursor, "is_screen_off", v.toString(), "boolean") }
+        safeRead("is_device_idle_mode") { val v = FakeLoc.isDeviceIdleMode; addRow(cursor, "is_device_idle_mode", v.toString(), "boolean") }
+        safeRead("disable_fused_location") { val v = FakeLoc.disableFusedLocation; addRow(cursor, "disable_fused_location", v.toString(), "boolean") }
+        safeRead("hide_mock") { val v = FakeLoc.locationData.hideMock; addRow(cursor, "hide_mock", v.toString(), "boolean") }
+        safeRead("disable_network_location") { val v = FakeLoc.disableNetworkLocation; addRow(cursor, "disable_network_location", v.toString(), "boolean") }
+        safeRead("speed_amplitude") { val v = FakeLoc.speedAmplitude; addRow(cursor, "speed_amplitude", v.toString(), "double") }
+        safeRead("min_speed") { val v = FakeLoc.minSpeed; addRow(cursor, "min_speed", v.toString(), "double") }
 
         return cursor
     }
 
-    private fun addRow(cursor: MatrixCursor, key: String, value: String, type: String) {
-        cursor.addRow(arrayOf(key, value, type))
-    }
 }

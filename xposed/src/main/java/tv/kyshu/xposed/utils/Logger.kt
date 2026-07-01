@@ -26,15 +26,15 @@ object Logger {
         Log.d(TAG, "[RL] $msg")
     }
 
-    fun info(msg: String) { if (forceLogging || FakeLoc.enableLog) Log.i(TAG, msg) }
-    fun info(msg: String, throwable: Throwable) { if (forceLogging || FakeLoc.enableLog) Log.i(TAG, msg, throwable) }
+    fun info(msg: String) { Log.i(TAG, msg) }
+    fun info(msg: String, throwable: Throwable) { Log.i(TAG, msg, throwable) }
 
-    fun debug(msg: String) { if (forceLogging || (FakeLoc.enableLog && FakeLoc.enableDebugLog)) Log.d(TAG, msg) }
-    fun debug(msg: String, throwable: Throwable) { if (forceLogging || (FakeLoc.enableLog && FakeLoc.enableDebugLog)) Log.d(TAG, msg, throwable) }
+    fun debug(msg: String) { Log.d(TAG, msg) }
+    fun debug(msg: String, throwable: Throwable) { Log.d(TAG, msg, throwable) }
 
-    fun warn(msg: String) { if (forceLogging || FakeLoc.enableLog) Log.w(TAG, msg) }
-    fun warn(msg: String, throwable: Throwable) { if (forceLogging || FakeLoc.enableLog) Log.w(TAG, msg, throwable) }
+    fun warn(msg: String) { Log.w(TAG, msg) }
+    fun warn(msg: String, throwable: Throwable) { Log.w(TAG, msg, throwable) }
 
-    fun error(msg: String) { if (forceLogging || FakeLoc.enableLog) Log.e(TAG, msg) }
-    fun error(msg: String, throwable: Throwable) { if (forceLogging || FakeLoc.enableLog) Log.e(TAG, msg, throwable) }
+    fun error(msg: String) { Log.e(TAG, msg) }
+    fun error(msg: String, throwable: Throwable) { Log.e(TAG, msg, throwable) }
 }

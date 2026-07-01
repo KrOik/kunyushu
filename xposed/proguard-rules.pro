@@ -1,5 +1,5 @@
 # Aggressive obfuscation options (VoxLoction-style)
--repackageclasses 'a'
+-repackageclasses 'tv.kyshu.xposed'
 -allowaccessmodification
 -overloadaggressively
 -useuniqueclassmembernames
@@ -19,8 +19,20 @@
 -keep class tv.kyshu.dobby.Dobby { *; }
 
 # Hook classes used reflectively via XposedHelpers.findClass
--keep class tv.kyshu.xposed.hooks.** { *; }
--keep class tv.kyshu.xposed.hooks.*$** { *; }
+# Hook 实现类 —— 仅保留入口和关键 API，允许内部实现混淆
+-keep class tv.kyshu.xposed.hooks.LocationServiceHook { *; }
+-keep class tv.kyshu.xposed.hooks.LocationManagerHook { *; }
+-keep class tv.kyshu.xposed.hooks.BasicLocationHook { *; }
+-keep class tv.kyshu.xposed.hooks.fused.AndroidFusedLocationProviderHook { *; }
+-keep class tv.kyshu.xposed.hooks.fused.ThirdPartyLocationHook { *; }
+-keep class tv.kyshu.xposed.hooks.oplus.OplusLocationHook { *; }
+-keep class tv.kyshu.xposed.hooks.gnss.GnssHook { *; }
+-keep class tv.kyshu.xposed.hooks.nmea.LocationNMEAHook { *; }
+-keep class tv.kyshu.xposed.hooks.sensor.SystemSensorManagerHook { *; }
+-keep class tv.kyshu.xposed.hooks.wlan.WlanHook { *; }
+-keep class tv.kyshu.xposed.hooks.telephony.TelephonyHook { *; }
+-keep class tv.kyshu.xposed.hooks.provider.LocationProviderManagerHook { *; }
+-keep class tv.kyshu.xposed.hooks.blindhook.BlindHookLocation { *; }
 
 # Config store (accessed from all modules)
 -keep class tv.kyshu.xposed.utils.FakeLoc { *; }

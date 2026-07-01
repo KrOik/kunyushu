@@ -8,7 +8,6 @@ import android.Manifest.permission.ACCESS_WIFI_STATE
 import android.Manifest.permission.CHANGE_WIFI_STATE
 import android.Manifest.permission.FOREGROUND_SERVICE
 import android.Manifest.permission.INTERNET
-import android.Manifest.permission.READ_PHONE_STATE
 import android.Manifest.permission.VIBRATE
 import android.annotation.SuppressLint
 import android.app.Notification
@@ -99,7 +98,6 @@ class MainActivity : AppCompatActivity() {
             ACCESS_LOCATION_EXTRA_COMMANDS,
             ACCESS_WIFI_STATE,
             CHANGE_WIFI_STATE,
-            READ_PHONE_STATE,
             INTERNET,
             ACCESS_NETWORK_STATE,
             VIBRATE
@@ -128,8 +126,6 @@ class MainActivity : AppCompatActivity() {
         val message = when (permission) {
             ACCESS_FINE_LOCATION, ACCESS_COARSE_LOCATION -> "Portal需要完整位置权限"
             ACCESS_LOCATION_EXTRA_COMMANDS -> "Portal需要额外位置命令权限和系统交互"
-            CHANGE_WIFI_STATE, ACCESS_WIFI_STATE -> "Portal需要访问Wi-Fi状态"
-            READ_PHONE_STATE -> "Portal需要读取设备信息"
             ACCESS_NETWORK_STATE, INTERNET -> "Portal需要访问网络"
             VIBRATE -> "Portal需要访问传感器"
             else -> "需要 $permission 才能运行"
@@ -292,21 +288,14 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        // Retry sync_config when app returns to foreground
         val locationManager = getSystemService(LOCATION_SERVICE) as? LocationManager ?: return
         if (tv.kyshu.service.MockServiceHelper.isServiceInit()) {
             kotlin.runCatching {
-                val rely = android.os.Bundle()
-                rely.putString("command_id", "sync_config")
-                if (locationManager.sendExtraCommand(
-                    tv.kyshu.service.MockServiceHelper.PROVIDER_NAME,
-                    "sync_config", rely
-                )) {
-                    if (rely.containsKey("latitude") && rely.containsKey("longitude")) {
-                        val lat = rely.getDouble("latitude")
-                        val lon = rely.getDouble("longitude")
-                        Toast.makeText(this, "配置已同步", Toast.LENGTH_SHORT).show()
-                    }
+                val rely = tv.kyshu.service.MockServiceHelper.syncConfig(locationManager)
+                if (rely != null && rely.containsKey("latitude") && rely.containsKey("longitude")) {
+                    val lat = rely.getDouble("latitude")
+                    val lon = rely.getDouble("longitude")
+                    Toast.makeText(this, "配置已同步", Toast.LENGTH_SHORT).show()
                 }
             }
         }
@@ -333,7 +322,6 @@ class MainActivity : AppCompatActivity() {
                     ACCESS_FINE_LOCATION, ACCESS_COARSE_LOCATION -> "Portal需要完整位置权限"
                     ACCESS_LOCATION_EXTRA_COMMANDS -> "Portal需要额外位置命令权限和系统交互"
                     CHANGE_WIFI_STATE, ACCESS_WIFI_STATE -> "Portal需要访问Wi-Fi状态"
-                    READ_PHONE_STATE -> "Portal需要读取设备信息"
                     ACCESS_NETWORK_STATE, INTERNET -> "Portal需要访问网络"
                     VIBRATE -> "Portal需要访问传感器"
                     else -> "需要 $permission 才能运行"
@@ -369,7 +357,7 @@ class MainActivity : AppCompatActivity() {
                 val lat = latText.toDouble()
                 markedLoc = lat to lng
                 if (isExists) {
-                    val gcjLoc = markedLoc!!.gcj02
+                    val gcjLoc = markedLoc?.gcj02 ?: return@with
                     val location = LatLng(gcjLoc.latitude, gcjLoc.longitude)
                     baiduMap.setMapStatus(MapStatusUpdateFactory.newLatLng(location))
                 } else {
@@ -408,7 +396,7 @@ class MainActivity : AppCompatActivity() {
             override fun onQueryTextSubmit(query: String?): Boolean {
                 if (query.isNullOrBlank()) return false
                 try {
-                    mSuggestionSearch!!.requestSuggestion(SuggestionSearchOption()
+                    mSuggestionSearch?.requestSuggestion(SuggestionSearchOption()
                         .keyword(query)
                         .city(mCityString)
                     )
@@ -425,7 +413,7 @@ class MainActivity : AppCompatActivity() {
             override fun onQueryTextChange(newText: String?): Boolean {
                 if (!newText.isNullOrBlank()) {
                     try {
-                        mSuggestionSearch!!.requestSuggestion(
+                        mSuggestionSearch?.requestSuggestion(
                             SuggestionSearchOption()
                                 .keyword(newText)
                                 .city(mCityString)
@@ -450,7 +438,7 @@ class MainActivity : AppCompatActivity() {
             perspectiveState = MyLocationConfiguration.LocationMode.NORMAL
         }
 
-        val gcjLoc = markedLoc!!.gcj02
+        val gcjLoc = markedLoc?.gcj02 ?: return
         val ooA = MarkerOptions()
             .position(gcjLoc)
             .apply {
@@ -460,7 +448,7 @@ class MainActivity : AppCompatActivity() {
         baiduMap.clear()
         baiduMap.addOverlay(ooA)
 
-        showDetailInfo(markedLoc!!, gcjLoc)
+        showDetailInfo(markedLoc ?: return, gcjLoc)
     }
 
     @SuppressLint("SetTextI18n")

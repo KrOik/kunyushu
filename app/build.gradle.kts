@@ -16,7 +16,7 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = getVersionCode()
-        versionName = "1.0.4" + ".r${getGitCommitCount()}." + getVersionName()
+        versionName = "1.0.4"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -188,13 +188,12 @@ dependencies {
     androidTestImplementation(libs.androidx.espresso.core)
 }
 
-fun getGitCommitCount(): Int {
-    val out = ByteArrayOutputStream()
-    exec {
-        commandLine("git", "rev-list", "--count", "HEAD")
-        standardOutput = out
-    }
-    return out.toString().trim().toInt()
+fun getVersionCode(): Int {
+    // 语义版本 -> versionCode: major*10000 + minor*100 + patch
+    val major = 1
+    val minor = 0
+    val patch = 4
+    return major * 10000 + minor * 100 + patch
 }
 
 fun getGitCommitHash(): String {
@@ -206,24 +205,20 @@ fun getGitCommitHash(): String {
     return out.toString().trim()
 }
 
-fun getVersionCode(): Int {
-    return getGitCommitCount()
-}
 
 fun getVersionName(): String {
     return getGitCommitHash()
 }
 
 fun getBaiduMapKey(): String {
-    // Priority: env BAIDU_MAP_KEY > gradle.properties > default development key
+    // Priority: env BAIDU_MAP_KEY > gradle.properties > fail the build
     val envKey = System.getenv("BAIDU_MAP_KEY")
     if (!envKey.isNullOrBlank()) return envKey
     val propKey = project.findProperty("baiduMapKey") as? String
     if (!propKey.isNullOrBlank()) return propKey
-    // Fallback key for development builds only.
-    // For release builds, set BAIDU_MAP_KEY env variable or baiduMapKey in gradle.properties
-    println("[WARN] Baidu Map API key not configured via env BAIDU_MAP_KEY or gradle.properties baiduMapKey")
-    println("[WARN] Using development fallback key. Set BAIDU_MAP_KEY env var for production builds.")
-    return "UzCD3gLYg3M9Ue2749hm1jsHX2DyfMUF"
+    throw GradleException(
+        "Baidu Map API key not configured. " +
+        "Set BAIDU_MAP_KEY environment variable or baiduMapKey in gradle.properties."
+    )
 }
 

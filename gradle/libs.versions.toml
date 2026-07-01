@@ -32,8 +32,7 @@ androidx-navigation-fragment-ktx = { group = "androidx.navigation", name = "navi
 androidx-navigation-ui-ktx = { group = "androidx.navigation", name = "navigation-ui-ktx", version.ref = "navigationUiKtx" }
 okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version = "4.12.0" }
 fastjson = { module = "com.alibaba.fastjson2:fastjson2-kotlin", version = "2.0.56" }
-kotlin-reflect = {module = "org.jetbrains.kotlin:kotlin-reflect", version = "1.9.23"}
-kotlinx-serialization = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version = "1.6.2" }
+kotlinx-serialization = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version = "1.7.3" }
 geotools = {module = "net.sf.geographiclib:GeographicLib-Java", version = "2.0"}
 robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "robolectric" }
 mockk = { group = "io.mockk", name = "mockk", version.ref = "mockk" }
@@ -43,4 +42,4 @@ android-application = { id = "com.android.application", version.ref = "agp" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 android-library = { id = "com.android.library", version.ref = "agp" }
 jetbrains-kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "jetbrainsKotlinJvm" }
-kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version = "1.4.30" }
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }

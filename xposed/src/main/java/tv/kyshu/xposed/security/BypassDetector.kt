@@ -38,10 +38,15 @@ object BypassDetector {
     private const val HOSTILE_THRESHOLD = 5
 
     /**
-     * Classify a location request based on the calling UID and call stack context.
+     * Classify a location request based on the calling UID and probe history.
      * Returns the appropriate BypassAction for this request.
+     *
+     * Probe detection is done via [recordProbe] — callers that detect specific
+     * probe signatures (MOCK_CHECK, XP_DETECT, LOCATION_SCAN, BINDER_REFLECT)
+     * should call recordProbe directly. This method only checks the UID's
+     * accumulated hostile status.
      */
-    fun classify(uid: Int, packageName: String?, contextHint: String): BypassAction {
+    fun classify(uid: Int, packageName: String?, contextHint: String = ""): BypassAction {
         if (!FakeLoc.enable) return BypassAction.PASSTHROUGH
 
         // Skip bypass for system server and trusted UIDs
@@ -54,28 +59,7 @@ object BypassDetector {
         // Already flagged as hostile → silently return real location
         if (record.hostile) return BypassAction.RETURN_REAL
 
-        // Check probe signatures based on context
-        val action = when (contextHint) {
-            "MOCK_CHECK" -> {
-                recordProbe(record, uid, contextHint)
-                BypassAction.RETURN_REAL
-            }
-            "XP_DETECT" -> {
-                recordProbe(record, uid, contextHint)
-                BypassAction.RETURN_NULL
-            }
-            "LOCATION_SCAN" -> {
-                recordProbe(record, uid, contextHint)
-                BypassAction.DELAY
-            }
-            "BINDER_REFLECT" -> {
-                recordProbe(record, uid, contextHint)
-                BypassAction.RETURN_REAL
-            }
-            else -> BypassAction.PASSTHROUGH
-        }
-
-        return action
+        return BypassAction.PASSTHROUGH
     }
 
     /**

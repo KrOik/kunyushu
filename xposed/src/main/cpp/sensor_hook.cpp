@@ -7,10 +7,11 @@
 #include "logging.h"
 #include "elf_util.h"
 #include "dobby_hook.h"
+#include <atomic>
 
 #define LIBSF_PATH "/system/lib64/libsensorservice.so"
 
-extern bool enableSensorHook;
+extern std::atomic_bool enableSensorHook;
 
 // _ZN7android16SensorEventQueue5writeERKNS_2spINS_7BitTubeEEEPK12ASensorEventm
 // _ZN7android16SensorEventQueue5writeERKNS_2spINS_7BitTubeEEEPK12ASensorEventm
@@ -19,7 +20,7 @@ OriginalSensorEventQueueWriteType OriginalSensorEventQueueWrite = nullptr;
 OriginalConvertToSensorEventType OriginalConvertToSensorEvent = nullptr;
 
 int64_t SensorEventQueueWrite(void *tube, void *events, int64_t numEvents) {
-    if (enableSensorHook) {
+    if (enableSensorHook.load()) {
         LOGD("SensorEventQueueWrite called");
     }
     if (OriginalSensorEventQueueWrite == nullptr) {
@@ -34,7 +35,12 @@ void ConvertToSensorEvent(void *src, void *dst) {
         LOGE("ConvertToSensorEvent: original function is null, skipping hook");
         return;
     }
-    if (enableSensorHook) {
+    if (enableSensorHook.load()) {
+        // Minimum safety: reject null pointers before dereferencing.
+        if (src == nullptr || dst == nullptr) {
+            LOGE("ConvertToSensorEvent: src or dst is null, skipping hook");
+            return;
+        }
         auto a = *(int32_t *)((char*)src + 4);
         auto b = *(int32_t *)((char*)src + 8);
         auto c = *(int64_t *)((char*)src + 16);
@@ -68,7 +74,7 @@ void ConvertToSensorEvent(void *src, void *dst) {
         OriginalConvertToSensorEvent(src, dst);
     }
 
-    if (enableSensorHook) {
+    if (enableSensorHook.load()) {
         LOGD("ConvertToSensorEvent called");
     }
 }
