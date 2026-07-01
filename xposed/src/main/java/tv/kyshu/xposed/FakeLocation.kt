@@ -80,7 +80,7 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                 Thread({
                     while (polling && tv.kyshu.xposed.utils.FakeLoc.enable) {
                         kotlin.runCatching {
-                            val cursor = FakeLoc.context?.contentResolver?.query(
+                            val cursor = FakeLoc.getContext()?.contentResolver?.query(
                                 android.net.Uri.parse("content://tv.kyshu.xposed.config/cmd"),
                                 null, null, null, null
                             )

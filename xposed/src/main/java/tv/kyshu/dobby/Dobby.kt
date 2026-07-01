@@ -9,6 +9,6 @@ object Dobby {
     external fun writeArtVersionLock()
     external fun writeTerminalDespairLock()
     external fun isTerminalDespairLocked(): Boolean
-    external fun installProcMapsHooks()
+    external fun installProcMapsHooks(): Boolean
     external fun kitIntegrityCheck(pkgName: String, version: String, versionCode: Int): Boolean
 }

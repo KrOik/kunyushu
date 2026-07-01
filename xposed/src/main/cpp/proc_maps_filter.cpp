@@ -260,6 +260,6 @@ bool portal_install_proc_maps_hooks_jni(void) {
 // JNI Export
 // ============================================================================
 extern "C" JNIEXPORT jboolean JNICALL
-Java_tv_kyshu_dobby_Dobby_installProcMapsHooks(JNIEnv*, jclass) {
+Java_tv_kyshu_dobby_Dobby_installProcMapsHooks(JNIEnv*, jobject) {
     return portal_install_proc_maps_hooks_jni() ? JNI_TRUE : JNI_FALSE;
 }

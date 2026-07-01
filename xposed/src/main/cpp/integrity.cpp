@@ -110,7 +110,7 @@ uint64_t portal_compute_integrity(
 // ============================================================================
 extern "C" JNIEXPORT jboolean JNICALL
 Java_tv_kyshu_dobby_Dobby_kitIntegrityCheck(
-    JNIEnv* env, jclass /*clazz*/,
+    JNIEnv* env, jobject /*thiz*/,
     jstring pkgName, jstring version, jint versionCode)
 {
     if (pkgName == nullptr || version == nullptr) return JNI_FALSE;
