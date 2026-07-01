@@ -35,7 +35,6 @@ import tv.kyshu.ext.altitude
 import tv.kyshu.ext.drawOverOtherAppsEnabled
 import tv.kyshu.ext.hookSensor
 import tv.kyshu.ext.jsonHistoricalRoutes
-import tv.kyshu.ext.needOpenSELinux
 import tv.kyshu.ext.selectRoute
 import tv.kyshu.ext.speed
 import tv.kyshu.service.MockServiceHelper

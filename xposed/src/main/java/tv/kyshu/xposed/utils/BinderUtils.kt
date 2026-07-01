@@ -51,26 +51,38 @@ object BinderUtils {
      * Check whether the `PortalService` is started properly
      */
     fun isLocationProviderEnabled(uid: Int): Boolean {
-        // System UID (< 10000) always allowed
-        if (uid < 10000) return true
-        // App UID: must exactly belong to tv.kyshu package
-        val packageNames = getUidPackageNames(uid = uid) ?: run {
-            Logger.warn("Someone try to find Portal: uid = $uid, no packages found")
-            return false
+        when {
+            uid == 1000 -> {
+                // system_server (UID 1000): Xposed module runs here
+                Logger.debug("isLocationProviderEnabled: system_server(1000) allowed")
+                return true
+            }
+            uid < 10000 -> {
+                // Other system UIDs — log but allow (for compatibility)
+                Logger.warn("isLocationProviderEnabled: system uid=$uid, allowed (audit)")
+                return true
+            }
+            else -> {
+                // App UID: must exactly belong to tv.kyshu package
+                val packageNames = getUidPackageNames(uid = uid) ?: run {
+                    Logger.warn("isLocationProviderEnabled: uid=$uid no packages, denied")
+                    return false
+                }
+                if (packageNames.any { it == "tv.kyshu" }) {
+                    Logger.debug("isLocationProviderEnabled: uid=$uid tv.kyshu allowed")
+                    return true
+                }
+                Logger.warn("isLocationProviderEnabled: uid=$uid $packageNames denied")
+                return false
+            }
         }
-        if (packageNames.any { it == "tv.kyshu" }) {
-            return true
-        }
-        Logger.warn("Someone try to find Portal: uid = $uid, packageName = ${packageNames.joinToString()}")
-        return false
     }
 
     fun isSystemPackages(packageNames: String): Boolean {
         if (packageNames.contains("com.xiaomi.location.fused") ||
             packageNames.contains("com.xiaomi.metoknlp") ||
-            //packageNames.contains("com.android.phone") ||
             packageNames.contains("com.android.location.fused")
-            ) {
+        ) {
             return false
         }
         return packageNames.contains("com.android") ||
@@ -87,7 +99,7 @@ object BinderUtils {
     fun isSystemAppsCall(uid: Int = getCallerUid()): Boolean {
         if (uid > 10000) {
             val packageNames = kotlin.runCatching { getUidPackageNames(uid = uid)?.joinToString() }
-                .getOrNull() ?: return true
+                .getOrNull() ?: return false
             return isSystemPackages(packageNames)
         }
         return true

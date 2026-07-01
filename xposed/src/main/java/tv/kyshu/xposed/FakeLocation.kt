@@ -17,9 +17,13 @@ import tv.kyshu.xposed.hooks.sensor.SystemSensorManagerHook
 import tv.kyshu.xposed.hooks.telephony.TelephonyHook
 import tv.kyshu.xposed.hooks.wlan.WlanHook
 import tv.kyshu.xposed.utils.FakeLoc
+import tv.kyshu.xposed.utils.ChannelIdentity
 import tv.kyshu.xposed.utils.Logger
- import tv.kyshu.xposed.stability.DomainGuard
+import tv.kyshu.xposed.stability.DomainGuard
 import tv.kyshu.xposed.stability.DomainGuard.Domain
+import tv.kyshu.xposed.stability.SafeFaultHarness
+import tv.kyshu.xposed.stability.BootStateStore
+import tv.kyshu.xposed.stability.SafeFaultResult
 import tv.kyshu.xposed.utils.CrashForensics
 import tv.kyshu.xposed.RemoteCommandHandler
 import org.json.JSONObject
@@ -221,16 +225,43 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                     }
 
                     Logger.info("[FakeLocation] Boot delay finished, installing phone hooks...")
-                    runCatching { TelephonyHook(lpparam.classLoader) }
-                        .onFailure { e ->
-                            Logger.error("[FakeLocation] TelephonyHook install failed", e)
-                            DomainGuard.reportCrash(Domain.TELEPHONY, e)
+
+                    // 使用 SafeFaultHarness 隔离电话模块hook安装
+                    val phoneResult = SafeFaultHarness.run("install:TelephonyHook",
+                        timeoutMs = 10_000L) {
+                        TelephonyHook(lpparam.classLoader)
+                    }
+                    when (phoneResult) {
+                        is SafeFaultResult.Completed -> {}
+                        is SafeFaultResult.Blocked -> {
+                            Logger.error("[FakeLocation] TelephonyHook BLOCKED: ${phoneResult.message}")
+                            DomainGuard.reportCrash(Domain.TELEPHONY,
+                                RuntimeException("SafeFaultHarness blocked: ${phoneResult.message}"))
                         }
-                    runCatching { MiuiTelephonyManagerHook(lpparam.classLoader) }
-                        .onFailure { e ->
-                            Logger.error("[FakeLocation] MiuiTelephonyManagerHook install failed", e)
-                            DomainGuard.reportCrash(Domain.TELEPHONY, e)
+                        is SafeFaultResult.Recovered -> {
+                            Logger.warn("[FakeLocation] TelephonyHook RECOVERED: ${phoneResult.message}")
+                            DomainGuard.reportCrash(Domain.TELEPHONY,
+                                RuntimeException("SafeFaultHarness recovered: ${phoneResult.message}"))
                         }
+                    }
+
+                    val miuiResult = SafeFaultHarness.run("install:MiuiTelephonyHook",
+                        timeoutMs = 10_000L) {
+                        MiuiTelephonyManagerHook(lpparam.classLoader)
+                    }
+                    when (miuiResult) {
+                        is SafeFaultResult.Completed -> {}
+                        is SafeFaultResult.Blocked -> {
+                            Logger.error("[FakeLocation] MiuiTelephonyManagerHook BLOCKED: ${miuiResult.message}")
+                            DomainGuard.reportCrash(Domain.TELEPHONY,
+                                RuntimeException("SafeFaultHarness blocked: ${miuiResult.message}"))
+                        }
+                        is SafeFaultResult.Recovered -> {
+                            Logger.warn("[FakeLocation] MiuiTelephonyManagerHook RECOVERED: ${miuiResult.message}")
+                            DomainGuard.reportCrash(Domain.TELEPHONY,
+                                RuntimeException("SafeFaultHarness recovered: ${miuiResult.message}"))
+                        }
+                    }
                 }, "PortalBootDelay-$pkgName").start()
             }
             "android" -> {
@@ -267,6 +298,9 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                     LogRouter.setContext(systemContext)
                     FlightRecorder.setContext(systemContext)
                     CrashForensics.setContext(systemContext)
+                    ChannelIdentity.init(systemContext)
+                    // 持久化状态存储（在崩溃检测之前初始化，确保checkInstallCrashLoop能读到）
+                    BootStateStore.setContext(systemContext)
                     FlightRecorder.bootstrapState("system_server")
                     // Uncaught exception handler — captures any missed crash
                     val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
@@ -304,12 +338,33 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                 // 设置生命周期标记，用于外部取消和线程醒来后的状态检查
                 System.setProperty(DELAY_MARKER_PREFIX + pkgName, "true")
 
-                // 延迟安装hook，确保用户有80秒操作时间
+                val bootThreadLabel = "PortalBootDelay-$pkgName"
+                FlightRecorder.execStart("BOOT", "DELAY_THREAD_START",
+                    mapOf("delay_ms" to BOOT_DELAY_MS, "thread" to bootThreadLabel))
+
+                // Watchdog：如果启动线程超过预期时间仍未完成，记录告警
+                val watchdogStartedAt = System.currentTimeMillis()
+                val watchdogTimeout = BOOT_DELAY_MS + 60_000L // 80s 延迟 + 60s 安装窗口
+                Thread({
+                    try {
+                        Thread.sleep(watchdogTimeout)
+                    } catch (_: InterruptedException) { return@Thread }
+                    // 如果线程还在运行（installLock仍被持有或未释放），记录异常
+                    if (installLock.isLocked) {
+                        Logger.warn("[FakeLocation] Boot delay watchdog: thread STILL RUNNING after ${watchdogTimeout / 1000}s")
+                        FlightRecorder.execFail("BOOT", "WATCHDOG_TIMEOUT",
+                            mapOf("elapsed_ms" to (System.currentTimeMillis() - watchdogStartedAt),
+                                  "thread" to bootThreadLabel))
+                    }
+                }, "${bootThreadLabel}-Watchdog").apply { isDaemon = true }.start()
+
                 Thread({
                     try {
                         Thread.sleep(BOOT_DELAY_MS)
                     } catch (e: InterruptedException) {
                         Logger.warn("[FakeLocation] Boot delay interrupted for $pkgName, hooks skipped")
+                        FlightRecorder.execFail("BOOT", "DELAY_INTERRUPTED",
+                            mapOf("package" to pkgName))
                         Thread.currentThread().interrupt()
                         return@Thread
                     }
@@ -317,6 +372,8 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                     // 检查延迟任务是否已被外部取消
                     if (System.getProperty(DELAY_MARKER_PREFIX + pkgName) != "true") {
                         Logger.warn("[FakeLocation] Boot delay cancelled for $pkgName, hooks skipped")
+                        FlightRecorder.gateSkip("BOOT", "DELAY_CANCELLED",
+                            mapOf("package" to pkgName))
                         return@Thread
                     }
 
@@ -325,37 +382,125 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                         Logger.error("[FakeLocation] ClassLoader invalid after delay for $pkgName, hooks skipped")
                         FlightRecorder.hookFail("BOOT", "CLASSLOADER_INVALID",
                             mapOf("package" to pkgName))
+                        DomainGuard.reportInstallCrash(
+                            IllegalStateException("ClassLoader invalid after delay"))
                         return@Thread
                     }
 
                     Logger.info("[FakeLocation] Boot delay finished, installing hooks...")
+                    FlightRecorder.execDone("BOOT", "DELAY_COMPLETE",
+                        mapOf("package" to pkgName))
 
                     // Concurrency safety: tryLock prevents double-install on rapid handleLoadPackage fires
-                    if (!installLock.tryLock(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                    if (!installLock.tryLock(15, java.util.concurrent.TimeUnit.SECONDS)) {
                         Logger.error("[FakeLocation] installLock acquire timed out for $pkgName — concurrent install detected, skipping")
-                        FlightRecorder.hookFail("BOOT", "CONCURRENT_INSTALL", mapOf("package" to pkgName))
+                        FlightRecorder.hookFail("BOOT", "CONCURRENT_INSTALL",
+                            mapOf("package" to pkgName))
+                        DomainGuard.reportInstallCrash(
+                            IllegalStateException("installLock timeout"))
                         return@Thread
                     }
-                    runCatching { startFakeLocHook(systemClassLoader) }
-                        .onFailure { e ->
-                            Logger.error("[FakeLocation] startFakeLocHook failed", e)
-                            DomainGuard.reportCrash(Domain.LOCATION_SERVICE, e)
+
+                    // 使用 SafeFaultHarness 隔离关键安装路径，防止死循环或死锁阻塞进程
+                    var hasFatalFailure = false
+
+                    FlightRecorder.execStart("BOOT", "HOOK_INSTALL_BATCH",
+                        mapOf("package" to pkgName))
+
+                    // startFakeLocHook（最长允许15秒）
+                    val locResult = SafeFaultHarness.run("install:LocationServiceHook",
+                        timeoutMs = 15_000L) {
+                        startFakeLocHook(systemClassLoader)
+                    }
+                    when (locResult) {
+                        is SafeFaultResult.Completed -> {
+                            FlightRecorder.hookInstall("BOOT", "LOCATION_HOOK_OK",
+                                mapOf("package" to pkgName))
                         }
-                    runCatching { TelephonyHook.hookSubOnTransact(lpparam.classLoader) }
-                        .onFailure { e ->
-                            Logger.error("[FakeLocation] TelephonyHook.hookSubOnTransact failed", e)
-                            DomainGuard.reportCrash(Domain.TELEPHONY, e)
+                        is SafeFaultResult.Blocked -> {
+                            Logger.error("[FakeLocation] startFakeLocHook BLOCKED: ${locResult.message}")
+                            FlightRecorder.hookFail("BOOT", "LOCATION_HOOK_BLOCKED",
+                                mapOf("fault" to locResult.faultClass.name, "message" to locResult.message))
+                            DomainGuard.reportCrash(Domain.LOCATION_SERVICE,
+                                RuntimeException("SafeFaultHarness blocked: ${locResult.message}"))
+                            hasFatalFailure = true
                         }
-                    runCatching { WlanHook(systemClassLoader) }
-                        .onFailure { e ->
-                            Logger.error("[FakeLocation] WlanHook install failed", e)
-                            DomainGuard.reportCrash(Domain.WLAN, e)
+                        is SafeFaultResult.Recovered -> {
+                            Logger.warn("[FakeLocation] startFakeLocHook RECOVERED: ${locResult.message}")
+                            FlightRecorder.hookFail("BOOT", "LOCATION_HOOK_RECOVERED",
+                                mapOf("fault" to locResult.faultClass.name, "message" to locResult.message))
+                            DomainGuard.reportCrash(Domain.LOCATION_SERVICE,
+                                RuntimeException("SafeFaultHarness recovered: ${locResult.message}"))
                         }
-                    runCatching { SystemSensorManagerHook(lpparam.classLoader) }
-                        .onFailure { e ->
-                            Logger.error("[FakeLocation] SystemSensorManagerHook failed", e)
-                            DomainGuard.reportCrash(Domain.SENSOR, e)
+                    }
+
+                    // TelephonyHook.hookSubOnTransact（最长允许10秒）
+                    val telResult = SafeFaultHarness.run("install:TelephonyHook",
+                        timeoutMs = 10_000L) {
+                        TelephonyHook.hookSubOnTransact(lpparam.classLoader)
+                    }
+                    when (telResult) {
+                        is SafeFaultResult.Completed -> {}
+                        is SafeFaultResult.Blocked -> {
+                            Logger.error("[FakeLocation] TelephonyHook BLOCKED: ${telResult.message}")
+                            DomainGuard.reportCrash(Domain.TELEPHONY,
+                                RuntimeException("SafeFaultHarness blocked: ${telResult.message}"))
                         }
+                        is SafeFaultResult.Recovered -> {
+                            Logger.warn("[FakeLocation] TelephonyHook RECOVERED: ${telResult.message}")
+                            DomainGuard.reportCrash(Domain.TELEPHONY,
+                                RuntimeException("SafeFaultHarness recovered: ${telResult.message}"))
+                        }
+                    }
+
+                    // WlanHook（最长允许10秒）
+                    val wlanResult = SafeFaultHarness.run("install:WlanHook",
+                        timeoutMs = 10_000L) {
+                        WlanHook(systemClassLoader)
+                    }
+                    when (wlanResult) {
+                        is SafeFaultResult.Completed -> {}
+                        is SafeFaultResult.Blocked -> {
+                            Logger.error("[FakeLocation] WlanHook BLOCKED: ${wlanResult.message}")
+                            DomainGuard.reportCrash(Domain.WLAN,
+                                RuntimeException("SafeFaultHarness blocked: ${wlanResult.message}"))
+                        }
+                        is SafeFaultResult.Recovered -> {
+                            Logger.warn("[FakeLocation] WlanHook RECOVERED: ${wlanResult.message}")
+                            DomainGuard.reportCrash(Domain.WLAN,
+                                RuntimeException("SafeFaultHarness recovered: ${wlanResult.message}"))
+                        }
+                    }
+
+                    // SystemSensorManagerHook（最长允许10秒）
+                    val sensorResult = SafeFaultHarness.run("install:SensorHook",
+                        timeoutMs = 10_000L) {
+                        SystemSensorManagerHook(lpparam.classLoader)
+                    }
+                    when (sensorResult) {
+                        is SafeFaultResult.Completed -> {}
+                        is SafeFaultResult.Blocked -> {
+                            Logger.error("[FakeLocation] SystemSensorManagerHook BLOCKED: ${sensorResult.message}")
+                            DomainGuard.reportCrash(Domain.SENSOR,
+                                RuntimeException("SafeFaultHarness blocked: ${sensorResult.message}"))
+                        }
+                        is SafeFaultResult.Recovered -> {
+                            Logger.warn("[FakeLocation] SystemSensorManagerHook RECOVERED: ${sensorResult.message}")
+                            DomainGuard.reportCrash(Domain.SENSOR,
+                                RuntimeException("SafeFaultHarness recovered: ${sensorResult.message}"))
+                        }
+                    }
+
+                    FlightRecorder.execDone("BOOT", "HOOK_INSTALL_BATCH",
+                        mapOf("package" to pkgName, "fatal" to hasFatalFailure.toString()))
+
+                    // 如果出现不可恢复的阻塞故障，计数安装崩溃
+                    if (hasFatalFailure) {
+                        DomainGuard.reportInstallCrash(
+                            RuntimeException("Fatal hook install block"))
+                        installLock.unlock()
+                        return@Thread
+                    }
 
                     // Load complete: reset install guard + report status
                     DomainGuard.resetInstallCrashCount()
@@ -366,7 +511,7 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                         mapOf("hooks" to installedHooks))
                     LogRouter.info("BBN:BOOT", "load complete: hooks=$installedHooks")
                     installLock.unlock()
-                }, "PortalBootDelay-$pkgName").start()
+                }, bootThreadLabel).start()
             }
             "com.android.location.fused" -> {
                 Logger.info("[FakeLocation] Fused process: $pkgName, installing AndroidFusedLocationProviderHook...")

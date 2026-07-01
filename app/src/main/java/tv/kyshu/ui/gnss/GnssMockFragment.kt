@@ -12,7 +12,6 @@ import androidx.fragment.app.Fragment
 import tv.kyshu.databinding.FragmentGnssMockBinding
 import android.Manifest
 import android.content.pm.PackageManager
-import android.util.Log
 import androidx.core.content.ContextCompat
 import androidx.activity.result.contract.ActivityResultContracts
 import android.widget.Toast
@@ -32,9 +31,9 @@ import tv.kyshu.ext.enableGetFromLocation
 import tv.kyshu.ext.enableNMEA
 import tv.kyshu.ext.enableRequestGeofence
 import tv.kyshu.ext.hookSensor
-import tv.kyshu.ext.needOpenSELinux
 import tv.kyshu.ext.speed
 import tv.kyshu.service.MockServiceHelper
+import tv.kyshu.xposed.utils.Log
 import tv.kyshu.xposed.utils.FakeLoc
 
 class GnssMockFragment : Fragment() {
@@ -91,24 +90,28 @@ class GnssMockFragment : Fragment() {
         binding.switchRequestGeofence.isChecked = requireContext().enableRequestGeofence
         binding.switchRequestGeofence.setOnCheckedChangeListener { _, isChecked ->
             requireContext().enableRequestGeofence = isChecked
+            Log.switchOp("GNSS", "Geofence", isChecked)
             Toast.makeText(requireContext(), "重启GNSS模拟生效", Toast.LENGTH_SHORT).show()
         }
 
         binding.switchGetFromLocation.isChecked = requireContext().enableGetFromLocation
         binding.switchGetFromLocation.setOnCheckedChangeListener { _, isChecked ->
             requireContext().enableGetFromLocation = isChecked
+            Log.switchOp("GNSS", "getFromLocation", isChecked)
             Toast.makeText(requireContext(), "重启GNSS模拟生效", Toast.LENGTH_SHORT).show()
         }
 
         binding.switchEnableAgps.isChecked = requireContext().enableAGPS
         binding.switchEnableAgps.setOnCheckedChangeListener { _, isChecked ->
             requireContext().enableAGPS = isChecked
+            Log.switchOp("GNSS", "AGPS", isChecked)
             Toast.makeText(requireContext(), "重启GNSS模拟生效", Toast.LENGTH_SHORT).show()
         }
 
         binding.switchEnableNmea.isChecked = requireContext().enableNMEA
         binding.switchEnableNmea.setOnCheckedChangeListener { _, isChecked ->
             requireContext().enableNMEA = isChecked
+            Log.switchOp("GNSS", "NMEA", isChecked)
             Toast.makeText(requireContext(), "重启GNSS模拟生效", Toast.LENGTH_SHORT).show()
         }
 
@@ -124,6 +127,8 @@ class GnssMockFragment : Fragment() {
             }
         }
         binding.switchGnssMock.setOnClickListener {
+            val starting = !MockServiceHelper.isGnssMockStart(locationManager)
+            Log.switchOp("GNSS", "GNSS模拟启停", starting)
             if (MockServiceHelper.isGnssMockStart(locationManager)) {
                 tryCloseService(it as MaterialButton)
             } else {

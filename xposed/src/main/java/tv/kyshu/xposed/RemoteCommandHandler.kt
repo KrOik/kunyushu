@@ -206,12 +206,6 @@ object RemoteCommandHandler {
                 Logger.info("[RemoteCommandHandler] sync_config populated")
                 true
             }
-            MockCommandContract.Commands.LOAD_LIBRARY -> {
-                FlightRecorder.gateSkip("BOOT", "LOAD_LIBRARY_DISABLED")
-                CrashForensics.skip("LOAD_LIBRARY", "DISABLED")
-                Logger.warn("[RemoteCommandHandler] load_library command is disabled")
-                false
-            }
             MockCommandContract.Commands.UPDATE_WIFI -> {
                 handleUpdateWifi(rely)
             }
@@ -414,6 +408,13 @@ object RemoteCommandHandler {
 
     private fun handleExportLogs(rely: Bundle): Boolean {
         return kotlin.runCatching {
+            // Authorization gate: client must explicitly opt-in
+            if (!rely.getBoolean("user_authorized", false)) {
+                Logger.warn("[RemoteCommandHandler] export_logs denied: user_authorized=false")
+                rely.putString("export_error", "user_authorized flag required")
+                return@runCatching false
+            }
+
             val context = FakeLoc.getContext() ?: run {
                 Logger.error("[RemoteCommandHandler] export_logs: no context")
                 rely.putString("export_error", "no context")
@@ -494,6 +495,8 @@ object RemoteCommandHandler {
             rely.putString("export_summary", summary)
             rely.putInt("export_size_bytes", sb.length)
             Logger.info("[RemoteCommandHandler] export_logs: $summary")
+            // Record export in audit trail for accountability
+            tv.kyshu.xposed.utils.Log.audit("EXPORT", "handleExportLogs", summary)
             true
         }.onFailure { e ->
             Logger.error("[RemoteCommandHandler] export_logs failed", e)

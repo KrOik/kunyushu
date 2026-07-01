@@ -3,6 +3,7 @@ package tv.kyshu.ui.settings
 import android.annotation.SuppressLint
 import android.os.Bundle
 import android.view.LayoutInflater
+import android.content.Context
 import android.view.View
 import android.view.ViewGroup
 import android.widget.CompoundButton
@@ -10,6 +11,8 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.activityViewModels
+import android.content.ClipData
+import android.content.ClipboardManager
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
@@ -28,7 +31,6 @@ import tv.kyshu.ext.disableWifiScan
 import tv.kyshu.ext.hookSensor
 import tv.kyshu.ext.minSatelliteCount
 import tv.kyshu.ext.needDowngradeToCdma
-import tv.kyshu.ext.needOpenSELinux
 import tv.kyshu.ext.reportDuration
 import tv.kyshu.ext.speed
 import tv.kyshu.ext.hookWifi
@@ -52,6 +54,8 @@ import tv.kyshu.ext.speedAmplitude
 import tv.kyshu.ext.minSpeed
 import tv.kyshu.ext.maxSpeed
 import tv.kyshu.service.MockServiceHelper
+import tv.kyshu.service.BlackBoxProbe
+import tv.kyshu.xposed.utils.Log
 import tv.kyshu.ui.viewmodel.MockServiceViewModel
 import tv.kyshu.ui.viewmodel.SettingsViewModel
 
@@ -74,16 +78,6 @@ class SettingsFragment : Fragment() {
         val root: View = binding.root
 
         val context = requireContext()
-        binding.selinuxSwitch.isChecked = context.needOpenSELinux
-        binding.selinuxSwitch.setOnCheckedChangeListener(object: CompoundButton.OnCheckedChangeListener {
-            override fun onCheckedChanged(
-                buttonView: CompoundButton?,
-                isChecked: Boolean
-            ) {
-                context.needOpenSELinux = isChecked
-                showToast(if (isChecked) "已开启SELinux" else "已关闭SELinux")
-            }
-        })
 
         binding.altitudeValue.text = "%.2f米".format(context.altitude)
         binding.speedValue.text = "%.2f米/秒".format(context.speed)
@@ -102,6 +96,7 @@ class SettingsFragment : Fragment() {
                     return@showDialog
                 }
                 context.altitude = value
+                Log.dialogOp("Settings", "海拔高度", "%.2f米".format(value))
                 binding.altitudeValue.text = "%.2f米".format(value)
             }
         }
@@ -117,6 +112,7 @@ class SettingsFragment : Fragment() {
                     return@showDialog
                 }
                 context.speed = value
+                Log.dialogOp("Settings", "速度", "%.2f米/秒".format(value))
                 binding.speedValue.text = "%.2f米/秒".format(value)
             }
         }
@@ -132,6 +128,7 @@ class SettingsFragment : Fragment() {
                     return@showDialog
                 }
                 context.accuracy = value
+                Log.dialogOp("Settings", "精度", "%.2f米".format(value))
                 binding.accuracyValue.text = "%.2f米".format(value)
             }
         }
@@ -143,6 +140,7 @@ class SettingsFragment : Fragment() {
                 isChecked: Boolean
             ) {
                 context.debug = isChecked
+                Log.switchOp("Settings", "调试模式", isChecked)
                 showToast(if (isChecked) "已开启调试模式" else "已关闭调试模式")
                 updateRemoteConfig()
             }
@@ -155,11 +153,11 @@ class SettingsFragment : Fragment() {
                 isChecked: Boolean
             ) {
                 context.disableGetCurrentLocation = !isChecked
+                Log.switchOp("Settings", "getCurrentLocation", !isChecked)
                 showToast(if (!isChecked) "禁止应用使用该方法" else "已允许应用使用该方法")
                 updateRemoteConfig()
             }
         })
-
         binding.rllSwitch.isChecked = !context.disableRegisterLocationListener
         binding.rllSwitch.setOnCheckedChangeListener(object: CompoundButton.OnCheckedChangeListener {
             override fun onCheckedChanged(
@@ -167,6 +165,7 @@ class SettingsFragment : Fragment() {
                 isChecked: Boolean
             ) {
                 context.disableRegisterLocationListener = !isChecked
+                Log.switchOp("Settings", "registerLocationListener", !isChecked)
                 showToast(if (!isChecked) "禁止应用使用该方法" else "已允许应用使用该方法")
                 updateRemoteConfig()
             }
@@ -179,6 +178,7 @@ class SettingsFragment : Fragment() {
                 isChecked: Boolean
             ) {
                 context.disableFusedProvider = isChecked
+                Log.switchOp("Settings", "FusedProvider", isChecked)
                 showToast(if (isChecked) "已禁用FusedProvider" else "已启用FusedProvider")
                 updateRemoteConfig()
             }
@@ -191,6 +191,7 @@ class SettingsFragment : Fragment() {
                 isChecked: Boolean
             ) {
                 context.needDowngradeToCdma = isChecked
+                Log.switchOp("Settings", "CDMA降级", isChecked)
                 showToast(if (isChecked) "已降级为CDMA" else "已取消降级为CDMA")
                 updateRemoteConfig()
             }
@@ -203,6 +204,7 @@ class SettingsFragment : Fragment() {
                 isChecked: Boolean
             ) {
                 context.hookSensor = isChecked
+                Log.switchOp("Settings", "传感器Hook", isChecked)
                 showToast("重新启动生效")
                 updateRemoteConfig()
             }
@@ -221,8 +223,8 @@ class SettingsFragment : Fragment() {
                     return@showDialog
                 }
                 context.reportDuration = value
+                Log.dialogOp("Settings", "上报间隔", "%dms".format(value))
                 binding.reportDurationValue.text = "%dms".format(value)
-                showToast("重新启动APP生效")
             }
         }
 
@@ -239,15 +241,15 @@ class SettingsFragment : Fragment() {
                     return@showDialog
                 }
                 context.minSatelliteCount = value
+                Log.dialogOp("Settings", "卫星数量", "%d颗".format(value))
                 binding.satelliteCountValue.text = "%d颗".format(value)
-                showToast("重新启动模拟生效")
-                updateRemoteConfig()
             }
         }
 
         binding.disableWlanScanSwitch.isChecked = requireContext().disableWifiScan
         binding.disableWlanScanSwitch.setOnCheckedChangeListener { _, isChecked ->
             requireContext().disableWifiScan = isChecked
+            Log.switchOp("Settings", "WLAN扫描", isChecked)
             with(mockServiceViewModel) {
                 if (isChecked) {
                     locationManager?.let { mgr ->
@@ -270,15 +272,15 @@ class SettingsFragment : Fragment() {
         binding.hookWifiSwitch.isChecked = context.hookWifi
         binding.hookWifiSwitch.setOnCheckedChangeListener { _, isChecked ->
             context.hookWifi = isChecked
+            Log.switchOp("Settings", "WiFi劫持", isChecked)
             showToast(if (isChecked) "已开启WiFi劫持" else "已关闭WiFi劫持")
-            updateRemoteConfig()
         }
 
         binding.mockSsidValue.text = context.mockSSID
         binding.mockSsidLayout.setOnClickListener {
             showDialog("伪造SSID", binding.mockSsidValue.text.toString()) {
-                if (it.isBlank()) { showToast("SSID不能为空"); return@showDialog }
                 context.mockSSID = it
+                Log.dialogOp("Settings", "伪造SSID", it)
                 binding.mockSsidValue.text = it
                 updateRemoteConfig()
             }
@@ -287,8 +289,8 @@ class SettingsFragment : Fragment() {
         binding.mockBssidValue.text = context.mockBSSID
         binding.mockBssidLayout.setOnClickListener {
             showDialog("伪造BSSID", binding.mockBssidValue.text.toString()) {
-                if (it.isBlank()) { showToast("BSSID不能为空"); return@showDialog }
                 context.mockBSSID = it
+                Log.dialogOp("Settings", "伪造BSSID", it)
                 binding.mockBssidValue.text = it
                 updateRemoteConfig()
             }
@@ -297,8 +299,8 @@ class SettingsFragment : Fragment() {
         binding.mockMacValue.text = context.mockMac
         binding.mockMacLayout.setOnClickListener {
             showDialog("伪造MAC地址", binding.mockMacValue.text.toString()) {
-                if (it.isBlank()) { showToast("MAC不能为空"); return@showDialog }
                 context.mockMac = it
+                Log.dialogOp("Settings", "伪造MAC", it)
                 binding.mockMacValue.text = it
                 updateRemoteConfig()
             }
@@ -307,8 +309,8 @@ class SettingsFragment : Fragment() {
         binding.mockIpValue.text = context.mockIp
         binding.mockIpLayout.setOnClickListener {
             showDialog("伪造IP地址", binding.mockIpValue.text.toString()) {
-                if (it.isBlank()) { showToast("IP不能为空"); return@showDialog }
                 context.mockIp = it
+                Log.dialogOp("Settings", "伪造IP", it)
                 binding.mockIpValue.text = it
                 updateRemoteConfig()
             }
@@ -319,6 +321,7 @@ class SettingsFragment : Fragment() {
             showDialog("伪造WiFi扫描数量", binding.mockWifiScanCountValue.text.toString()) {
                 val v = it.toIntOrNull()
                 if (v == null || v < 1) { showToast("数量必须 >= 1"); return@showDialog }
+                Log.dialogOp("Settings", "WiFi扫描数量", v.toString())
                 context.mockWifiScanCount = v
                 binding.mockWifiScanCountValue.text = v.toString()
                 updateRemoteConfig()
@@ -330,6 +333,7 @@ class SettingsFragment : Fragment() {
         binding.stepCountMockSwitch.isChecked = context.enableStepCountMock
         binding.stepCountMockSwitch.setOnCheckedChangeListener { _, isChecked ->
             context.enableStepCountMock = isChecked
+            Log.switchOp("Settings", "计步模拟", isChecked)
             showToast(if (isChecked) "已开启计步模拟" else "已关闭计步模拟")
             updateRemoteConfig()
         }
@@ -339,6 +343,7 @@ class SettingsFragment : Fragment() {
             showDialog("目标步数", binding.stepCountValue.text.toString()) {
                 val v = it.toIntOrNull()
                 if (v == null || v < 0) { showToast("步数必须 >= 0"); return@showDialog }
+                Log.dialogOp("Settings", "目标步数", v.toString())
                 context.stepCount = v
                 binding.stepCountValue.text = v.toString()
                 updateRemoteConfig()
@@ -348,6 +353,7 @@ class SettingsFragment : Fragment() {
         binding.shakeMockSwitch.isChecked = context.enableShakeMock
         binding.shakeMockSwitch.setOnCheckedChangeListener { _, isChecked ->
             context.enableShakeMock = isChecked
+            Log.switchOp("Settings", "摇一摇模拟", isChecked)
             showToast(if (isChecked) "已开启摇一摇模拟" else "已关闭摇一摇模拟")
             updateRemoteConfig()
         }
@@ -355,6 +361,7 @@ class SettingsFragment : Fragment() {
         binding.keepWalkingWaveformSwitch.isChecked = context.keepWalkingWaveform
         binding.keepWalkingWaveformSwitch.setOnCheckedChangeListener { _, isChecked ->
             context.keepWalkingWaveform = isChecked
+            Log.switchOp("Settings", "持续步行波形", isChecked)
             showToast(if (isChecked) "已开启持续步行波形" else "已关闭持续步行波形")
             updateRemoteConfig()
         }
@@ -366,6 +373,7 @@ class SettingsFragment : Fragment() {
             showDialog("步态频率(Hz)", binding.gaitFreqValue.text.toString()) {
                 val v = it.toFloatOrNull()
                 if (v == null || v <= 0f) { showToast("频率必须 > 0"); return@showDialog }
+                Log.dialogOp("Settings", "步态频率", "%.1fHz".format(v))
                 context.gaitFreq = v
                 binding.gaitFreqValue.text = "%.1f".format(v)
                 updateRemoteConfig()
@@ -377,6 +385,7 @@ class SettingsFragment : Fragment() {
             showDialog("振幅缩放", binding.gaitAmpScaleValue.text.toString()) {
                 val v = it.toFloatOrNull()
                 if (v == null || v <= 0f) { showToast("缩放必须 > 0"); return@showDialog }
+                Log.dialogOp("Settings", "振幅缩放", "%.1f".format(v))
                 context.gaitAmpScale = v
                 binding.gaitAmpScaleValue.text = "%.1f".format(v)
                 updateRemoteConfig()
@@ -388,6 +397,7 @@ class SettingsFragment : Fragment() {
         binding.hideBaseStationSwitch.isChecked = context.hideBaseStation
         binding.hideBaseStationSwitch.setOnCheckedChangeListener { _, isChecked ->
             context.hideBaseStation = isChecked
+            Log.switchOp("Settings", "屏蔽基站", isChecked)
             showToast(if (isChecked) "已屏蔽基站信息" else "已允许基站信息")
             updateRemoteConfig()
         }
@@ -395,6 +405,7 @@ class SettingsFragment : Fragment() {
         binding.loopBroadcastLocationSwitch.isChecked = context.loopBroadcastLocation
         binding.loopBroadcastLocationSwitch.setOnCheckedChangeListener { _, isChecked ->
             context.loopBroadcastLocation = isChecked
+            Log.switchOp("Settings", "反定位复原", isChecked)
             showToast(if (isChecked) "已开启反定位复原" else "已关闭反定位复原")
             updateRemoteConfig()
         }
@@ -402,13 +413,14 @@ class SettingsFragment : Fragment() {
         binding.hideMockSwitch.isChecked = context.hideMock
         binding.hideMockSwitch.setOnCheckedChangeListener { _, isChecked ->
             context.hideMock = isChecked
+            Log.switchOp("Settings", "隐藏模拟标记", isChecked)
             showToast(if (isChecked) "已隐藏模拟标记" else "已显示模拟标记")
             updateRemoteConfig()
         }
-
         binding.disableNetworkLocationSwitch.isChecked = context.disableNetworkLocation
         binding.disableNetworkLocationSwitch.setOnCheckedChangeListener { _, isChecked ->
             context.disableNetworkLocation = isChecked
+            Log.switchOp("Settings", "禁用网络定位", isChecked)
             showToast(if (isChecked) "已禁用网络定位" else "已启用网络定位")
             updateRemoteConfig()
         }
@@ -418,9 +430,25 @@ class SettingsFragment : Fragment() {
             showDialog("速度振幅", binding.speedAmplitudeValue.text.toString()) {
                 val v = it.toDoubleOrNull()
                 if (v == null || v < 0.0) { showToast("振幅必须 >= 0"); return@showDialog }
+                Log.dialogOp("Settings", "速度振幅", "%.1f".format(v))
                 context.speedAmplitude = v
                 binding.speedAmplitudeValue.text = "%.1f".format(v)
                 updateRemoteConfig()
+            }
+        }
+        // ===================== 系统诊断 =====================
+
+        binding.runDiagnosticsBtn.setOnClickListener {
+            Log.buttonOp("Settings", "运行系统诊断")
+            val ctx = requireContext()
+            val lm = mockServiceViewModel.locationManager
+
+            lifecycleScope.launch(Dispatchers.IO) {
+                val report = BlackBoxProbe.runAll(ctx, lm)
+
+                launch(Dispatchers.Main) {
+                    showDiagnosticsResult(report)
+                }
             }
         }
 
@@ -433,6 +461,38 @@ class SettingsFragment : Fragment() {
             Toast.makeText(ctx, message, Toast.LENGTH_SHORT).show()
         }
     }
+
+    private fun showDiagnosticsResult(report: BlackBoxProbe.Report) {
+        val sb = StringBuilder()
+        sb.appendLine("=== 系统诊断报告 ===")
+        sb.appendLine()
+        sb.appendLine("综合健康度: ${report.overallHealth.name}")
+        sb.appendLine(report.summary)
+        sb.appendLine()
+        for (probe in report.probes) {
+            val icon = if (probe.passed) "[PASS]" else "[FAIL]"
+            sb.appendLine("$icon ${probe.name} (${probe.durationMs}ms)")
+            sb.appendLine("       ${probe.detail}")
+            sb.appendLine()
+        }
+
+        // 追加用户操作日志
+        sb.appendLine()
+        sb.appendLine(Log.dumpUser(20))
+        sb.appendLine("诊断时间: ${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date(report.timestamp))}")
+
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle("系统诊断")
+            .setMessage(sb.toString())
+            .setPositiveButton("关闭", null)
+            .setNegativeButton("复制到剪贴板") { _, _ ->
+                val clipboard = requireContext().getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                clipboard.setPrimaryClip(android.content.ClipData.newPlainText("诊断报告", sb.toString()))
+                showToast("诊断报告已复制到剪贴板")
+            }
+            .show()
+    }
+
 
     private fun updateRemoteConfig() {
         val context = requireContext()

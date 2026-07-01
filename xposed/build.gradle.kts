@@ -64,6 +64,8 @@ dependencies {
     implementation("io.github.vvb2060.ndk:dobby:1.2")  // Tracked via ndk/dobby; semver stable
 
     testImplementation(libs.junit)
+    testImplementation(libs.robolectric)
+    testImplementation(libs.mockk)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
 }

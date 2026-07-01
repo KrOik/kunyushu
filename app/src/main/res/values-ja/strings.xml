@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
   <string name="app_name">Portal</string>
   <string name="navigation_drawer_open">ナビゲーションドロワーを開く</string>
@@ -44,8 +44,6 @@
   <string name="colorful">私のモナリザ</string>
   <string name="rocker_speed">ジョイスティックの速度</string>
   <string name="default_speed">1 ミリ秒</string>
-  <string name="selinux">SELinux</string>
-  <string name="need_open_selinux">SELinux を有効化するかどうか</string>
   <string name="altitude">測位高度</string>
   <string name="altitude_desc">模擬測位高度</string>
   <string name="rocker_speed_desc">シュミレーションされた移動速度</string>

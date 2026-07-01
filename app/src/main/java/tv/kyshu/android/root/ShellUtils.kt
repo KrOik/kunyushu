@@ -8,7 +8,7 @@ object ShellUtils {
     // Whitelist of allowed root command prefixes
     private val ALLOWED_ROOT_COMMANDS = setOf(
         "cp ", "mv ", "rm ", "chmod ", "mkdir ", "sha256sum ",
-        "setenforce ", "head ", "cat ", "ls ", "echo ",
+        "head ", "cat ", "ls ", "echo ",
     )
 
     /**
@@ -71,15 +71,6 @@ object ShellUtils {
         }
     }
 
-    fun setEnforceMode(enabled: Boolean) {
-        val cmd = "setenforce ${if (enabled) "1" else "0"}"
-        if (!isCommandAllowed(cmd)) return
-        try {
-            execAsRoot(cmd)
-        } catch (e: Exception) {
-            Log.e(TAG, "setEnforceMode failed", e)
-        }
-    }
 
     fun executeCommand(command: String): String {
         if (!isCommandAllowed(command)) return ""

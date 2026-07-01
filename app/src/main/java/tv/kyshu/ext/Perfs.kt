@@ -113,11 +113,6 @@ var Context.accuracy: Float
         putFloat("accuracy", value)
     }
 
-var Context.needOpenSELinux: Boolean
-    get() = sharedPrefs.getBoolean("needOpenSELinux", false)
-    set(value) = sharedPrefs.edit {
-        putBoolean("needOpenSELinux", value)
-    }
 
 var Context.needDowngradeToCdma: Boolean
     get() = sharedPrefs.getBoolean("needDowngradeToCdma", FakeLoc.needDowngradeToCdma)
@@ -159,11 +154,11 @@ var Context.disableGetCurrentLocation: Boolean
 
 var Context.disableRegisterLocationListener: Boolean
     get() = sharedPrefs.getBoolean(
-        "disableRegitserLocationListener",
+        "disableRegisterLocationListener",
         FakeLoc.disableRegisterLocationListener
     )
     set(value) = sharedPrefs.edit {
-        putBoolean("disableRegitserLocationListener", value)
+        putBoolean("disableRegisterLocationListener", value)
     }
 
 var Context.disableFusedProvider: Boolean

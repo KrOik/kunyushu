@@ -5,7 +5,7 @@ import android.content.Context
 import android.location.LocationManager
 import android.os.Build
 import android.os.Bundle
-import android.util.Log
+import tv.kyshu.xposed.utils.Log as XLog
 import tv.kyshu.android.root.ShellUtils
 import tv.kyshu.ext.altitude
 import tv.kyshu.ext.debug
@@ -52,29 +52,29 @@ private object MockServiceProbe {
     private const val PREFIX = "[Probe]"
 
     fun init(result: String, detail: String = "") {
-        Log.d(TAG, "$PREFIX [INIT] $result ${detail.trim()}".trim())
+        XLog.d(TAG, "$PREFIX [INIT] $result ${detail.trim()}".trim())
     }
 
     fun ipcSent(command: String, detail: String = "") {
-        Log.d(TAG, "$PREFIX [IPC_SENT] $command ${detail.trim()}".trim())
+        XLog.d(TAG, "$PREFIX [IPC_SENT] $command ${detail.trim()}".trim())
     }
 
     fun ipcResult(command: String, success: Boolean, detail: String = "") {
         val status = if (success) "OK" else "FAIL"
-        Log.d(TAG, "$PREFIX [IPC_RCVD] $command -> $status ${detail.trim()}".trim())
+        XLog.d(TAG, "$PREFIX [IPC_RCVD] $command -> $status ${detail.trim()}".trim())
     }
 
     fun configSync(detail: String) {
-        Log.d(TAG, "$PREFIX [CONFIG_SYNC] $detail")
+        XLog.d(TAG, "$PREFIX [CONFIG_SYNC] $detail")
     }
 
     fun error(msg: String, e: Throwable? = null) {
         val suffix = if (e != null) ": ${e.message}" else ""
-        Log.e(TAG, "$PREFIX [ERROR] $msg$suffix")
+        XLog.e(TAG, "$PREFIX [ERROR] $msg$suffix")
     }
 
     fun warn(msg: String) {
-        Log.w(TAG, "$PREFIX [WARN] $msg")
+        XLog.w(TAG, "$PREFIX [WARN] $msg")
     }
 }
 
@@ -367,7 +367,7 @@ object MockServiceHelper {
         rely.putDouble("bearing", bearing)
 
         if (FakeLoc.enableDebugLog) {
-            Log.d("MockServiceHelper", "move: distance=$distance, bearing=$bearing")
+            XLog.d("MockServiceHelper", "move: distance=$distance, bearing=$bearing")
         }
 
         return locationManager.sendExtraCommand(PROVIDER_NAME, randomKey, rely)
@@ -389,18 +389,6 @@ object MockServiceHelper {
         return locationManager.sendExtraCommand(PROVIDER_NAME, randomKey, rely)
     }
 
-    fun loadLibrary(locationManager: LocationManager, path: String): String? {
-        if (!::randomKey.isInitialized) {
-            return null
-        }
-        val rely = Bundle()
-        rely.putString("command_id", "load_library")
-        rely.putString("path", path)
-        if(locationManager.sendExtraCommand(PROVIDER_NAME, randomKey, rely)) {
-            return rely.getString("result")
-        }
-        return null
-    }
 
     fun putConfig(locationManager: LocationManager, context: Context): Boolean {
         if (!::randomKey.isInitialized) {
@@ -517,7 +505,7 @@ object MockServiceHelper {
                 if (apkSoFile.exists()) {
                     ShellUtils.executeCommand("cp ${apkSoFile.absolutePath} ${file.absolutePath}")
                 } else {
-                    Log.e("MockServiceHelper", "Failed to copy portal library: ${apkSoFile.absolutePath}")
+                    MockServiceProbe.error("Failed to copy portal library: ${apkSoFile.absolutePath}")
                     return@runCatching
                 }
             }
@@ -530,30 +518,26 @@ object MockServiceHelper {
                         ShellUtils.executeCommand("mv ${tmpSoFile.absolutePath} ${soFile.absolutePath}")
                     }
                 } else {
-                    Log.w("MockServiceHelper", "SO hash mismatch, new: $newHash, old: $oldHash")
+                    MockServiceProbe.warn("SO hash mismatch, new: $newHash, old: $oldHash")
                     ShellUtils.executeCommand("rm ${tmpSoFile.absolutePath}")
                 }
             } else if (tmpSoFile.exists()) {
                 ShellUtils.executeCommand("mv ${tmpSoFile.absolutePath} ${soFile.absolutePath}")
             }
         }.onFailure {
-            Log.w("MockServiceHelper", "Failed to copy portal library", it)
-        }
+            MockServiceProbe.warn("Failed to copy portal library: ${it?.message}")
+         }
 
         // TOCTOU guard: verify canonical path is within expected directory
         val resolvedPath = soFile.canonicalPath
         val resolvedDir = soDir.canonicalPath
         if (!resolvedPath.startsWith(resolvedDir)) {
-            Log.e("MockServiceHelper", "Symlink attack detected: $resolvedPath not under $resolvedDir")
+            MockServiceProbe.error("Symlink attack detected: $resolvedPath not under $resolvedDir")
             return false
         }
         ShellUtils.executeCommand("chmod 755 ${soFile.absolutePath}")
-
-        val result = loadLibrary(context.getSystemService(Context.LOCATION_SERVICE) as LocationManager, soFile.absolutePath)
-
-        Log.d("MockServiceHelper", "load portal library result: $result")
-
-        return result == "success"
+        MockServiceProbe.init("load_portal_library", "LOAD_LIBRARY_DISABLED")
+        return false
     }
 
     /**
@@ -601,4 +585,14 @@ object MockServiceHelper {
         // Primary: try sendExtraCommand
         if (::randomKey.isInitialized) {
             val ok = locationManager.sendExtraCommand(PROVIDER_NAME, randomKey, payload)
-            if (o
+            if (ok) return true
+            MockServiceProbe.warn("sendCommandWithFallback: sendExtraCommand failed for $commandId, falling back to ContentProvider")
+        }
+        // Fallback: write to ContentProvider
+        val fallbackOk = sendViaContentProvider(context, commandId, payload)
+        if (!fallbackOk) {
+            MockServiceProbe.error("sendCommandWithFallback: ContentProvider fallback also failed for $commandId")
+        }
+        return fallbackOk
+}
+}

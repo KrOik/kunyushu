@@ -10,7 +10,6 @@ object MockCommandContract {
         const val PUT_CONFIG = "put_config"
         const val SYNC_CONFIG = "sync_config"
         const val UPDATE_WIFI = "update_wifi"
-        const val LOAD_LIBRARY = "load_library"
         const val START = "start"
         const val STOP = "stop"
         const val IS_START = "is_start"

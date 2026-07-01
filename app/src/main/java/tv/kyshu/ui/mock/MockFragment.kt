@@ -6,7 +6,6 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.CheckedTextView
-import android.util.Log
 import android.widget.Toast
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
@@ -30,11 +29,11 @@ import tv.kyshu.ext.altitude
 import tv.kyshu.ext.drawOverOtherAppsEnabled
 import tv.kyshu.ext.historicalLocations
 import tv.kyshu.ext.hookSensor
-import tv.kyshu.ext.needOpenSELinux
 import tv.kyshu.ext.rawHistoricalLocations
 import tv.kyshu.ext.selectLocation
 import tv.kyshu.ext.speed
 import tv.kyshu.service.MockServiceHelper
+import tv.kyshu.xposed.utils.Log
 import tv.kyshu.ui.viewmodel.MockServiceViewModel
 import tv.kyshu.ui.viewmodel.MockViewModel
 import tv.kyshu.xposed.utils.FakeLoc
@@ -55,6 +54,7 @@ class MockFragment : Fragment() {
         _binding = FragmentMockBinding.inflate(inflater, container, false)
 
         binding.fabMockLocation.setOnClickListener {
+            Log.buttonOp("Mock", "FAB位置选择")
             if (!OverlayUtils.hasOverlayPermissions(requireContext())) {
                 Toast.makeText(requireContext(), "请授权悬浮窗权限", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
@@ -62,6 +62,7 @@ class MockFragment : Fragment() {
         }
 
         binding.fabMockLocation.setOnLongClickListener {
+            Log.buttonOp("Mock", "FAB长按(糸守町)")
             Toast.makeText(requireContext(), "糸守町", Toast.LENGTH_SHORT).show()
             true
         }
@@ -74,7 +75,9 @@ class MockFragment : Fragment() {
         }
 
         binding.switchMock.setOnClickListener {
-           if (mockServiceViewModel.isServiceStart()) {
+            val isStarting = !mockServiceViewModel.isServiceStart()
+            Log.switchOp("Mock", "模拟启停", isStarting)
+            if (mockServiceViewModel.isServiceStart()) {
                 tryCloseService(it as MaterialButton)
             } else {
                 tryOpenService(it as MaterialButton)
@@ -96,6 +99,7 @@ class MockFragment : Fragment() {
                 }
                 val checkedTextView = it as CheckedTextView
                 checkedTextView.toggle()
+                Log.switchOp("Mock", "摇杆显示", checkedTextView.isChecked)
 
                 if (!requireContext().drawOverOtherAppsEnabled()) {
                     Toast.makeText(requireContext(), "请授权悬浮窗权限", Toast.LENGTH_SHORT).show()
@@ -145,6 +149,7 @@ class MockFragment : Fragment() {
         val locations = requireContext().historicalLocations
 
         binding.mockLocationCard.setOnClickListener {
+            Log.buttonOp("Mock", "查看位置信息")
             mockServiceViewModel.locationManager?.let { mgr ->
                 val location = MockServiceHelper.getLocation(mgr)
                 Toast.makeText(requireContext(), "Location$location, ListenerSize: ${MockServiceHelper.getLocationListenerSize(mgr)}", Toast.LENGTH_SHORT).show()
@@ -154,8 +159,10 @@ class MockFragment : Fragment() {
         // 2024.10.10: sort historical locations
         val historicalLocationAdapter = HistoricalLocationAdapter(locations.sortedBy { it.name }.toMutableList()) { loc, isLongClick ->
             if (isLongClick) {
+                Log.buttonOp("Mock", "历史位置长按")
                 Toast.makeText(requireContext(), "长按", Toast.LENGTH_SHORT).show()
             } else {
+                Log.dialogOp("Mock", "选择位置", "${loc.name}(${loc.lat},${loc.lon})")
                 binding.mockLocationName.text = loc.name
                 binding.mockLocationAddress.text = loc.address
                 binding.mockLocationLatlon.text = loc.lat.toString().take(8) + ", " + loc.lon.toString().take(8)
@@ -193,16 +200,13 @@ class MockFragment : Fragment() {
                         .setTitle("删除位置")
                         .setMessage("确定要删除位置(${location.name})吗？")
                         .setPositiveButton("删除") { _, _ ->
+                            Log.dialogOp("Mock", "删除位置", location.name)
                             historicalLocationAdapter.removeItem(position)
                             rawHistoricalLocations = rawHistoricalLocations.toMutableSet().apply {
                                 removeIf { it.split(",")[0] == location.name }
                             }
                             showToast("已删除位置")
                         }
-                        .setNegativeButton("取消", { _, _ ->
-                            historicalLocationAdapter.notifyItemChanged(position)
-                        })
-                        .show()
                 }
             }
         }).attachToRecyclerView(recyclerView)

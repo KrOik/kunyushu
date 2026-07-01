@@ -182,6 +182,8 @@ dependencies {
     )))
 
     testImplementation(libs.junit)
+    testImplementation(libs.robolectric)
+    testImplementation(libs.mockk)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
 }
@@ -205,7 +207,7 @@ fun getGitCommitHash(): String {
 }
 
 fun getVersionCode(): Int {
-    return (System.currentTimeMillis() / 1000L).toInt()
+    return getGitCommitCount()
 }
 
 fun getVersionName(): String {
