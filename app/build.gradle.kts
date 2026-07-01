@@ -12,7 +12,7 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "tv.kyshu"
+        applicationId = "moe.fuqiuluo.portal"
         minSdk = 26
         targetSdk = 35
         versionCode = getVersionCode()

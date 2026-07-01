@@ -10,18 +10,15 @@ class Portal: Application() {
     override fun onCreate() {
         super.onCreate()
 
-        // BaiduMap SDK disabled for UI verification on emulator without valid API key
-        // Re-enable for production builds with valid BAIDU_MAP_KEY
-        if (!isBaiduMapKeyValid()) {
-            android.util.Log.w("Portal", "Skipping BaiduMap SDK init: no valid API key")
-            return
+        try {
+            SDKInitializer.setAgreePrivacy(this, true)
+            LocationClient.setAgreePrivacy(true)
+
+            SDKInitializer.initialize(this)
+            SDKInitializer.setCoordType(DEFAULT_COORD_TYPE)
+        } catch (e: Throwable) {
+            android.util.Log.e("Portal", "BaiduMap SDK init failed", e)
         }
-
-        SDKInitializer.setAgreePrivacy(this, true)
-        LocationClient.setAgreePrivacy(true)
-
-        SDKInitializer.initialize(this)
-        SDKInitializer.setCoordType(DEFAULT_COORD_TYPE)
     }
 
     private fun isBaiduMapKeyValid(): Boolean {
