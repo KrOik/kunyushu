@@ -22,7 +22,7 @@ android {
 
         ndk {
             abiFilters.clear()
-            abiFilters.addAll(listOf("arm64-v8a"))
+            abiFilters.addAll(listOf("arm64-v8a", "x86_64"))
         }
         manifestPlaceholders["BAIDU_MAP_KEY"] = getBaiduMapKey()
 
@@ -100,11 +100,6 @@ android {
             useLegacyPackaging = true
             excludes += "lib/armeabi/**"
             excludes += "lib/x86/**"
-            excludes += "lib/x86_64/libBaiduMapSDK**"
-            excludes += "lib/x86_64/libc++_shared.so"
-            excludes += "lib/x86_64/libc++_shared.so"
-            excludes += "lib/x86_64/liblocSDK8b.so"
-            excludes += "lib/x86_64/libtiny_magic.so"
         }
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
