@@ -44,8 +44,38 @@ import kotlin.uuid.ExperimentalUuidApi
 import tv.kyshu.xposed.utils.GnssSatellite
 import tv.kyshu.xposed.utils.OrbitType
 import tv.kyshu.xposed.utils.satelliteList as multiConstellationSatellites
+import tv.kyshu.xposed.gnss.Ephemeris
+import tv.kyshu.xposed.gnss.GnssMath
+import tv.kyshu.xposed.gnss.GnssType
+import tv.kyshu.xposed.gnss.RinexNavigationParser
+import java.io.File
+import android.os.SystemClock
 
 private const val MAX_SATELLITES = 56 // BDS 35 + GPS 32 + GLONASS 24 + others
+
+// GPS frequencies
+private const val GPS_L1_FREQ = 1575.420f // MHz
+private const val GPS_L5_FREQ = 1176.450f
+
+// 北斗频率
+private const val BDS_B1I_FREQ = 1561.098f
+private const val BDS_B1C_FREQ = 1575.420f
+private const val BDS_B2a_FREQ = 1176.450f
+private const val BDS_B2I_FREQ = 1207.140f
+private const val BDS_B3I_FREQ = 1268.520f
+
+// GLONASS 频率
+private const val GLONASS_G1_FREQ = 1602.000f
+private const val GLONASS_G2_FREQ = 1246.000f
+
+// GALILEO 频率
+private const val GALILEO_E1_FREQ = 1575.420f
+private const val GALILEO_E5a_FREQ = 1176.450f
+private const val GALILEO_E5b_FREQ = 1207.140f
+
+// QZSS 频率
+private const val QZSS_L1_FREQ = 1575.420f
+private const val QZSS_L5_FREQ = 1176.450f
 
 data class MockGnssData(
     val svCount: Int,
@@ -65,6 +95,28 @@ internal object LocationServiceHook: BaseLocationHook() {
         "onGnssStatusChanged",
     )
     private val loggedGnssStatusCallbackMisses = ConcurrentHashMap.newKeySet<String>()
+
+    // ==================== 卫星星图状态 ====================
+
+    data class SatelliteState(
+        val satellite: tv.kyshu.xposed.utils.GnssSatellite,
+        var azimuth: Float,
+        var elevation: Float,
+        var cn0: Float,
+        var carrierFreq: Float,
+        var hasEphemeris: Boolean,
+        var hasAlmanac: Boolean,
+        var usedInFix: Boolean
+    )
+
+    val satelliteStates = ConcurrentHashMap<String, SatelliteState>()
+    private var ephemerisMap = ConcurrentHashMap<String, Ephemeris>()
+    private var lastRinexLoadTime = 0L
+    private var lastGnssUpdateElapsed = 0L
+    private var lastCalcLocation: Pair<Double, Double>? = null
+    private var lastMockGnssData: MockGnssData? = null
+    private var lastMockGnssDataTime = 0L
+    private var lastSatelliteCalcTime = 0L
 
     internal fun findGnssStatusCallback(args: Array<Any?>): Any? {
         return args.filterNotNull().firstOrNull {
@@ -124,6 +176,247 @@ internal object LocationServiceHook: BaseLocationHook() {
             .joinToString(",")
         Logger.warn("[LocationServiceHook] GNSS status callback method not found: ${type.name}; methods=$methodSummary")
     }
+
+    // ==================== 卫星星图位置结算 ====================
+
+    private fun getSatKey(constellation: Int, prn: Int) = "${constellation}_${prn}"
+
+    fun getOrCreateState(sat: tv.kyshu.xposed.utils.GnssSatellite): SatelliteState {
+        return satelliteStates.getOrPut(getSatKey(sat.constellation, sat.prn)) {
+            val elevation = Random.nextFloat(sat.type.elevationRange.start, sat.type.elevationRange.endInclusive)
+            val cn0 = Random.nextFloat(sat.type.minCn0, sat.type.maxCn0)
+
+            val carrierFreq = when (sat.constellation) {
+                tv.kyshu.xposed.utils.GnssFlags.CONSTELLATION_GPS -> {
+                    if (Random.nextBoolean()) GPS_L1_FREQ else GPS_L5_FREQ
+                }
+                tv.kyshu.xposed.utils.GnssFlags.CONSTELLATION_GLONASS -> {
+                    if (Random.nextBoolean()) GLONASS_G1_FREQ else GLONASS_G2_FREQ
+                }
+                tv.kyshu.xposed.utils.GnssFlags.CONSTELLATION_GALILEO -> {
+                    when (Random.nextInt(3)) {
+                        0 -> GALILEO_E1_FREQ
+                        1 -> GALILEO_E5a_FREQ
+                        else -> GALILEO_E5b_FREQ
+                    }
+                }
+                tv.kyshu.xposed.utils.GnssFlags.CONSTELLATION_QZSS -> {
+                    if (Random.nextBoolean()) QZSS_L1_FREQ else QZSS_L5_FREQ
+                }
+                else -> { // BDS and others
+                    when (Random.nextInt(3)) {
+                        0 -> BDS_B1I_FREQ
+                        1 -> BDS_B2I_FREQ
+                        else -> BDS_B3I_FREQ
+                    }
+                }
+            }
+
+            SatelliteState(
+                satellite = sat,
+                azimuth = Random.nextFloat(0f, 360f),
+                elevation = elevation,
+                cn0 = cn0,
+                carrierFreq = carrierFreq,
+                hasEphemeris = false,
+                hasAlmanac = false,
+                usedInFix = elevation >= 10f && cn0 >= 28f
+            )
+        }
+    }
+
+    private fun ensureEphemerisLoaded() {
+        val path = FakeLoc.rinexPath ?: return
+        val file = File(path)
+        if (!file.exists()) return
+
+        if (ephemerisMap.isEmpty() || file.lastModified() > lastRinexLoadTime) {
+            lastRinexLoadTime = System.currentTimeMillis()
+            try {
+                Logger.info("[LocationServiceHook] Loading RINEX file from $path")
+                val list = RinexNavigationParser().parse(file)
+                ephemerisMap.clear()
+                list.forEach { eph ->
+                    val constellation = when(eph.type) {
+                        GnssType.GPS -> tv.kyshu.xposed.utils.GnssFlags.CONSTELLATION_GPS
+                        GnssType.BDS -> tv.kyshu.xposed.utils.GnssFlags.CONSTELLATION_BEIDOU
+                        GnssType.GALILEO -> tv.kyshu.xposed.utils.GnssFlags.CONSTELLATION_GALILEO
+                        GnssType.QZSS -> tv.kyshu.xposed.utils.GnssFlags.CONSTELLATION_QZSS
+                        GnssType.GLONASS -> tv.kyshu.xposed.utils.GnssFlags.CONSTELLATION_GLONASS
+                        else -> 0
+                    }
+                    if (constellation != 0) {
+                        ephemerisMap[getSatKey(constellation, eph.prn)] = eph
+                    }
+                }
+                val maxToeWeek = list.maxOfOrNull { it.week } ?: -1
+                Logger.info("[LocationServiceHook] Loaded ${ephemerisMap.size} ephemeris records, max GPS week=$maxToeWeek")
+
+                val gpsEpochMs = 315964800000L
+                val nowGpsSec = (System.currentTimeMillis() - gpsEpochMs) / 1000.0
+                val currentWeek = (nowGpsSec / 604800.0).toInt()
+                val weekDiff = currentWeek - maxToeWeek
+                if (weekDiff >= 2) {
+                    Logger.warn("[LocationServiceHook] Ephemeris data is $weekDiff week(s) old -- satellite positions may be inaccurate")
+                }
+            } catch (e: Exception) {
+                Logger.error("[LocationServiceHook] Failed to load RINEX file", e)
+            }
+        }
+    }
+
+    fun clearSatelliteStates() {
+        satelliteStates.clear()
+        ephemerisMap.clear()
+        lastRinexLoadTime = 0L
+        lastCalcLocation = null
+        lastMockGnssData = null
+        lastMockGnssDataTime = 0L
+        lastSatelliteCalcTime = 0L
+    }
+
+    private fun selectSatellitesForMock(ephemerisSatellites: List<tv.kyshu.xposed.utils.GnssSatellite>): List<tv.kyshu.xposed.utils.GnssSatellite> {
+        val minSatellites = normalizedMinSatellites()
+
+        // 有星历卫星：优先返回（固定顺序，非随机）
+        if (ephemerisSatellites.isNotEmpty()) {
+            if (ephemerisSatellites.size >= minSatellites) {
+                return ephemerisSatellites.take(MAX_SATELLITES)
+            }
+            // 不足时按固定顺序补充无星历卫星，保持星历卫星在前
+            val supplement = multiConstellationSatellites.filterNot { it in ephemerisSatellites }
+            return (ephemerisSatellites + supplement).take(MAX_SATELLITES)
+        }
+
+        // 完全无星历时：返回全量卫星列表（确定性顺序，非随机子集）
+        // 卫星位置由 updateSatelliteStates 用随机漂移计算
+        return multiConstellationSatellites.take(MAX_SATELLITES)
+    }
+
+    fun forceUpdateSatelliteStates() {
+        lastSatelliteCalcTime = 0L
+        updateSatelliteStates(1000f, force = true)
+    }
+
+    private fun updateSatelliteStates(deltaSeconds: Float, force: Boolean = false) {
+        val now = SystemClock.elapsedRealtime()
+        val calcCooldownMs = if (ephemerisMap.isNotEmpty()) 3000L else 1500L
+        if (!force && now - lastSatelliteCalcTime < calcCooldownMs) {
+            // 功耗管理：在冷却时间内仅更新 CN0 抖动，不做完整结算
+            val atmosphereJitter = FakeLoc.enableAtmosphereJitter
+            val jitterIntensity = FakeLoc.atmosphereJitterIntensity
+            if (atmosphereJitter && jitterIntensity > 0f) {
+                multiConstellationSatellites.forEach { sat ->
+                    val state = satelliteStates[getSatKey(sat.constellation, sat.prn)] ?: return@forEach
+                    val elRatio = (state.elevation / 90f).coerceIn(0f, 1f)
+                    val absorption = (1f - elRatio) * jitterIntensity * Random.nextFloat(0.1f, 0.5f)
+                    val scintillation = Random.nextFloat(-1f, 1f) * jitterIntensity
+                    state.cn0 = clamp(
+                        state.cn0 + scintillation - absorption * 1.5f,
+                        sat.type.minCn0,
+                        sat.type.maxCn0
+                    )
+                }
+            }
+            return
+        }
+        lastSatelliteCalcTime = now
+
+        ensureEphemerisLoaded()
+
+        val currentLocation = Pair(FakeLoc.latitude, FakeLoc.longitude)
+        val lastLoc = lastCalcLocation
+        if (lastLoc != null) {
+            val dist = tv.kyshu.xposed.utils.FakeLoc.haversine(lastLoc.first, lastLoc.second, currentLocation.first, currentLocation.second)
+            if (dist > 1000.0) {
+                satelliteStates.clear()
+            }
+        }
+        lastCalcLocation = currentLocation
+
+        val gpsZeroMillis = 315964800000L
+        val millisInWeek = 604800000L
+        val timeSinceGpsEpoch = System.currentTimeMillis() - gpsZeroMillis + 18000
+        val tow = (timeSinceGpsEpoch % millisInWeek) / 1000.0
+
+        val atmosphereJitter = FakeLoc.enableAtmosphereJitter
+        val jitterIntensity = FakeLoc.atmosphereJitterIntensity
+
+        multiConstellationSatellites.forEach { sat ->
+            val state = getOrCreateState(sat)
+            val eph = ephemerisMap[getSatKey(sat.constellation, sat.prn)]
+
+            if (eph != null) {
+                try {
+                    val pos = GnssMath.calculateSatellitePosition(eph, tow)
+                    val topo = GnssMath.ecefToTopocentric(pos, FakeLoc.latitude, FakeLoc.longitude, FakeLoc.altitude)
+
+                    state.azimuth = topo.azimuth.toFloat()
+                    state.elevation = topo.elevation.toFloat()
+
+                    val ratio = (state.elevation / 90f).coerceIn(0f, 1f)
+                    var baseCn0 = sat.type.minCn0 + (sat.type.maxCn0 - sat.type.minCn0) * ratio
+
+                    if (atmosphereJitter && jitterIntensity > 0f) {
+                        val absorption = (1f - ratio) * jitterIntensity * Random.nextFloat(0.2f, 0.8f)
+                        val scintillation = Random.nextFloat(-2f, 2f) * jitterIntensity
+                        baseCn0 -= absorption * 3f
+                        baseCn0 += scintillation
+                    }
+
+                    state.cn0 = (baseCn0 + Random.nextFloat(-1f, 1f)).coerceIn(sat.type.minCn0, sat.type.maxCn0)
+
+                    state.hasEphemeris = true
+                    state.hasAlmanac = true
+                    state.usedInFix = state.elevation > 10 && state.cn0 > 25
+                } catch (e: Exception) {
+                    state.azimuth = (state.azimuth + Random.nextFloat(-2f, 2f) * deltaSeconds + 360f) % 360f
+                    state.hasEphemeris = false
+                    state.hasAlmanac = true
+                    state.usedInFix = false
+                }
+            } else {
+                // Legacy random drift (无星历时使用)
+                state.azimuth = (state.azimuth + Random.nextFloat(-2f, 2f) * deltaSeconds + 360f) % 360f
+                state.elevation = clamp(
+                    state.elevation + Random.nextFloat(-1.2f, 1.2f) * deltaSeconds,
+                    sat.type.elevationRange.start,
+                    sat.type.elevationRange.endInclusive
+                )
+                var driftCn0 = state.cn0 + Random.nextFloat(-1.5f, 1.5f) * deltaSeconds
+
+                if (atmosphereJitter && jitterIntensity > 0f) {
+                    val elRatio = (state.elevation / 90f).coerceIn(0f, 1f)
+                    val absorption = (1f - elRatio) * jitterIntensity * Random.nextFloat(0.1f, 0.5f)
+                    driftCn0 -= absorption * 3f
+                }
+
+                state.cn0 = clamp(driftCn0, sat.type.minCn0, sat.type.maxCn0)
+                state.hasEphemeris = false
+                state.hasAlmanac = false
+                state.usedInFix = state.hasEphemeris && state.elevation >= 15f && state.cn0 >= 30f
+            }
+        }
+
+        val usedSatellites = multiConstellationSatellites.map { getOrCreateState(it) }
+            .filter { it.usedInFix }
+            .sortedByDescending { it.cn0 }
+
+        if (usedSatellites.size > 24) {
+            usedSatellites.drop(24).forEach { it.usedInFix = false }
+        }
+    }
+
+    private fun normalizedMinSatellites(): Int {
+        val raw = FakeLoc.minSatellites
+        return when {
+            raw <= 0 -> 12
+            raw > 35 -> 35
+            else -> raw
+        }
+    }
+
+    // ==================== 操作入口 ====================
 
     // A random command is generated to prevent some apps from detecting Portal
     operator fun invoke(classLoader: ClassLoader) {
@@ -439,25 +732,24 @@ internal object LocationServiceHook: BaseLocationHook() {
                     }
 
                     val gnssStatusHook = beforeHook {
-                        // android 7.0.0
-                        // void onSvStatusChanged(int svCount, in int[] svidWithFlags, in float[] cn0s,
-                        //            in float[] elevations, in float[] azimuths);
-                        // android 8.0.0
-                        // void onSvStatusChanged(int svCount, in int[] svidWithFlags, in float[] cn0s,
-                        //            in float[] elevations, in float[] azimuths,
-                        //            in float[] carrierFreqs);
-                        // android 11
-                        //  void onSvStatusChanged(int svCount, in int[] svidWithFlags, in float[] cn0s,
-                        //            in float[] elevations, in float[] azimuths,
-                        //            in float[] carrierFreqs, in float[] basebandCn0s);
-                        // android 12 ~ 15
-                        // void onSvStatusChanged(in GnssStatus gnssStatus);
-
                         // https://www.csno-tarc.cn/system/constellation
 
                         if (!FakeLoc.enableMockGnss) return@beforeHook
 
-                        val svCount = Random.nextInt(FakeLoc.minSatellites, MAX_SATELLITES + 1)
+                        val now = SystemClock.elapsedRealtime()
+                        val deltaMs = if (lastGnssUpdateElapsed == 0L) 1000L else (now - lastGnssUpdateElapsed)
+                        lastGnssUpdateElapsed = now
+                        updateSatelliteStates(deltaMs / 1000f)
+
+                        // 筛出有星历数据的卫星（不限制 elevation，星历计算的 elevation 值保留在 state 中）
+                        val ephemerisSatellites = multiConstellationSatellites.filter {
+                            val state = getOrCreateState(it)
+                            state.hasEphemeris
+                        }
+
+                        val selectedSatellites = selectSatellitesForMock(ephemerisSatellites)
+                        val svCount = selectedSatellites.size
+
                         val mockGps = MockGnssData(
                             svCount = svCount,
                             svidWithFlags = IntArray(svCount),
@@ -466,14 +758,11 @@ internal object LocationServiceHook: BaseLocationHook() {
                             azimuths = FloatArray(svCount),
                             carrierFreqs = FloatArray(svCount)
                         ).apply {
-                            val selectedSatellites = multiConstellationSatellites.shuffled().take(svCount)
-
                             selectedSatellites.forEachIndexed { index, sat ->
-                                svidWithFlags[index] = 0
-
-                                val hasEphemeris = Random.nextFloat() > 0.1f
-                                val hasAlmanac = Random.nextFloat() > 0.05f
-                                val usedInFix = Random.nextFloat() > 0.3f
+                                val state = getOrCreateState(sat)
+                                val hasEphemeris = state.hasEphemeris
+                                val hasAlmanac = state.hasAlmanac
+                                val usedInFix = state.usedInFix
                                 val hasCarrierFreq = true
                                 val hasBasebandCn0 = true
 
@@ -485,30 +774,20 @@ internal object LocationServiceHook: BaseLocationHook() {
                                 if (hasCarrierFreq) flags = flags or GnssFlags.SVID_FLAGS_HAS_CARRIER_FREQUENCY
                                 if (hasBasebandCn0) flags = flags or GnssFlags.SVID_FLAGS_HAS_BASEBAND_CN0
 
-                                // Use per-satellite constellation type from GnssSatelliteModel
                                 svidWithFlags[index] = (sat.prn shl GnssFlags.SVID_SHIFT_WIDTH) or
                                         ((sat.constellation and GnssFlags.CONSTELLATION_TYPE_MASK) shl GnssFlags.CONSTELLATION_TYPE_SHIFT_WIDTH) or
                                         flags
 
-                                cn0s[index] = Random.nextFloat(sat.type.minCn0, sat.type.maxCn0)
-                                elevations[index] = Random.nextFloat(sat.type.elevationRange.start, sat.type.elevationRange.endInclusive)
-                                azimuths[index] = Random.nextFloat(0f, 360f)
+                                cn0s[index] = state.cn0
+                                elevations[index] = state.elevation
+                                azimuths[index] = state.azimuth
                                 // Android GnssStatus.getCarrierFrequencyHz() 返回 Hz，需将 MHz 转 Hz
-                                carrierFreqs[index] = when (sat.constellation) {
-                                    GnssFlags.CONSTELLATION_GPS -> 1575.42e6f
-                                    GnssFlags.CONSTELLATION_GLONASS -> 1602.0e6f
-                                    GnssFlags.CONSTELLATION_GALILEO -> 1575.42e6f
-                                    GnssFlags.CONSTELLATION_QZSS -> 1575.42e6f
-                                    GnssFlags.CONSTELLATION_SBAS -> 1575.42e6f
-                                    GnssFlags.CONSTELLATION_IRNSS -> 1176.45e6f
-                                    else -> when (Random.nextInt(3)) {
-                                        0 -> 1561.098e6f
-                                        1 -> 1207.140e6f
-                                        else -> 1268.520e6f
-                                    }
-                                }
+                                carrierFreqs[index] = state.carrierFreq * 1e6f
                             }
                         }
+
+                        lastMockGnssData = mockGps
+                        lastMockGnssDataTime = now
 
                         if (args[0] is Int) {
                             args[0] = svCount
@@ -941,6 +1220,10 @@ internal object LocationServiceHook: BaseLocationHook() {
                 Logger.error("The listener all methods: " + listener.javaClass.declaredMethods.joinToString { it.name })
             }
         }
+        // 位置更新时同步结算卫星星图位置
+        if (FakeLoc.enableMockGnss) {
+            forceUpdateSatelliteStates()
+        }
         Logger.debugRL("callOnLocationChanged_end", "==> callOnLocationChanged: end")
     }
 
@@ -1016,4 +1299,12 @@ internal object LocationServiceHook: BaseLocationHook() {
 
 private fun Random.nextFloat(min: Float, max: Float): Float {
     return nextFloat() * (max - min) + min
+}
+
+private fun clamp(value: Float, min: Float, max: Float): Float {
+    return when {
+        value < min -> min
+        value > max -> max
+        else -> value
+    }
 }
