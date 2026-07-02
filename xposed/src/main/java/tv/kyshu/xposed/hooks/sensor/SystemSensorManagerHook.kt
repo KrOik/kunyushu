@@ -49,10 +49,47 @@ object SystemSensorManagerHook {
     private val cachedMag = FloatArray(3)
     private val cachedEuler = FloatArray(3)
 
+    // 步态仿真器（默认从 assets/gait_default.json 加载录制数据解算）
+    @Volatile
+    private var gaitSimulator: GaitSimulator? = null
+    private var lastGaitJson = ""
+    private var lastGaitLoadAt = 0L
+
     operator fun invoke(classLoader: ClassLoader) {
+        ensureGaitSimulator()
         unlockGeoSensor(classLoader)
         hookSystemSensorManager(classLoader)
         hookSystemSensorManagerQueue(classLoader)
+    }
+
+    /**
+     * 加载/刷新步态仿真器。
+     * 优先级：用户自定义 gaitParamsJson > 默认 assets/gait_default.json（录制数据解算）
+     */
+    private fun ensureGaitSimulator() {
+        val now = System.currentTimeMillis()
+        // 至少 5 秒间隔，避免频繁加载
+        if (gaitSimulator != null && now - lastGaitLoadAt < 5000L) return
+
+        val userJson = FakeLoc.gaitData.gaitParamsJson.trim()
+        if (userJson.isNotEmpty() && userJson != lastGaitJson) {
+            // 用户自定义 JSON
+            gaitSimulator = GaitSimulator.loadFromJson(userJson)
+            lastGaitJson = userJson
+            lastGaitLoadAt = now
+            if (gaitSimulator != null) {
+                Logger.info("GaitSimulator: loaded user-defined gait params")
+            }
+        } else if (gaitSimulator == null) {
+            // 默认从 assets 加载录制数据解算的步态
+            gaitSimulator = GaitSimulator.loadDefault(FakeLoc.getContext())
+            lastGaitLoadAt = now
+            if (gaitSimulator != null) {
+                Logger.info("GaitSimulator: loaded default recorded gait from assets")
+            } else {
+                Logger.warn("GaitSimulator: default asset load failed, will retry")
+            }
+        }
     }
 
     // ==================== SensorEventQueue 层注入（核心） ====================
@@ -362,6 +399,58 @@ object SystemSensorManagerHook {
     }
 
     private fun getMockMotionValues(sensorType: Int, timeMs: Long, outValues: FloatArray) {
+        ensureGaitSimulator()
+        val simulator = gaitSimulator
+
+        if (simulator != null) {
+            // 使用 mockWalk 录制数据解算的步态（Fourier+Pulse+抖动+jerk+drift+tremor）
+            simulator.currentState = GaitSimulator.State.RUNNING
+            val tSec = timeMs / 1000.0f
+            val (accel, gyro, gravity, linear) = simulator.getMotionValues(tSec)
+
+            when (sensorType) {
+                Sensor.TYPE_ACCELEROMETER -> {
+                    outValues[0] = accel[0]
+                    outValues[1] = accel[1]
+                    outValues[2] = accel[2]
+                }
+                Sensor.TYPE_LINEAR_ACCELERATION -> {
+                    outValues[0] = linear[0]
+                    outValues[1] = linear[1]
+                    outValues[2] = linear[2]
+                }
+                Sensor.TYPE_GRAVITY -> {
+                    outValues[0] = gravity[0]
+                    outValues[1] = gravity[1]
+                    outValues[2] = gravity[2]
+                }
+                Sensor.TYPE_GYROSCOPE -> {
+                    outValues[0] = gyro[0]
+                    outValues[1] = gyro[1]
+                    outValues[2] = gyro[2]
+                }
+                Sensor.TYPE_MAGNETIC_FIELD -> {
+                    outValues[0] = 25.0f + (Random.nextFloat() - 0.5f) * 0.15f
+                    outValues[1] = 2.0f + (Random.nextFloat() - 0.5f) * 0.15f
+                    outValues[2] = -42.0f + (Random.nextFloat() - 0.5f) * 0.15f
+                }
+                Sensor.TYPE_ORIENTATION -> {
+                    outValues[0] = cachedEuler[0]
+                    outValues[1] = cachedEuler[1]
+                    outValues[2] = cachedEuler[2]
+                }
+                Sensor.TYPE_ROTATION_VECTOR, Sensor.TYPE_GAME_ROTATION_VECTOR, Sensor.TYPE_GEOMAGNETIC_ROTATION_VECTOR -> {
+                    outValues[0] = cachedQuat[0]
+                    outValues[1] = cachedQuat[1]
+                    outValues[2] = cachedQuat[2]
+                    if (outValues.size >= 4) outValues[3] = cachedQuat[3]
+                }
+            }
+            updatePoseFromGyro(timeMs)
+            return
+        }
+
+        // 回退：无录制数据时使用简化波形
         val t = timeMs / 1000.0
         val freq = FakeLoc.gaitData.gaitFreq.toDouble()
         val amp = FakeLoc.gaitData.gaitAmpScale.toDouble()
@@ -405,7 +494,6 @@ object SystemSensorManagerHook {
                 if (outValues.size >= 4) outValues[3] = cachedQuat[3]
             }
         }
-
         updatePoseFromGyro(timeMs)
     }
 
