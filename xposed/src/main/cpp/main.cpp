@@ -4,6 +4,8 @@
 #include <unistd.h>
 #include <atomic>
 #include <cstring>
+#include <cstdlib>
+#include <ctime>
 #include "sensor_hook.h"
 #include "crash_recovery.h"
 #include "safety_gate.h"
@@ -25,16 +27,18 @@ JNI_OnLoad(JavaVM* vm, void* reserved) {
     LOGI("JNI_OnLoad called: Portal Native Hook is loading...");
     JNIEnv* env;
     if (vm->GetEnv((void**) &env, JNI_VERSION_1_6) != JNI_OK) {
-        LOGD("JNI_OnLoad failed: GetEnv failed");
         return JNI_ERR;
     }
     if (is_system_server_process()) {
+        // Seed PRNG for sensor hook randomization.
+        srand(static_cast<unsigned>(time(nullptr)));
+
         // Layer 2: Install SIGSEGV/BUS/ILL recovery handlers.
         install_crash_handlers();
 
         // Sensor hooks: ELF parsing + Dobby inline hook.
         doSensorHook();
-    LOGI("doSensorHook complete");
+        LOGI("doSensorHook complete");
     }
     return JNI_VERSION_1_6;
 }

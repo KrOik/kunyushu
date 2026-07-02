@@ -1,3 +1,5 @@
+@file:Suppress("SetTextI18n")
+
 package tv.kyshu.ui.gnss
 
 import android.annotation.SuppressLint
@@ -17,30 +19,22 @@ import androidx.activity.result.contract.ActivityResultContracts
 import android.widget.Toast
 import android.os.Build
 import androidx.lifecycle.lifecycleScope
-import com.google.android.material.button.MaterialButton
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import tv.kyshu.R
-import tv.kyshu.android.root.ShellUtils
 import tv.kyshu.android.widget.SatelliteData
-import tv.kyshu.android.window.OverlayUtils
-import tv.kyshu.ext.altitude
+import tv.kyshu.ext.altitudeJitter
 import tv.kyshu.ext.enableAGPS
 import tv.kyshu.ext.enableGetFromLocation
 import tv.kyshu.ext.enableNMEA
 import tv.kyshu.ext.enableRequestGeofence
 import tv.kyshu.ext.hookSensor
-import tv.kyshu.ext.speed
 import tv.kyshu.service.MockServiceHelper
 import tv.kyshu.xposed.utils.Log
-import tv.kyshu.xposed.utils.FakeLoc
+import tv.kyshu.gnss.EphemerisManager
 
 class GnssMockFragment : Fragment() {
     private var _binding: FragmentGnssMockBinding? = null
-
-    // This property is only valid between onCreateView and
-    // onDestroyView.
     private val binding get() = _binding!!
     private lateinit var locationManager: LocationManager
     private var gnssStatusCallback: GnssStatus.Callback? = null
@@ -48,20 +42,16 @@ class GnssMockFragment : Fragment() {
     private val requestMultiplePermissionsLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
-        // 检查所有请求的权限是否都被授予
         val allGranted = permissions.entries.all { it.value }
-
         if (allGranted) {
             Toast.makeText(requireContext(), "所有权限都已授予", Toast.LENGTH_SHORT).show()
             setupGnssStatusCallback()
         } else {
-            // 显示哪些权限被拒绝
             val deniedPermissions = permissions.filter { !it.value }.keys.joinToString()
             Toast.makeText(requireContext(), "以下权限被拒绝: $deniedPermissions", Toast.LENGTH_SHORT).show()
         }
     }
 
-    @SuppressLint("SetTextI18n")
     override fun onCreateView(
         inflater: LayoutInflater,
         container: ViewGroup?,
@@ -76,151 +66,90 @@ class GnssMockFragment : Fragment() {
             Manifest.permission.ACCESS_FINE_LOCATION,
             Manifest.permission.ACCESS_COARSE_LOCATION
         )
-
         val permissionsNeeded = permissionsToRequest.filter {
             ContextCompat.checkSelfPermission(requireContext(), it) != PackageManager.PERMISSION_GRANTED
         }.toTypedArray()
-
         if (permissionsNeeded.isEmpty()) {
             setupGnssStatusCallback()
         } else {
             requestMultiplePermissionsLauncher.launch(permissionsNeeded)
         }
 
+        // 星历下载 — 从 SharedPreferences 读取持久化的路径（跨页面切换不会丢失）
+        val prefs = requireContext().getSharedPreferences(
+            tv.kyshu.service.MockServiceHelper.PROVIDER_NAME,
+            android.content.Context.MODE_PRIVATE
+        )
+        val rinexPath = prefs.getString("rinexPath", null)
+        binding.ephemerisStatus.text = if (rinexPath != null) {
+            "星历文件: $rinexPath"
+        } else {
+            "未加载星历，卫星位置使用随机算法"
+        }
+        binding.btnDownloadEphemeris.setOnClickListener {
+            Log.buttonOp("GNSS", "下载星历")
+            binding.btnDownloadEphemeris.isEnabled = false
+            binding.ephemerisStatus.text = "正在下载..."
+            EphemerisManager.updateEphemeris(requireContext(), locationManager) { success, msg ->
+                lifecycleScope.launch(Dispatchers.Main) {
+                    binding.btnDownloadEphemeris.isEnabled = true
+                    binding.ephemerisStatus.text = msg
+                    // 下载成功时，SharedPreferences 已由 EphemerisManager 写入
+                    if (success) {
+                        val savedPath = prefs.getString("rinexPath", null)
+                        if (savedPath != null) binding.ephemerisStatus.text = "星历文件: $savedPath"
+                    }
+                    showToast(msg)
+                }
+            }
+        }
+
+        // 功能设置
         binding.switchRequestGeofence.isChecked = requireContext().enableRequestGeofence
         binding.switchRequestGeofence.setOnCheckedChangeListener { _, isChecked ->
             requireContext().enableRequestGeofence = isChecked
             Log.switchOp("GNSS", "Geofence", isChecked)
-            Toast.makeText(requireContext(), "重启GNSS模拟生效", Toast.LENGTH_SHORT).show()
+            showToast("重启GNSS模拟生效")
         }
 
         binding.switchGetFromLocation.isChecked = requireContext().enableGetFromLocation
         binding.switchGetFromLocation.setOnCheckedChangeListener { _, isChecked ->
             requireContext().enableGetFromLocation = isChecked
             Log.switchOp("GNSS", "getFromLocation", isChecked)
-            Toast.makeText(requireContext(), "重启GNSS模拟生效", Toast.LENGTH_SHORT).show()
+            showToast("重启GNSS模拟生效")
         }
 
         binding.switchEnableAgps.isChecked = requireContext().enableAGPS
         binding.switchEnableAgps.setOnCheckedChangeListener { _, isChecked ->
             requireContext().enableAGPS = isChecked
             Log.switchOp("GNSS", "AGPS", isChecked)
-            Toast.makeText(requireContext(), "重启GNSS模拟生效", Toast.LENGTH_SHORT).show()
+            showToast("重启GNSS模拟生效")
         }
 
         binding.switchEnableNmea.isChecked = requireContext().enableNMEA
         binding.switchEnableNmea.setOnCheckedChangeListener { _, isChecked ->
             requireContext().enableNMEA = isChecked
             Log.switchOp("GNSS", "NMEA", isChecked)
-            Toast.makeText(requireContext(), "重启GNSS模拟生效", Toast.LENGTH_SHORT).show()
-        }
-
-        if (!::locationManager.isInitialized) {
-            showToast("定位服务获取失败")
-            // 直接退出返回根布局，接下来的操作将不会执行！
-            return root
-        }
-        if (MockServiceHelper.isGnssMockStart(locationManager)) {
-            binding.switchGnssMock.text = "停止模拟"
-            ContextCompat.getDrawable(requireContext(), R.drawable.rounded_play_disabled_24)?.let {
-                binding.switchGnssMock.icon = it
-            }
-        }
-        binding.switchGnssMock.setOnClickListener {
-            val starting = !MockServiceHelper.isGnssMockStart(locationManager)
-            Log.switchOp("GNSS", "GNSS模拟启停", starting)
-            if (MockServiceHelper.isGnssMockStart(locationManager)) {
-                tryCloseService(it as MaterialButton)
-            } else {
-                tryOpenService(it as MaterialButton)
-            }
+            showToast("重启GNSS模拟生效")
         }
 
         return root
-    }
-
-    private fun tryOpenService(button: MaterialButton) {
-        if (!OverlayUtils.hasOverlayPermissions(requireContext())) {
-            showToast("请授权悬浮窗权限")
-            return
-        }
-
-        if (!MockServiceHelper.isServiceInit()) {
-            showToast("系统服务注入失败")
-            return
-        }
-
-        lifecycleScope.launch {
-            button.isClickable = false
-            try {
-                MockServiceHelper.putConfig(locationManager, requireContext())
-                if (MockServiceHelper.startGnssMock(locationManager)) {
-                    updateMockButtonState(button, "停止模拟", R.drawable.rounded_play_disabled_24)
-                } else {
-                    showToast("模拟GNSS服务启动失败")
-                    return@launch
-                }
-            } finally {
-                button.isClickable = true
-            }
-        }
-
-
-    }
-
-    private fun tryCloseService(button: MaterialButton) {
-        if (!MockServiceHelper.isServiceInit()) {
-            showToast("系统服务注入失败")
-            return
-        }
-
-        lifecycleScope.launch {
-            button.isClickable = false
-            try {
-                withContext(Dispatchers.IO) {
-                    if (!MockServiceHelper.isGnssMockStart(locationManager)) {
-                        showToast("模拟服务未启动")
-                        return@withContext false
-                    }
-
-                    if (MockServiceHelper.stopGnssMock(locationManager)) {
-                        updateMockButtonState(button, "开始模拟", R.drawable.rounded_play_arrow_24)
-                        return@withContext true
-                    } else {
-                        showToast("模拟GNSS服务停止失败")
-                        return@withContext false
-                    }
-                }
-            } finally {
-                button.isClickable = true
-            }
-        }
     }
 
     private fun showToast(message: String) = lifecycleScope.launch(Dispatchers.Main) {
         Toast.makeText(requireContext(), message, Toast.LENGTH_SHORT).show()
     }
 
-    private fun updateMockButtonState(button: MaterialButton, text: String, iconRes: Int) =
-        lifecycleScope.launch(Dispatchers.Main) {
-            button.text = text
-            ContextCompat.getDrawable(requireContext(), iconRes)?.let {
-                button.icon = it
-            }
-        }
-
+    @SuppressLint("SetTextI18n")
     private fun setupGnssStatusCallback() {
         gnssStatusCallback = object: GnssStatus.Callback() {
-            @SuppressLint("SetTextI18n")
             override fun onSatelliteStatusChanged(status: GnssStatus) {
                 if (_binding == null) return
 
                 val satelliteCount = status.satelliteCount
-
                 var inViewSatelliteCount = 0
                 var inUseSatelliteCount = 0
-                var signalStrength = arrayListOf<Float>()
-
+                val signalStrength = arrayListOf<Float>()
                 var gpsCount = 0
                 var glonassCount = 0
                 var beidouCount = 0
@@ -260,22 +189,17 @@ class GnssMockFragment : Fragment() {
                 binding.signalStrengthRightItem.text = "${avgSignalStrength.toString().take(5)} dB-Hz"
                 binding.inViewRightItem.text = "$inViewSatelliteCount"
                 binding.inUseRightItem.text = "$inUseSatelliteCount"
-
                 binding.gpsCount.text = "GPS: $gpsCount"
                 binding.glonassCount.text = "GNS: $glonassCount"
                 binding.beidouCount.text = "BD: $beidouCount"
-
                 binding.satelliteRadaView.setSatellites(satellites)
             }
         }
 
         try {
-            // Register the callback with the LocationManager
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                // For Android 11 and above
                 locationManager.registerGnssStatusCallback(requireContext().mainExecutor, gnssStatusCallback ?: return)
             } else {
-                // For Android versions before 11
                 @Suppress("DEPRECATION")
                 locationManager.registerGnssStatusCallback(gnssStatusCallback ?: return, null)
             }
@@ -284,11 +208,6 @@ class GnssMockFragment : Fragment() {
         }
     }
 
-
-
-
-
-
     override fun onDestroyView() {
         super.onDestroyView()
         gnssStatusCallback?.let { cb ->
@@ -296,7 +215,6 @@ class GnssMockFragment : Fragment() {
                 locationManager.unregisterGnssStatusCallback(cb)
             }
         }
-        gnssStatusCallback = null
         _binding = null
     }
 }

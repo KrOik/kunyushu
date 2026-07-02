@@ -35,7 +35,7 @@
 // Expected hash value — compiled-in integrity fingerprint.
 // Compute this from trusted package + version combination.
 // ============================================================================
-static const uint64_t kExpectedHash = 0xEF7E395CE15CA27AULL;
+static const uint64_t kExpectedHash = 0x65B5C5886788B89EULL;
 static const uint64_t kHashSeed = 0x811C9DC5ULL;  // FNV-1a initial seed
 
 // ============================================================================
@@ -112,18 +112,21 @@ uint64_t portal_compute_integrity(
 extern "C" JNIEXPORT jboolean JNICALL
 Java_tv_kyshu_dobby_Dobby_kitIntegrityCheck(
     JNIEnv* env, jobject /*thiz*/,
-    jstring pkgName, jstring version, jint versionCode)
+    jstring pkgName, jstring pkgName2, jstring version, jint versionCode)
 {
-    if (pkgName == nullptr || version == nullptr) return JNI_FALSE;
+    if (pkgName == nullptr || pkgName2 == nullptr || version == nullptr) return JNI_FALSE;
     const char* pkg = env->GetStringUTFChars(pkgName, nullptr);
+    const char* pkg2 = env->GetStringUTFChars(pkgName2, nullptr);
     const char* ver = env->GetStringUTFChars(version, nullptr);
-    if (pkg == nullptr || ver == nullptr) {
+    if (pkg == nullptr || pkg2 == nullptr || ver == nullptr) {
         if (pkg) env->ReleaseStringUTFChars(pkgName, pkg);
+        if (pkg2) env->ReleaseStringUTFChars(pkgName2, pkg2);
         if (ver) env->ReleaseStringUTFChars(version, ver);
         return JNI_FALSE;
     }
-    uint64_t hash = portal_compute_integrity(pkg, pkg, ver, versionCode);
+    uint64_t hash = portal_compute_integrity(pkg, pkg2, ver, versionCode);
     env->ReleaseStringUTFChars(pkgName, pkg);
+    env->ReleaseStringUTFChars(pkgName2, pkg2);
     env->ReleaseStringUTFChars(version, ver);
 
     bool match = (hash == kExpectedHash);

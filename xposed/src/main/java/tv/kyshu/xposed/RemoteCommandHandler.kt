@@ -118,8 +118,14 @@ object RemoteCommandHandler {
                 }
             },
             clearListeners = { LocationServiceHook.locationListeners.clear() },
-            onStart = { },
-            refreshGnssStatus = { },
+            onStart = {
+                // 开启模拟时强制结算一次卫星位置
+                LocationServiceHook.forceUpdateSatelliteStates()
+            },
+            refreshGnssStatus = {
+                // 系统服务进程中定时刷新 GNSS 状态时也结算卫星位置
+                LocationServiceHook.forceUpdateSatelliteStates()
+            },
             isSystemServerProcess = { FakeLoc.isSystemServerProcess },
         )
     }
@@ -317,6 +323,16 @@ object RemoteCommandHandler {
             }
             MockCommandContract.Commands.LOAD_LIBRARY -> {
                 handleLoadLibrary(rely)
+            }
+            MockCommandContract.Commands.UPDATE_RINEX -> {
+                val rinexPath = rely.getString("rinex_path") ?: run {
+                    Logger.warn("[RemoteCommandHandler] update_rinex: missing rinex_path")
+                    return@handleAuthenticatedInstruction false
+                }
+                Logger.info("[RemoteCommandHandler] update_rinex: $rinexPath")
+                FakeLoc.rinexPath = rinexPath
+                LocationServiceHook.clearSatelliteStates()
+                true
             }
             // ---- Legacy command compatibility shim ----
             // These commands existed in the original kyshu handler but are not

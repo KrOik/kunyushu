@@ -10,6 +10,7 @@ import tv.kyshu.xposed.utils.Log as XLog
 import tv.kyshu.android.root.ShellUtils
 import tv.kyshu.ext.sharedPrefs
 import tv.kyshu.ext.altitude
+import tv.kyshu.ext.altitudeJitter
 import tv.kyshu.ext.debug
 import tv.kyshu.ext.disableFusedProvider
 import tv.kyshu.ext.disableGetCurrentLocation
@@ -346,6 +347,7 @@ object MockServiceHelper {
         return sendAuthenticated(locationManager, "put_config") {
             putBoolean("enable", context.sharedPrefs.getBoolean("enable", false))
             putDouble("altitude", context.altitude)
+            putFloat("altitudeJitter", context.altitudeJitter)
             putDouble("speed", context.speed)
             putBoolean("enable_debug_log", context.debug)
             putBoolean("disable_get_current_location", context.disableGetCurrentLocation)

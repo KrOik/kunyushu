@@ -100,7 +100,37 @@ class LocationData {
     @Volatile
     var rinexPath: String? = null
 
+    // ==================== 大气抖动 ====================
+
+    /**
+     * 模拟大气环境对卫星信号的影响
+     */
+    @Volatile
+    var enableAtmosphereJitter = true
+
+    /**
+     * 大气抖动强度 (0.0 ~ 1.0)
+     * 0.0 = 无抖动, 1.0 = 最大抖动
+     */
+    @Volatile
+    var atmosphereJitterIntensity = 0.3f
+
+    // ==================== 海拔抖动 ====================
+
+    /**
+     * 模拟海拔上下抖动
+     */
+    @Volatile
+    var enableAltitudeJitter = true
+
+    /**
+     * 海拔抖动幅度（米），默认0.7m
+     */
+    @Volatile
+    var altitudeJitter = 0.7f
+
     // ==================== 隐私控制 ====================
+
 
     /**
      * 是否隐藏模拟位置
@@ -164,6 +194,10 @@ class LocationData {
         bearing = map.getVal("bearing", bearing)
         val rinexPathValue = map.getVal("rinexPath", rinexPath ?: "")
         rinexPath = rinexPathValue.takeIf { it.isNotBlank() }
+        enableAtmosphereJitter = map.getVal("enableAtmosphereJitter", enableAtmosphereJitter)
+        atmosphereJitterIntensity = map.getVal("atmosphereJitterIntensity", atmosphereJitterIntensity)
+        enableAltitudeJitter = map.getVal("enableAltitudeJitter", enableAltitudeJitter)
+        altitudeJitter = map.getVal("altitudeJitter", altitudeJitter)
         hideMock = map.getVal("hideMock", hideMock)
         minSatellites = sanitizeMinSatellites(
             when {

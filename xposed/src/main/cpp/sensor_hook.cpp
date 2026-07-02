@@ -8,6 +8,7 @@
 #include "elf_util.h"
 #include "dobby_hook.h"
 #include <atomic>
+#include <cstdlib>
 
 #define LIBSF_PATH "/system/lib64/libsensorservice.so"
 
@@ -52,14 +53,15 @@ void ConvertToSensorEvent(void *src, void *dst) {
 
         // Generate randomized sensor values instead of constant -1.
         // This makes mock detection via sensor fingerprinting harder.
-        if (b == 18) {
-            // Step counter: accumulate small increments
+        // Android: TYPE_STEP_DETECTOR=18, TYPE_STEP_COUNTER=19
+        if (b == 19) {
+            // Step counter (TYPE_STEP_COUNTER = 19): accumulate small increments
             float prior = *(float *)((char*)dst + 16);
             float delta = (float)((rand() % 3) + 1);
             *(float *)((char*)dst + 16) = prior + delta;
             *(int32_t *)((char*)dst + 24) = 0;
-        } else if (b == 19) {
-            // Step detector: binary with probabilistic trigger
+        } else if (b == 18) {
+            // Step detector (TYPE_STEP_DETECTOR = 18): binary with probabilistic trigger
             *(int64_t *)((char*)dst + 16) = (rand() % 4 == 0) ? 1 : 0;
         } else {
             // Accelerometer / gyroscope / other: small noise around zero

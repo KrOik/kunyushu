@@ -127,7 +127,7 @@ object Dobby {
 
     external fun isTerminalDespairLocked(): Boolean
 
-    external fun kitIntegrityCheck(pkgName: String, version: String, versionCode: Int): Boolean
+    external fun kitIntegrityCheck(pkgName: String, pkgName2: String, version: String, versionCode: Int): Boolean
 
     external fun installProcMapsHooks(): Boolean
 }

@@ -25,6 +25,8 @@ import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.random.Random
+import tv.kyshu.xposed.utils.safeCacheDir
+import java.io.File
 
 // https://github.com/Frazew/VirtualSensor/blob/master/app/src/main/java/fr/frazew/virtualgyroscope/XposedMod.java#L298
 object SystemSensorManagerHook {
@@ -41,6 +43,20 @@ object SystemSensorManagerHook {
     private var mStepGoalEnd: Long = 0L
     private var mLastConfiguredStepCount: Int = -1
     private var mWasStepMockEnabled: Boolean = false
+    // 步数持久化（避免进程重启归零）
+    private val stepCountFile: File? by lazy {
+        FakeLoc.getContext()?.safeCacheDir()?.let { dir ->
+            if (dir.exists() || dir.mkdirs()) File(dir, "step_counter.dat") else null
+        }
+    }
+    private var lastStepSaveMs: Long = 0L
+    private var stepSaveCounter: Int = 0
+
+    // 磁场漂移（随机游走使基值缓慢变化）
+    private val magBase = floatArrayOf(25.0f, 2.0f, -42.0f)
+    private var lastMagUpdateMs: Long = 0L
+    private var lastStepAdvanceMs: Long = 0L
+
 
     // 姿态缓存
     private var yawRad = 0.0f
@@ -49,18 +65,19 @@ object SystemSensorManagerHook {
     private val cachedMag = FloatArray(3)
     private val cachedEuler = FloatArray(3)
 
+    operator fun invoke(classLoader: ClassLoader) {
+        loadStepCount()
+        ensureGaitSimulator()
+        unlockGeoSensor(classLoader)
+        hookSystemSensorManager(classLoader)
+        hookSystemSensorManagerQueue(classLoader)
+    }
     // 步态仿真器（默认从 assets/gait_default.json 加载录制数据解算）
     @Volatile
     private var gaitSimulator: GaitSimulator? = null
     private var lastGaitJson = ""
     private var lastGaitLoadAt = 0L
 
-    operator fun invoke(classLoader: ClassLoader) {
-        ensureGaitSimulator()
-        unlockGeoSensor(classLoader)
-        hookSystemSensorManager(classLoader)
-        hookSystemSensorManagerQueue(classLoader)
-    }
 
     /**
      * 加载/刷新步态仿真器。
@@ -429,11 +446,7 @@ object SystemSensorManagerHook {
                     outValues[1] = gyro[1]
                     outValues[2] = gyro[2]
                 }
-                Sensor.TYPE_MAGNETIC_FIELD -> {
-                    outValues[0] = 25.0f + (Random.nextFloat() - 0.5f) * 0.15f
-                    outValues[1] = 2.0f + (Random.nextFloat() - 0.5f) * 0.15f
-                    outValues[2] = -42.0f + (Random.nextFloat() - 0.5f) * 0.15f
-                }
+                Sensor.TYPE_MAGNETIC_FIELD -> updateMagField(outValues)
                 Sensor.TYPE_ORIENTATION -> {
                     outValues[0] = cachedEuler[0]
                     outValues[1] = cachedEuler[1]
@@ -447,6 +460,7 @@ object SystemSensorManagerHook {
                 }
             }
             updatePoseFromGyro(timeMs)
+            advanceStepsIfNeeded(timeMs)
             return
         }
 
@@ -477,11 +491,7 @@ object SystemSensorManagerHook {
                 outValues[1] = (amp * 0.05 * sin(phase + 2.0)).toFloat()
                 outValues[2] = (amp * 0.03 * sin(phase)).toFloat()
             }
-            Sensor.TYPE_MAGNETIC_FIELD -> {
-                outValues[0] = 25.0f + (Random.nextFloat() - 0.5f) * 0.15f
-                outValues[1] = 2.0f + (Random.nextFloat() - 0.5f) * 0.15f
-                outValues[2] = -42.0f + (Random.nextFloat() - 0.5f) * 0.15f
-            }
+            Sensor.TYPE_MAGNETIC_FIELD -> updateMagField(outValues)
             Sensor.TYPE_ORIENTATION -> {
                 outValues[0] = cachedEuler[0]
                 outValues[1] = cachedEuler[1]
@@ -495,6 +505,17 @@ object SystemSensorManagerHook {
             }
         }
         updatePoseFromGyro(timeMs)
+        advanceStepsIfNeeded(timeMs)
+    }
+
+    private fun advanceStepsIfNeeded(timeMs: Long) {
+        if (FakeLoc.sensorData.enableStepCountMock) {
+            updateStepGoal()
+            val now = SystemClock.elapsedRealtime()
+            val deltaMs = if (lastStepAdvanceMs == 0L) 500L else (now - lastStepAdvanceMs).coerceAtMost(2000L)
+            advanceStepCounter(deltaMs)
+            lastStepAdvanceMs = now
+        }
     }
 
     private fun getMockStaticValues(sensorType: Int, timeMs: Long, outValues: FloatArray) {
@@ -519,11 +540,7 @@ object SystemSensorManagerHook {
                 outValues[1] = (Random.nextFloat() - 0.5f) * 0.02f
                 outValues[2] = (Random.nextFloat() - 0.5f) * 0.02f
             }
-            Sensor.TYPE_MAGNETIC_FIELD -> {
-                outValues[0] = 25.0f + (Random.nextFloat() - 0.5f) * 0.15f
-                outValues[1] = 2.0f + (Random.nextFloat() - 0.5f) * 0.15f
-                outValues[2] = -42.0f + (Random.nextFloat() - 0.5f) * 0.15f
-            }
+            Sensor.TYPE_MAGNETIC_FIELD -> updateMagField(outValues)
             Sensor.TYPE_ORIENTATION -> {
                 outValues[0] = cachedEuler[0]
                 outValues[1] = cachedEuler[1]
@@ -573,10 +590,10 @@ object SystemSensorManagerHook {
         outQuat[2] = s
         outQuat[3] = c
 
-        // 磁场（世界坐标旋转到设备坐标）
-        val bx = 25.0f
-        val by = 2.0f
-        val bz = -42.0f
+        // 磁场（世界坐标旋转到设备坐标）使用漂移基值
+        val bx = magBase[0]
+        val by = magBase[1]
+        val bz = magBase[2]
         // 绕 Z 轴旋转
         val cosY = cos(yaw)
         val sinY = sin(yaw)
@@ -598,6 +615,60 @@ object SystemSensorManagerHook {
         while (x > pi) x -= twoPi
         while (x < -pi) x += twoPi
         return x
+    }
+
+    // ==================== 步数持久化 ====================
+
+    private fun loadStepCount() {
+        val file = stepCountFile ?: return
+        try {
+            if (file.exists() && file.canRead()) {
+                val text = file.readText().trim()
+                val count = text.toLongOrNull()
+                if (count != null && count >= 0L) {
+                    mCurrentStepCount = count
+                    Logger.info("SystemSensorManagerHook: Loaded persisted step count: $count")
+                }
+            }
+        } catch (e: Exception) {
+            Logger.warn("SystemSensorManagerHook: Failed to load step count", e)
+        }
+    }
+
+    private fun saveStepCount() {
+        val file = stepCountFile ?: return
+        // 节流：最多每 5 秒写一次，或每 100 步写一次
+        val now = System.currentTimeMillis()
+        stepSaveCounter++
+        if (now - lastStepSaveMs < 5000L && stepSaveCounter < 100) return
+        stepSaveCounter = 0
+        lastStepSaveMs = now
+        try {
+            file.writeText(mCurrentStepCount.toString())
+        } catch (e: Exception) {
+            Logger.warn("SystemSensorManagerHook: Failed to save step count", e)
+        }
+    }
+
+    // ==================== 磁场漂移 ====================
+
+    private fun updateMagField(outValues: FloatArray) {
+        val now = System.currentTimeMillis()
+        // 每 10 秒漂移一次，每次 ±0.5 μT
+        if (now - lastMagUpdateMs > 10_000L) {
+            for (i in 0 until 3) {
+                magBase[i] += (Random.nextFloat() - 0.5f) * 0.5f
+                // 限制漂移范围 ±5 μT
+                magBase[i] = magBase[i].coerceIn(
+                    floatArrayOf(20.0f, -3.0f, -47.0f)[i],
+                    floatArrayOf(30.0f, 7.0f, -37.0f)[i]
+                )
+            }
+            lastMagUpdateMs = now
+        }
+        outValues[0] = magBase[0] + (Random.nextFloat() - 0.5f) * 0.15f
+        outValues[1] = magBase[1] + (Random.nextFloat() - 0.5f) * 0.15f
+        outValues[2] = magBase[2] + (Random.nextFloat() - 0.5f) * 0.15f
     }
 
     // ==================== 步数计数器更新（由外部触发） ====================
@@ -636,6 +707,7 @@ object SystemSensorManagerHook {
         val newCount = (mCurrentStepCount + add).coerceAtMost(mStepGoalEnd)
         val stepsAdded = newCount - mCurrentStepCount
         mCurrentStepCount = newCount
+        saveStepCount()
         return stepsAdded
     }
 

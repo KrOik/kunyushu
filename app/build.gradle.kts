@@ -21,7 +21,7 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = getVersionCode()
-        versionName = "1.0.4"
+        versionName = getVersionName()
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -52,19 +52,19 @@ android {
     }
 
     android.applicationVariants.all {
-        outputs.map { it as com.android.build.gradle.internal.api.BaseVariantOutputImpl }
-            .forEach {
-                val abiName = when (val abi = it.outputFileName.split("-")[1].split(".apk")[0]) {
-                    "app" -> "all"
-                    "x64" -> "x86_64"
-                    else -> abi
-                }
-                it.outputFileName = "Portal-v${versionName}-${abiName}.apk"
-            }
+        val abiName = when {
+            name.contains("App", ignoreCase = true) -> "all"
+            name.contains("Arm64", ignoreCase = true) -> "arm64"
+            name.contains("X64", ignoreCase = true) || name.contains("X86", ignoreCase = true) -> "x86_64"
+            else -> name.lowercase()
+        }
+        outputs.forEach { output ->
+            (output as com.android.build.gradle.internal.api.BaseVariantOutputImpl)
+                .outputFileName = "Portal-${versionName}-${abiName}.apk"
+        }
     }
 
     flavorDimensions.add("mode")
-
     productFlavors {
         create("app") {
             dimension = "mode"
@@ -225,20 +225,50 @@ dependencies {
 }
 
 fun getVersionCode(): Int {
-    // Semantic version -> versionCode: major*10000 + minor*100 + patch
-    return 10004
+    // Git commit count as unique versionCode (单调递增)
+    val out = ByteArrayOutputStream()
+    try {
+        exec {
+            commandLine("git", "rev-list", "--count", "HEAD")
+            standardOutput = out
+            isIgnoreExitValue = true
+        }
+        val count = out.toString().trim().toIntOrNull()
+        if (count != null && count > 0) {
+            return count.coerceAtMost(Integer.MAX_VALUE)
+        }
+    } catch (_: Exception) { }
+    // fallback: timestamp-based to ensure uniqueness
+    return (System.currentTimeMillis() / 1000L % Integer.MAX_VALUE).toInt()
 }
 
 fun getGitCommitHash(): String {
     val out = ByteArrayOutputStream()
-    exec {
-        commandLine("git", "rev-parse", "--short", "HEAD")
-    }
-    return out.toString().trim()
+    try {
+        exec {
+            commandLine("git", "rev-parse", "--short", "HEAD")
+            standardOutput = out
+            isIgnoreExitValue = true
+        }
+        val hash = out.toString().trim()
+        if (hash.isNotBlank()) return hash
+    } catch (_: Exception) { }
+    return "unknown"
 }
 
 fun getVersionName(): String {
-    return getGitCommitHash()
+    val hash = getGitCommitHash()
+    val dateOut = ByteArrayOutputStream()
+    try {
+        exec {
+            commandLine("git", "log", "-1", "--format=%cd", "--date=format:%Y%m%d-%H%M")
+            standardOutput = dateOut
+            isIgnoreExitValue = true
+        }
+        val date = dateOut.toString().trim()
+        if (date.isNotBlank()) return "1.0.4-$hash-$date"
+    } catch (_: Exception) { }
+    return "1.0.4-$hash"
 }
 
 fun getBaiduMapKey(): String {

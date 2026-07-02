@@ -44,6 +44,10 @@ class HookLifecycleController(
                 if (rely.containsKey("enable_mock_gnss")) {
                     store.enableMockGnss = rely.getBoolean("enable_mock_gnss")
                 }
+                // 星图与位置模拟统一开关：开启位置模拟同时开启GNSS模拟
+                if (!rely.containsKey("enable_mock_gnss")) {
+                    store.enableMockGnss = true
+                }
                 store.enable = true
                 store.speed = rely.getDouble("speed", store.speed)
                 store.altitude = rely.getDouble("altitude", store.altitude)

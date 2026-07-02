@@ -23,6 +23,7 @@ import tv.kyshu.R
 import tv.kyshu.databinding.FragmentSettingsBinding
 import tv.kyshu.ext.accuracy
 import tv.kyshu.ext.altitude
+import tv.kyshu.ext.altitudeJitter
 import tv.kyshu.ext.debug
 import tv.kyshu.ext.disableFusedProvider
 import tv.kyshu.ext.disableGetCurrentLocation
@@ -98,6 +99,23 @@ class SettingsFragment : Fragment() {
                 context.altitude = value
                 Log.dialogOp("Settings", "海拔高度", "%.2f米".format(value))
                 binding.altitudeValue.text = "%.2f米".format(value)
+            }
+        }
+
+        binding.altitudeJitterValue.text = "%.1f米".format(context.altitudeJitter)
+        binding.altitudeJitterLayout.setOnClickListener {
+            showDialog("设置海拔抖动", binding.altitudeJitterValue.text.toString().let { it.substring(0, it.length - 1) }) {
+                val value = it.toFloatOrNull()
+                if (value == null || value < 0.0f) {
+                    showToast("海拔抖动必须 >= 0")
+                    return@showDialog
+                } else if (value > 10.0f) {
+                    showToast("海拔抖动不能超过10米")
+                    return@showDialog
+                }
+                context.altitudeJitter = value
+                Log.dialogOp("Settings", "海拔抖动", "%.1f米".format(value))
+                binding.altitudeJitterValue.text = "%.1f米".format(value)
             }
         }
 
@@ -350,13 +368,18 @@ class SettingsFragment : Fragment() {
             }
         }
 
-        binding.shakeMockSwitch.isChecked = context.enableShakeMock
-        binding.shakeMockSwitch.setOnCheckedChangeListener { _, isChecked ->
-            context.enableShakeMock = isChecked
-            Log.switchOp("Settings", "摇一摇模拟", isChecked)
-            showToast(if (isChecked) "已开启摇一摇模拟" else "已关闭摇一摇模拟")
-            updateRemoteConfig()
+        // 当前注入步数（通过 syncConfig 获取）
+        binding.currentStepCountValue.text = "查询中..."
+        mockServiceViewModel.locationManager?.let { mgr ->
+            kotlin.runCatching {
+                val rely = MockServiceHelper.syncConfig(mgr)
+                if (rely != null) {
+                    val currentSteps = rely.getLong("current_step_count", 0L)
+                    binding.currentStepCountValue.text = "${currentSteps}步"
+                }
+            }
         }
+
 
         binding.keepWalkingWaveformSwitch.isChecked = context.keepWalkingWaveform
         binding.keepWalkingWaveformSwitch.setOnCheckedChangeListener { _, isChecked ->
@@ -469,18 +492,6 @@ class SettingsFragment : Fragment() {
         sb.appendLine("综合健康度: ${report.overallHealth.name}")
         sb.appendLine(report.summary)
         sb.appendLine()
-        for (probe in report.probes) {
-            val icon = if (probe.passed) "[PASS]" else "[FAIL]"
-            sb.appendLine("$icon ${probe.name} (${probe.durationMs}ms)")
-            sb.appendLine("       ${probe.detail}")
-            sb.appendLine()
-        }
-
-        // 追加用户操作日志
-        sb.appendLine()
-        sb.appendLine(Log.dumpUser(20))
-        sb.appendLine("诊断时间: ${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date(report.timestamp))}")
-
         MaterialAlertDialogBuilder(requireContext())
             .setTitle("系统诊断")
             .setMessage(sb.toString())
@@ -502,6 +513,14 @@ class SettingsFragment : Fragment() {
                     showToast("更新远程配置失败")
                 } else {
                     showToast("同步配置成功")
+                    // 同步后刷新当前步数
+                    kotlin.runCatching {
+                        val rely = MockServiceHelper.syncConfig(mgr)
+                        if (rely != null) {
+                            val currentSteps = rely.getLong("current_step_count", 0L)
+                            binding.currentStepCountValue.text = "${currentSteps}步"
+                        }
+                    }
                 }
             } ?: showToast("定位服务未就绪")
         }

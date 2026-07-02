@@ -178,6 +178,26 @@ object FakeLoc {
         get() = locationData.rinexPath
         set(value) { locationData.rinexPath = value }
 
+    @Deprecated("Use locationData.enableAtmosphereJitter", ReplaceWith("locationData.enableAtmosphereJitter"))
+    var enableAtmosphereJitter: Boolean
+        get() = locationData.enableAtmosphereJitter
+        set(value) { locationData.enableAtmosphereJitter = value }
+
+    @Deprecated("Use locationData.atmosphereJitterIntensity", ReplaceWith("locationData.atmosphereJitterIntensity"))
+    var atmosphereJitterIntensity: Float
+        get() = locationData.atmosphereJitterIntensity
+        set(value) { locationData.atmosphereJitterIntensity = value }
+
+    @Deprecated("Use locationData.enableAltitudeJitter", ReplaceWith("locationData.enableAltitudeJitter"))
+    var enableAltitudeJitter: Boolean
+        get() = locationData.enableAltitudeJitter
+        set(value) { locationData.enableAltitudeJitter = value }
+
+    @Deprecated("Use locationData.altitudeJitter", ReplaceWith("locationData.altitudeJitter"))
+    var altitudeJitter: Float
+        get() = locationData.altitudeJitter
+        set(value) { locationData.altitudeJitter = value }
+
     @Deprecated("Use locationData.hideMock", ReplaceWith("locationData.hideMock"))
     var hideMock: Boolean
         get() = locationData.hideMock

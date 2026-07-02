@@ -210,6 +210,7 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
         val integrityOk = try {
             Dobby.kitIntegrityCheck(
                 PortalIdentity.APPLICATION_ID,
+                PortalIdentity.LEGACY_PACKAGE_ID,
                 PortalIdentity.VERSION_NAME,
                 PortalIdentity.VERSION_CODE
             )

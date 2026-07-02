@@ -107,6 +107,18 @@ var Context.altitude: Double
         putFloat("altitude", value.toFloat())
     }
 
+var Context.altitudeJitter: Float
+    get() = sharedPrefs.getFloat("altitudeJitter", FakeLoc.altitudeJitter)
+    set(value) = sharedPrefs.edit {
+        putFloat("altitudeJitter", value)
+    }
+
+var Context.rinexPath: String?
+    get() = sharedPrefs.getString("rinexPath", null)
+    set(value) = sharedPrefs.edit {
+        putString("rinexPath", value)
+    }
+
 var Context.accuracy: Float
     get() = sharedPrefs.getFloat("accuracy", FakeLoc.accuracy)
     set(value) = sharedPrefs.edit {

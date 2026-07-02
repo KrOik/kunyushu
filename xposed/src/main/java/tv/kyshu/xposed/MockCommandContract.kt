@@ -26,6 +26,7 @@ object MockCommandContract {
         const val GET_SPEED = "get_speed"
         const val GET_BEARING = "get_bearing"
         const val LOAD_LIBRARY = "load_library"
+        const val UPDATE_RINEX = "update_rinex"
     }
 
     object Keys {
@@ -194,6 +195,7 @@ object MockCommandContract {
             rely.putBoolean(Keys.HOOK_SENSOR, hookSensor)
             rely.putBoolean(Keys.ENABLE_STEP_COUNT_MOCK, enableStepCountMock)
             rely.putInt(Keys.STEP_COUNT, stepCount)
+            rely.putLong("current_step_count", tv.kyshu.xposed.hooks.sensor.SystemSensorManagerHook.getCurrentStepCount())
             rely.putBoolean(Keys.ENABLE_SHAKE_MOCK, enableShakeMock)
             rely.putBoolean(Keys.KEEP_WALKING_WAVEFORM, keepWalkingWaveform)
             rely.putInt(Keys.DOZE_SENSOR_INTERVAL_MS, dozeSensorIntervalMs.toInt())
