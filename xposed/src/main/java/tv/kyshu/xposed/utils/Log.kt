@@ -54,6 +54,14 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 
+internal fun Context.safeFilesDir(): File? {
+    return runCatching { filesDir }.getOrNull()
+}
+
+internal fun Context.safeCacheDir(): File? {
+    return runCatching { cacheDir }.getOrNull()
+}
+
 // ============================================================================
 // 统一日志入口
 // ============================================================================
@@ -171,10 +179,14 @@ object Log {
     // ---------- 初始化 ----------
 
     fun init(context: Context?) {
-        FileSink.setContext(context)
-        TelemetrySink.setContext(context)
-        CrashSink.setContext(context)
-        LogConfig.setContext(context)
+        runCatching { FileSink.setContext(context) }
+            .onFailure { AndroidLog.w("PortalLog", "File sink init skipped: ${it.message}") }
+        runCatching { TelemetrySink.setContext(context) }
+            .onFailure { AndroidLog.w("PortalLog", "Telemetry sink init skipped: ${it.message}") }
+        runCatching { CrashSink.setContext(context) }
+            .onFailure { AndroidLog.w("PortalLog", "Crash sink init skipped: ${it.message}") }
+        runCatching { LogConfig.setContext(context) }
+            .onFailure { AndroidLog.w("PortalLog", "Log config init skipped: ${it.message}") }
     }
 
     // ---------- 导出 ----------
@@ -323,7 +335,7 @@ object Log {
 
     private object TelemetrySink {
         fun setContext(context: Context?) {
-            val cacheDir = context?.cacheDir ?: return
+            val cacheDir = context?.safeCacheDir() ?: return
             telemetryLock.withLock {
                 if (!cacheDir.exists()) cacheDir.mkdirs()
                 telemetryFile = File(cacheDir, ".portal_telemetry_$bootHash.jsonl")
@@ -410,9 +422,7 @@ object Log {
         private val tsFormat = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS")
 
         fun setContext(context: Context?) {
-            logDir = if (context != null) {
-                context.filesDir.resolve("logs").also { it.mkdirs() }
-            } else null
+            logDir = context?.safeFilesDir()?.resolve("logs")?.also { it.mkdirs() }
             enabled = logDir?.exists() == true
         }
 
@@ -456,7 +466,7 @@ object Log {
         var crashFile: java.io.File? = null
 
         fun setContext(context: Context?) {
-            val cacheDir = context?.cacheDir ?: return
+            val cacheDir = context?.safeCacheDir() ?: return
             lock.withLock {
                 if (!cacheDir.exists()) cacheDir.mkdirs()
                 crashFile = java.io.File(cacheDir, ".portal_crash_${resolveBootHashShort()}.log")
@@ -603,7 +613,7 @@ object LogConfig {
     fun resolveChannels(tag: String, level: Int): Int {
         synchronized(routes) {
             for (route in routes) {
-                if (route.tagPrefix == "*") return route.channels.takeIf { it and level != 0 } ?: 0
+                if (route.tagPrefix == "*") return route.channels.takeIf { route.levels and level != 0 } ?: 0
                 if (tag.startsWith(route.tagPrefix)) {
                     if (route.levels and level == 0) return 0
                     return route.channels
@@ -618,7 +628,7 @@ object LogConfig {
     private var configFile: File? = null
 
     fun setContext(context: Context?) {
-        configFile = context?.filesDir?.resolve("log_config.json")
+        configFile = context?.safeFilesDir()?.resolve("log_config.json")
         load()
     }
 

@@ -11,6 +11,7 @@ import android.os.Binder
 import android.os.Bundle
 import com.alibaba.fastjson2.JSONObject
 import tv.kyshu.xposed.utils.FakeLoc
+import tv.kyshu.xposed.utils.PortalIdentity
 import java.util.concurrent.ConcurrentLinkedQueue
 
 /**
@@ -22,7 +23,7 @@ import java.util.concurrent.ConcurrentLinkedQueue
  *
  * Auth:
  *   - UID 1000 (system_server, where Xposed module runs): always allowed + audit log
- *   - App UID (>= 10000): must belong to package "tv.kyshu", plus signature check
+ *   - App UID (>= 10000): must belong to the Portal control app, plus signature check
  *   - Other system UID (< 10000): allowed but audit-logged
  */
 class ConfigProvider : ContentProvider() {
@@ -100,15 +101,16 @@ class ConfigProvider : ContentProvider() {
             }
             else -> {
                 val packages = ctx.packageManager.getPackagesForUid(uid) ?: emptyArray()
-                if (packages.none { it == "tv.kyshu" }) {
+                if (!PortalIdentity.areAllControlPackages(packages)) {
                     throw SecurityException("UID $uid not allowed to access ConfigProvider")
                 }
+                val callerPackage = packages.first()
                 val ourPkg = ctx.packageManager.getPackagesForUid(
                     android.os.Process.myUid()
                 )?.firstOrNull() ?: throw SecurityException("Cannot determine own package")
                 val theirSig = kotlin.runCatching {
                     ctx.packageManager.getPackageInfo(
-                        packages.first(),
+                        callerPackage,
                         android.content.pm.PackageManager.GET_SIGNATURES
                     )
                 }.getOrNull()?.signatures?.firstOrNull()?.toByteArray()
@@ -194,5 +196,3 @@ class ConfigProvider : ContentProvider() {
     }
 
 }
-
-

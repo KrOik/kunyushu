@@ -16,9 +16,8 @@ object AndroidFusedLocationProviderHook: BaseLocationHook() {
             return
         }
 
-        if(!initDivineService("AndroidFusedLocationProvider")) {
-            Logger.error("Failed to init DivineService in AndroidFusedLocationProvider")
-            return
+        if(!ensureDivineService("AndroidFusedLocationProvider")) {
+            Logger.warn("DivineService not ready in AndroidFusedLocationProvider; installing hooks with deferred config sync")
         }
 
         cFusedLocationProvider.hookMethodAfter("chooseBestLocation", Location::class.java, Location::class.java) {

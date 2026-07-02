@@ -8,6 +8,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertArrayEquals
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -17,12 +18,44 @@ import org.robolectric.annotation.Config
 @Config(sdk = [33])
 class RemoteCommandSecurityTest {
     @Test
+    fun `bundle codec preserves signed encrypted payload for content provider fallback`() {
+        val now = 1_000_000L
+        val key = "auth_test_key"
+        val guard = RemoteCommandSecurity.ReplayGuard(nowProvider = { now })
+        val original = Bundle().apply {
+            putString("command_id", "update_location")
+            putDouble("lat", 39.9087)
+            putDouble("lon", 116.3975)
+            putFloat("accuracy", 4.5f)
+            putStringArrayList("ssids", arrayListOf("OfficeWifi", "PrivateWifi"))
+            putIntegerArrayList("rssis", arrayListOf(-42, -70))
+            putByteArray("opaque", byteArrayOf(1, 2, 3, 4))
+        }
+
+        assertTrue(guard.registerSession(key))
+        assertTrue(RemoteCommandSecurity.attachEnvelope(original, key, sequence = 1L, nowMs = now, nonce = "codec-nonce-12345"))
+
+        val decoded = RemoteCommandBundleCodec.decode(RemoteCommandBundleCodec.encode(original))
+
+        assertTrue(guard.accept(key, decoded))
+        assertTrue(RemoteCommandSecurity.decryptSensitivePayload(decoded, key))
+        assertEquals("update_location", decoded.getString("command_id"))
+        assertEquals(39.9087, decoded.getDouble("lat"), 0.0)
+        assertEquals(116.3975, decoded.getDouble("lon"), 0.0)
+        assertEquals(4.5f, decoded.getFloat("accuracy"), 0f)
+        assertEquals(arrayListOf("OfficeWifi", "PrivateWifi"), decoded.getStringArrayList("ssids"))
+        assertEquals(arrayListOf(-42, -70), decoded.getIntegerArrayList("rssis"))
+        assertArrayEquals(byteArrayOf(1, 2, 3, 4), decoded.getByteArray("opaque"))
+    }
+
+    @Test
     fun `fresh signed command is accepted once`() {
         val now = 1_000_000L
         val key = "auth_test_key"
         val guard = RemoteCommandSecurity.ReplayGuard(nowProvider = { now })
         val bundle = Bundle().apply { putString("command_id", "ping") }
 
+        assertTrue(guard.registerSession(key))
         assertTrue(RemoteCommandSecurity.attachEnvelope(bundle, key, sequence = 1L, nowMs = now, nonce = "nonce-1234567890"))
 
         assertTrue(guard.accept(key, bundle))
@@ -38,6 +71,31 @@ class RemoteCommandSecurityTest {
     }
 
     @Test
+    fun `unregistered session is rejected even with valid envelope`() {
+        val now = 1_000_000L
+        val key = "auth_test_key"
+        val guard = RemoteCommandSecurity.ReplayGuard(nowProvider = { now })
+        val bundle = Bundle().apply { putString("command_id", "ping") }
+
+        assertTrue(RemoteCommandSecurity.attachEnvelope(bundle, key, sequence = 1L, nowMs = now, nonce = "nonce-1234567890"))
+
+        assertFalse(guard.accept(key, bundle))
+    }
+
+    @Test
+    fun `session key is exchanged only through encrypted transport fields`() {
+        val bundle = Bundle()
+        val sessionKey = "auth_abcdef1234567890"
+
+        assertTrue(RemoteCommandSecurity.putEncryptedSessionKey(bundle, sessionKey))
+
+        assertFalse(bundle.containsKey("key"))
+        assertTrue(bundle.containsKey(RemoteCommandSecurity.FIELD_ENCRYPTED_SESSION_KEY))
+        assertTrue(bundle.containsKey(RemoteCommandSecurity.FIELD_SESSION_KEY_IV))
+        assertEquals(sessionKey, RemoteCommandSecurity.decryptSessionKey(bundle))
+    }
+
+    @Test
     fun `stale envelope is rejected`() {
         val now = 1_000_000L
         val key = "auth_test_key"
@@ -45,6 +103,7 @@ class RemoteCommandSecurityTest {
         val bundle = Bundle().apply { putString("command_id", "ping") }
         val stale = now - RemoteCommandSecurity.DEFAULT_REPLAY_WINDOW_MS - 1L
 
+        assertTrue(guard.registerSession(key))
         assertTrue(RemoteCommandSecurity.attachEnvelope(bundle, key, sequence = 1L, nowMs = stale, nonce = "nonce-1234567890"))
 
         assertFalse(guard.accept(key, bundle))
@@ -57,6 +116,7 @@ class RemoteCommandSecurityTest {
         val guard = RemoteCommandSecurity.ReplayGuard(nowProvider = { now })
         val bundle = Bundle().apply { putString("command_id", "ping") }
 
+        assertTrue(guard.registerSession(key))
         assertTrue(RemoteCommandSecurity.attachEnvelope(bundle, key, sequence = 1L, nowMs = now, nonce = "nonce-1234567890"))
         bundle.putString("command_id", "stop")
 
@@ -74,6 +134,7 @@ class RemoteCommandSecurityTest {
             putDouble("lon", 20.0)
         }
 
+        assertTrue(guard.registerSession(key))
         assertTrue(RemoteCommandSecurity.attachEnvelope(bundle, key, sequence = 1L, nowMs = now, nonce = "nonce-1234567890"))
         bundle.putDouble("lat", 11.0)
 
@@ -92,6 +153,7 @@ class RemoteCommandSecurityTest {
             putString("mock_ssid", "PrivateWifi")
         }
 
+        assertTrue(guard.registerSession(key))
         assertTrue(RemoteCommandSecurity.attachEnvelope(bundle, key, sequence = 1L, nowMs = now, nonce = "nonce-1234567890"))
 
         assertFalse(bundle.containsKey("latitude"))
@@ -124,6 +186,7 @@ class RemoteCommandSecurityTest {
             putIntegerArrayList("widths", arrayListOf(1, 2))
         }
 
+        assertTrue(guard.registerSession(key))
         assertTrue(RemoteCommandSecurity.attachEnvelope(bundle, key, sequence = 1L, nowMs = now, nonce = "nonce-1234567890"))
 
         assertFalse(bundle.containsKey("ssids"))
@@ -155,6 +218,7 @@ class RemoteCommandSecurityTest {
             putIntegerArrayList("rssis", arrayListOf())
         }
 
+        assertTrue(guard.registerSession(key))
         assertTrue(RemoteCommandSecurity.attachEnvelope(bundle, key, sequence = 1L, nowMs = now, nonce = "nonce-1234567890"))
         assertTrue(guard.accept(key, bundle))
         assertTrue(RemoteCommandSecurity.decryptSensitivePayload(bundle, key))
@@ -175,6 +239,7 @@ class RemoteCommandSecurityTest {
         val start = CountDownLatch(1)
         val executor = Executors.newFixedThreadPool(workers)
 
+        assertTrue(guard.registerSession(key))
         assertTrue(RemoteCommandSecurity.attachEnvelope(bundle, key, sequence = 1L, nowMs = now, nonce = "nonce-1234567890"))
 
         repeat(workers) {
@@ -192,5 +257,23 @@ class RemoteCommandSecurityTest {
         executor.shutdown()
         assertTrue(executor.awaitTermination(2, TimeUnit.SECONDS))
         assertEquals(1, accepted.get())
+    }
+
+    @Test
+    fun `new session registration does not revoke existing sessions`() {
+        val now = 1_000_000L
+        val oldKey = "auth_old_key"
+        val newKey = "auth_new_key"
+        val guard = RemoteCommandSecurity.ReplayGuard(nowProvider = { now })
+        val oldBundle = Bundle().apply { putString("command_id", "ping") }
+        val newBundle = Bundle().apply { putString("command_id", "ping") }
+
+        assertTrue(guard.registerSession(oldKey))
+        assertTrue(guard.registerSession(newKey))
+        assertTrue(RemoteCommandSecurity.attachEnvelope(oldBundle, oldKey, sequence = 1L, nowMs = now, nonce = "old-nonce-123456"))
+        assertTrue(RemoteCommandSecurity.attachEnvelope(newBundle, newKey, sequence = 1L, nowMs = now, nonce = "new-nonce-123456"))
+
+        assertTrue(guard.accept(oldKey, oldBundle))
+        assertTrue(guard.accept(newKey, newBundle))
     }
 }

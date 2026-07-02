@@ -8,6 +8,25 @@ import de.robv.android.xposed.XposedBridge
 
 
 object BinderUtils {
+    private val TRUSTED_SYSTEM_LOCATION_PACKAGES = setOf(
+        "com.android.location.fused",
+        "com.android.phone",
+        "com.oplus.location",
+        "com.xiaomi.location.fused",
+        "com.xiaomi.metoknlp",
+        "com.vivo.location.fused",
+        "com.huawei.location.fused",
+        "com.samsung.location.fused",
+    )
+
+    internal fun isAllowedControlPackage(packageNames: Array<String>): Boolean {
+        return PortalIdentity.areAllControlPackages(packageNames)
+    }
+
+    internal fun isTrustedSystemLocationPackage(packageNames: Array<String>): Boolean {
+        return packageNames.isNotEmpty() && packageNames.all { it in TRUSTED_SYSTEM_LOCATION_PACKAGES }
+    }
+
     private fun getActivityContext(): Context? {
         // public static ActivityManagerService self()
         // frameworks/base/services/java/com/android/server/am/ActivityManagerService.java
@@ -52,22 +71,26 @@ object BinderUtils {
      */
     fun isLocationProviderEnabled(uid: Int): Boolean {
         when {
-            uid == 1000 -> {
-                // system_server (UID 1000): Xposed module runs here
-                Logger.debug("isLocationProviderEnabled: system_server(1000) allowed")
+            uid in 0 until 10000 -> {
+                // System services such as system_server(1000) and com.android.phone(1001)
+                // host in-process hooks and need the control provider to sync config.
+                Logger.debug("isLocationProviderEnabled: system uid=$uid allowed")
                 return true
             }
             uid >= 10000 -> {
-                // App UID: must exactly belong to tv.kyshu package
                 val packageNames = getUidPackageNames(uid = uid) ?: run {
                     Logger.warn("isLocationProviderEnabled: uid=$uid no packages, denied")
                     return false
                 }
-                if (packageNames.any { it == "tv.kyshu" }) {
-                    Logger.debug("isLocationProviderEnabled: uid=$uid tv.kyshu allowed")
+                if (isAllowedControlPackage(packageNames)) {
+                    Logger.debug("isLocationProviderEnabled: uid=$uid ${packageNames.joinToString()} allowed")
                     return true
                 }
-                Logger.warn("isLocationProviderEnabled: uid=$uid $packageNames denied")
+                if (isTrustedSystemLocationPackage(packageNames)) {
+                    Logger.debug("isLocationProviderEnabled: uid=$uid trusted location service ${packageNames.joinToString()} allowed")
+                    return true
+                }
+                Logger.warn("isLocationProviderEnabled: uid=$uid ${packageNames.joinToString()} denied")
                 return false
             }
             else -> {

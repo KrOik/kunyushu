@@ -8,10 +8,13 @@ import java.security.SecureRandom
 import java.util.LinkedHashMap
 import javax.crypto.Cipher
 import javax.crypto.Mac
+import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
 object RemoteCommandSecurity {
+    const val FIELD_ENCRYPTED_SESSION_KEY = "_encrypted_key"
+    const val FIELD_SESSION_KEY_IV = "_key_iv"
     const val FIELD_AUTH_NONCE = "_kys_auth_nonce"
     const val FIELD_AUTH_TIMESTAMP_MS = "_kys_auth_timestamp_ms"
     const val FIELD_AUTH_SEQUENCE = "_kys_auth_sequence"
@@ -21,6 +24,8 @@ object RemoteCommandSecurity {
     private const val HMAC_ALGORITHM = "HmacSHA256"
     private const val AES_ALGORITHM = "AES"
     private const val AES_TRANSFORMATION = "AES/CTR/NoPadding"
+    private const val AES_GCM_TRANSFORMATION = "AES/GCM/NoPadding"
+    private const val TRANSPORT_KEY_MATERIAL = "portal_transport_v1"
     private const val FIELD_ENCRYPTED_PREFIX = "_enc_"
     private const val FIELD_ENCRYPTED_IV_PREFIX = "_enc_iv_"
     private const val FIELD_ENCRYPTED_TYPE_PREFIX = "_enc_type_"
@@ -64,6 +69,31 @@ object RemoteCommandSecurity {
 
     fun newSessionKey(): String {
         return "auth_" + randomHex(byteCount = 32)
+    }
+
+    fun putEncryptedSessionKey(bundle: Bundle, sessionKey: String): Boolean {
+        if (sessionKey.isBlank()) return false
+        return kotlin.runCatching {
+            val iv = ByteArray(12)
+            synchronized(secureRandom) {
+                secureRandom.nextBytes(iv)
+            }
+            val cipher = Cipher.getInstance(AES_GCM_TRANSFORMATION)
+            cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(transportKey(), AES_ALGORITHM), GCMParameterSpec(128, iv))
+            bundle.putByteArray(FIELD_ENCRYPTED_SESSION_KEY, cipher.doFinal(sessionKey.toByteArray(Charsets.UTF_8)))
+            bundle.putByteArray(FIELD_SESSION_KEY_IV, iv)
+            true
+        }.getOrDefault(false)
+    }
+
+    fun decryptSessionKey(bundle: Bundle): String? {
+        val encrypted = bundle.getByteArray(FIELD_ENCRYPTED_SESSION_KEY) ?: return null
+        val iv = bundle.getByteArray(FIELD_SESSION_KEY_IV) ?: return null
+        return kotlin.runCatching {
+            val cipher = Cipher.getInstance(AES_GCM_TRANSFORMATION)
+            cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(transportKey(), AES_ALGORITHM), GCMParameterSpec(128, iv))
+            cipher.doFinal(encrypted).toString(Charsets.UTF_8)
+        }.getOrNull()
     }
 
     fun attachEnvelope(
@@ -235,6 +265,11 @@ object RemoteCommandSecurity {
         return bytes.toHex()
     }
 
+    private fun transportKey(): ByteArray {
+        return MessageDigest.getInstance("SHA-256")
+            .digest(TRANSPORT_KEY_MATERIAL.toByteArray(Charsets.UTF_8))
+    }
+
     private fun signCommand(
         sessionKey: String,
         commandId: String,
@@ -329,10 +364,29 @@ object RemoteCommandSecurity {
         private val nowProvider: () -> Long = { System.currentTimeMillis() },
     ) {
         private val seenNonces = LinkedHashMap<String, Long>()
+        private val knownSessions = LinkedHashMap<String, Long>()
+
+        @Synchronized
+        fun registerSession(sessionKey: String): Boolean {
+            if (sessionKey.isBlank()) return false
+            val now = nowProvider()
+            prune(now)
+            knownSessions[sessionKey] = now
+            while (knownSessions.size > maxEntries) {
+                val iterator = knownSessions.entries.iterator()
+                if (iterator.hasNext()) {
+                    val evictedSession = iterator.next().key
+                    iterator.remove()
+                    seenNonces.keys.removeIf { it.startsWith("$evictedSession:") }
+                }
+            }
+            return true
+        }
 
         @Synchronized
         fun accept(sessionKey: String, bundle: Bundle): Boolean {
             if (sessionKey.isBlank()) return false
+            if (!knownSessions.containsKey(sessionKey)) return false
             val commandId = bundle.getString("command_id") ?: return false
             val nonce = bundle.getString(FIELD_AUTH_NONCE) ?: return false
             if (!isSafeNonce(nonce)) return false
@@ -345,6 +399,7 @@ object RemoteCommandSecurity {
 
             val now = nowProvider()
             prune(now)
+            if (!knownSessions.containsKey(sessionKey)) return false
             val ageMs = now - timestampMs
             if (ageMs < 0L || ageMs > replayWindowMs) return false
 
@@ -377,6 +432,7 @@ object RemoteCommandSecurity {
         @Synchronized
         fun reset() {
             seenNonces.clear()
+            knownSessions.clear()
         }
 
         private fun prune(nowMs: Long) {

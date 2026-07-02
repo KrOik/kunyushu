@@ -1,5 +1,7 @@
 import com.android.build.api.dsl.ApplicationExtension
 import java.io.ByteArrayOutputStream
+import java.io.FileInputStream
+import java.util.Properties
 
 plugins {
     alias(libs.plugins.android.application)
@@ -7,12 +9,15 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
 }
 
+
+loadDotEnv(project)
+configureAppSigningConfigsForRelease(project)
 android {
     namespace = "tv.kyshu"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.kunyushu.kunyushu"
+        applicationId = "tv.kyshu"
         minSdk = 26
         targetSdk = 35
         versionCode = getVersionCode()
@@ -97,7 +102,9 @@ android {
     }
     packaging {
         jniLibs {
-            useLegacyPackaging = true
+            // LSPosed loads module JNI libs from base.apk!/lib/<abi>.
+            // Keep them uncompressed so System.loadLibrary can dlopen libportal.so.
+            useLegacyPackaging = false
             excludes += "lib/armeabi/**"
             excludes += "lib/x86/**"
         }
@@ -128,21 +135,49 @@ android {
         getByName("main").jniLibs.srcDirs("libs")
     }
 
-    configureAppSigningConfigsForRelease(project)
+}
+
+fun loadDotEnv(project: Project) {
+    val envFile = project.rootProject.file(".env")
+    if (!envFile.isFile) return
+    val props = Properties()
+    try {
+        FileInputStream(envFile).use { stream -> props.load(stream) }
+    } catch (e: Exception) {
+        println("Warning: Failed to load .env: ${e.message}")
+        return
+    }
+    for (key in props.stringPropertyNames()) {
+        val value = props.getProperty(key)
+        if (System.getenv(key).isNullOrBlank() && !value.isNullOrBlank()) {
+            System.setProperty("dotenv.$key", value)
+        }
+    }
+}
+
+fun dotEnvVar(key: String): String? {
+    val injected = System.getProperty("dotenv.$key")
+    if (!injected.isNullOrBlank()) return injected
+    return null
 }
 
 fun configureAppSigningConfigsForRelease(project: Project) {
-    val keystorePath: String? = System.getenv("KEYSTORE_PATH")
-    if (keystorePath.isNullOrBlank()) {
-        return
-    }
+    val keystorePath = System.getenv("KEYSTORE_PATH").takeIf { !it.isNullOrBlank() }
+        ?: dotEnvVar("KEYSTORE_PATH")
+    if (keystorePath.isNullOrBlank()) return
+    val keystorePassword = System.getenv("KEYSTORE_PASSWORD").takeIf { !it.isNullOrBlank() }
+        ?: dotEnvVar("KEYSTORE_PASSWORD") ?: return
+    val keyAliasName = System.getenv("KEY_ALIAS").takeIf { !it.isNullOrBlank() }
+        ?: dotEnvVar("KEY_ALIAS") ?: return
+    val keyPass = System.getenv("KEY_PASSWORD").takeIf { !it.isNullOrBlank() }
+        ?: dotEnvVar("KEY_PASSWORD") ?: return
     project.configure<ApplicationExtension> {
         signingConfigs {
             create("release") {
-                storeFile = file(System.getenv("KEYSTORE_PATH"))
-                storePassword = System.getenv("KEYSTORE_PASSWORD")
-                keyAlias = System.getenv("KEY_ALIAS")
-                keyPassword = System.getenv("KEY_PASSWORD")
+                storeFile = file(keystorePath)
+                storePassword = keystorePassword
+                keyAlias = keyAliasName
+                keyPassword = keyPass
                 enableV3Signing = true
                 enableV4Signing = true
             }
@@ -198,20 +233,20 @@ fun getGitCommitHash(): String {
     val out = ByteArrayOutputStream()
     exec {
         commandLine("git", "rev-parse", "--short", "HEAD")
-        standardOutput = out
     }
     return out.toString().trim()
 }
-
 
 fun getVersionName(): String {
     return getGitCommitHash()
 }
 
 fun getBaiduMapKey(): String {
-    // Priority: env BAIDU_MAP_KEY > gradle.properties > fail the build
+    // Priority: env BAIDU_MAP_KEY > .env > gradle.properties > fail
     val envKey = System.getenv("BAIDU_MAP_KEY")
     if (!envKey.isNullOrBlank()) return envKey
+    val dotenvKey = dotEnvVar("BAIDU_MAP_KEY")
+    if (!dotenvKey.isNullOrBlank()) return dotenvKey
     val propKey = project.findProperty("baiduMapKey") as? String
     if (!propKey.isNullOrBlank()) return propKey
     throw GradleException(

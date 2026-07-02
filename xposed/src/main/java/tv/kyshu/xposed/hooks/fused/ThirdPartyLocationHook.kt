@@ -16,9 +16,8 @@ import java.lang.reflect.Modifier
 
 object ThirdPartyLocationHook: BaseLocationHook() {
     operator fun invoke(classLoader: ClassLoader) {
-        if(!initDivineService("ThirdPartyLocationHook")) {
-            Logger.error("Failed to init DivineService in ThirdPartyLocationHook")
-            return
+        if(!ensureDivineService("ThirdPartyLocationHook")) {
+            Logger.warn("DivineService not ready in ThirdPartyLocationHook; installing hooks with deferred config sync")
         }
 
         // There is a certain probability that the positioning SDK will exchange data directly with these services

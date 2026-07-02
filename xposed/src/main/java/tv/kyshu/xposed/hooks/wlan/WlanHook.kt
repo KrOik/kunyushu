@@ -13,7 +13,6 @@ import tv.kyshu.xposed.utils.BinderUtils
 import tv.kyshu.xposed.utils.FakeLoc
 import tv.kyshu.xposed.utils.Logger
 import tv.kyshu.xposed.utils.afterHook
-import tv.kyshu.xposed.utils.beforeHook
 import tv.kyshu.xposed.utils.hookAllMethods
 import tv.kyshu.xposed.utils.hookMethodAfter
 import tv.kyshu.xposed.utils.toClass
@@ -64,40 +63,51 @@ object WlanHook {
     private fun hookWifiServiceImpl(wifiClazz: Class<*>) {
         if (!FakeLoc.hookWifi) return
 
-        wifiClazz.hookAllMethods("getConnectionInfo", beforeHook {
-            val packageName = args[0] as String
+        // 使用 afterHook 让原方法执行，保留真实连接状态（networkId/supplicantState/linkSpeed/frequency 等），
+        // 仅在副本上覆盖身份字段（MAC/BSSID/SSID/IP/RSSI），避免裸 WifiInfo 导致系统判定未连接而断网。
+        wifiClazz.hookAllMethods("getConnectionInfo", afterHook {
+            val packageName = args[0] as? String ?: return@afterHook
             if (FakeLoc.enableDebugLog)
                 Logger.debug("In getConnectionInfo with caller: $packageName, state: ${FakeLoc.enableMockWifi}")
 
-            if (FakeLoc.enableMockWifi && !BinderUtils.isSystemPackages(packageName)) {
-                val wifiInfo = WifiInfo::class.java.getConstructor().newInstance()
-                val wifiData = FakeLoc.wifiData
+            if (!FakeLoc.enableMockWifi) return@afterHook
+            if (BinderUtils.isSystemPackages(packageName)) return@afterHook
 
-                val mac = if (wifiData.mockMac.isNotBlank() && wifiData.mockMac != "02:00:00:00:00:00")
-                    wifiData.mockMac
-                else
-                    String.format("02:%02x:%02x:%02x:%02x:%02x", Random.nextInt(256), Random.nextInt(256), Random.nextInt(256), Random.nextInt(256), Random.nextInt(256))
-                XposedHelpers.callMethod(wifiInfo, "setMacAddress", mac)
+            val realInfo = result as? WifiInfo ?: return@afterHook
+            val wifiData = FakeLoc.wifiData
 
-                val bssid = if (wifiData.mockBSSID.isNotBlank() && wifiData.mockBSSID != "02:00:00:00:00:00")
-                    wifiData.mockBSSID
-                else
-                    String.format("%02x:%02x:%02x:%02x:%02x:%02x", Random.nextInt(256), Random.nextInt(256), Random.nextInt(256), Random.nextInt(256), Random.nextInt(256), Random.nextInt(256))
-                XposedHelpers.callMethod(wifiInfo, "setBSSID", bssid)
-
-                val ssid = if (wifiData.mockSSID.isNotBlank()) wifiData.mockSSID else "WiFi_${Random.nextInt(1000, 9999)}"
-                XposedHelpers.callMethod(wifiInfo, "setSSID", ssid)
-
-                kotlin.runCatching {
-                    val inetAddr = java.net.InetAddress.getByName(wifiData.mockIp)
-                    XposedHelpers.callMethod(wifiInfo, "setInetAddress", inetAddr)
-                }.onFailure { Logger.warn("[WlanHook] setInetAddress failed", it) }
-
-                wifiData.updateSignalState()
-                XposedHelpers.setIntField(wifiInfo, "mRssi", (-65 + wifiData.currentRssiOffset).coerceIn(-127, -1))
-
-                result = wifiInfo
+            // 优先用拷贝构造保留全部真实字段；失败则回退到空实例
+            val fakeInfo: WifiInfo = runCatching {
+                WifiInfo::class.java.getConstructor(WifiInfo::class.java).newInstance(realInfo)
+            }.getOrElse {
+                Logger.warn("[WlanHook] WifiInfo copy ctor unavailable, fallback to empty instance", it)
+                WifiInfo::class.java.getConstructor().newInstance()
             }
+
+            val mac = if (wifiData.mockMac.isNotBlank() && wifiData.mockMac != "02:00:00:00:00:00")
+                wifiData.mockMac
+            else
+                String.format("02:%02x:%02x:%02x:%02x:%02x", Random.nextInt(256), Random.nextInt(256), Random.nextInt(256), Random.nextInt(256), Random.nextInt(256))
+            XposedHelpers.callMethod(fakeInfo, "setMacAddress", mac)
+
+            val bssid = if (wifiData.mockBSSID.isNotBlank() && wifiData.mockBSSID != "02:00:00:00:00:00")
+                wifiData.mockBSSID
+            else
+                String.format("%02x:%02x:%02x:%02x:%02x:%02x", Random.nextInt(256), Random.nextInt(256), Random.nextInt(256), Random.nextInt(256), Random.nextInt(256), Random.nextInt(256))
+            XposedHelpers.callMethod(fakeInfo, "setBSSID", bssid)
+
+            val ssid = if (wifiData.mockSSID.isNotBlank()) wifiData.mockSSID else "WiFi_${Random.nextInt(1000, 9999)}"
+            XposedHelpers.callMethod(fakeInfo, "setSSID", ssid)
+
+            kotlin.runCatching {
+                val inetAddr = java.net.InetAddress.getByName(wifiData.mockIp)
+                XposedHelpers.callMethod(fakeInfo, "setInetAddress", inetAddr)
+            }.onFailure { Logger.warn("[WlanHook] setInetAddress failed", it) }
+
+            wifiData.updateSignalState()
+            XposedHelpers.setIntField(fakeInfo, "mRssi", (-65 + wifiData.currentRssiOffset).coerceIn(-127, -1))
+
+            result = fakeInfo
         })
 
         wifiClazz.hookAllMethods("getScanResults", afterHook {

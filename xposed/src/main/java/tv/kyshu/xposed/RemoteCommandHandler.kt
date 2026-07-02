@@ -18,6 +18,8 @@ package tv.kyshu.xposed
 
 import android.annotation.SuppressLint
 import android.os.Bundle
+import android.os.IBinder
+import android.os.Parcel
 import tv.kyshu.dobby.Dobby
 import tv.kyshu.xposed.hooks.LocationServiceHook
 import tv.kyshu.xposed.security.RemoteCommandSecurity
@@ -31,19 +33,37 @@ import tv.kyshu.xposed.utils.Logger
 import tv.kyshu.xposed.utils.MockAuditTrail
 import tv.kyshu.xposed.config.MockWifiData
 import tv.kyshu.xposed.utils.MockProbeLog
+import java.util.Collections
 import kotlin.random.Random
-import java.security.MessageDigest
-import java.security.SecureRandom
-import javax.crypto.Cipher
-import javax.crypto.spec.GCMParameterSpec
-import javax.crypto.spec.SecretKeySpec
 
 object RemoteCommandHandler {
+    private data class ProxyBinderSession(
+        val binder: IBinder,
+        val sessionKey: String,
+    )
+
     @Volatile
     private var activeSessionKey: String = RemoteCommandSecurity.newSessionKey()
     internal val randomKey: String
         get() = activeSessionKey
     private val replayGuard = RemoteCommandSecurity.ReplayGuard()
+    private val proxyBinders by lazy { Collections.synchronizedList(arrayListOf<ProxyBinderSession>()) }
+    private val proxyCommandIds = setOf(
+        MockCommandContract.Commands.PUT_CONFIG,
+        MockCommandContract.Commands.UPDATE_WIFI,
+        MockCommandContract.Commands.START,
+        MockCommandContract.Commands.STOP,
+        MockCommandContract.Commands.START_GNSS_MOCK,
+        MockCommandContract.Commands.STOP_GNSS_MOCK,
+        MockCommandContract.Commands.START_WIFI_MOCK,
+        MockCommandContract.Commands.STOP_WIFI_MOCK,
+        "set_speed_amp",
+        "set_altitude",
+        "set_speed",
+        "set_bearing",
+        "move",
+        "update_location",
+    )
 
     private object LiveHookRuntimeState : HookRuntimeStateStore {
         override var enable: Boolean
@@ -91,7 +111,12 @@ object RemoteCommandHandler {
     private val lifecycleController by lazy {
         HookLifecycleController(
             store = LiveHookRuntimeState,
-            setNativeStatus = { enabled -> runCatching { Dobby.setStatus(enabled) }.onFailure { Logger.error("[Hook] Dobby.setStatus failed", it) } },
+            setNativeStatus = { enabled ->
+                val applied = Dobby.setStatusWhenLoaded(enabled)
+                if (!applied) {
+                    Logger.warn("[Hook] Dobby.setStatus queued: ${Dobby.unavailableReason}")
+                }
+            },
             clearListeners = { LocationServiceHook.locationListeners.clear() },
             onStart = { },
             refreshGnssStatus = { },
@@ -108,15 +133,6 @@ object RemoteCommandHandler {
         }
     }
 
-    private fun constantTimeKeyEquals(a: String, b: String): Boolean {
-        if (a.length != b.length) return false
-        var result = 0
-        for (i in a.indices) {
-            result = result or (a[i].code xor b[i].code)
-        }
-        return result == 0
-    }
-
     private fun sanitizeMinSatellites(value: Int): Int = when {
         value <= 0 -> 12
         value > 35 -> 35
@@ -130,24 +146,11 @@ object RemoteCommandHandler {
                 val userId = BinderUtils.getCallerUid()
                 if (BinderUtils.isLocationProviderEnabled(userId)) {
                     val rawKey = rotateSessionKey()
-                    // 使用内置传输密钥加密 sessionKey
-                    val transportKey = MessageDigest.getInstance("SHA-256").digest(
-                        "portal_transport_v1".toByteArray(Charsets.UTF_8)
-                    )
-                    val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-                    val iv = ByteArray(12)
-                    SecureRandom().nextBytes(iv)
-                    cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(transportKey, "AES"), GCMParameterSpec(128, iv))
-                    val encrypted = cipher.doFinal(rawKey.toByteArray(Charsets.UTF_8))
-                    rely.putByteArray("_encrypted_key", encrypted)
-                    rely.putByteArray("_key_iv", iv)
-                    true
+                    RemoteCommandSecurity.putEncryptedSessionKey(rely, rawKey)
                 } else {
                     Logger.warn("exchange_key: Permission denied for UID $userId")
                     false
                 }
-            } else if (!constantTimeKeyEquals(command, randomKey)) {
-                false
             } else {
                 val commandId = rely.getString("command_id") ?: return@runCatching false
                 handleAuthenticatedInstruction(command, commandId, rely, replayGuard)
@@ -161,9 +164,13 @@ object RemoteCommandHandler {
     @Synchronized
     internal fun rotateSessionKey(): String {
         activeSessionKey = RemoteCommandSecurity.newSessionKey()
-        replayGuard.reset()
+        replayGuard.registerSession(activeSessionKey)
         FlightRecorder.state("IPC", "SESSION_ROTATED")
         return activeSessionKey
+    }
+
+    internal fun registerSessionKey(sessionKey: String): Boolean {
+        return replayGuard.registerSession(sessionKey)
     }
 
     internal fun handleSessionInstruction(
@@ -234,8 +241,21 @@ object RemoteCommandHandler {
             Logger.warn("[RemoteCommandHandler] rejected command with invalid encrypted payload: $commandId")
             return false
         }
+        val proxyRelay = if (commandId in proxyCommandIds) Bundle(rely) else null
+        relayToProxyBinders(commandId, proxyRelay)
         MockProbeLog.ipcReceived(commandId, "processing")
         val handled = when (commandId) {
+            "set_proxy" -> {
+                val proxy = rely.getBinder("proxy")
+                if (proxy == null) {
+                    Logger.warn("[RemoteCommandHandler] set_proxy missing binder")
+                    false
+                } else {
+                    proxyBinders.add(ProxyBinderSession(proxy, sessionKey))
+                    Logger.info("[RemoteCommandHandler] set_proxy registered, count=${proxyBinders.size}")
+                    true
+                }
+            }
             MockCommandContract.Commands.PUT_CONFIG -> {
                 MockCommandContract.applyPutConfig(rely)
                 Logger.info("[RemoteCommandHandler] put_config applied")
@@ -294,6 +314,9 @@ object RemoteCommandHandler {
             MockCommandContract.Commands.GET_BEARING -> {
                 rely.putFloat("bearing", FakeLoc.bearing.toFloat())
                 true
+            }
+            MockCommandContract.Commands.LOAD_LIBRARY -> {
+                handleLoadLibrary(rely)
             }
             // ---- Legacy command compatibility shim ----
             // These commands existed in the original kyshu handler but are not
@@ -403,6 +426,71 @@ object RemoteCommandHandler {
             }
         }
         return handled
+    }
+
+    private fun handleLoadLibrary(rely: Bundle): Boolean {
+        val path = rely.getString("path") ?: run {
+            rely.putString("result", "missing_path")
+            return true
+        }
+        val result = runCatching {
+            val allowedDir = File("/data/local/portal-lib").canonicalFile
+            val target = File(path).canonicalFile
+            val parent = target.parentFile?.canonicalFile
+            if (target.name != "libportal.so" || parent?.path != allowedDir.path) {
+                Logger.warn("[RemoteCommandHandler] load_library denied: $path")
+                return@runCatching "denied"
+            }
+            if (!target.isFile || !target.canRead()) {
+                Logger.warn("[RemoteCommandHandler] load_library missing or unreadable: ${target.path}")
+                return@runCatching "missing"
+            }
+            if (Dobby.load(target.path)) {
+                "success"
+            } else {
+                "failed:${Dobby.unavailableReason}"
+            }
+        }.getOrElse { e ->
+            Logger.error("[RemoteCommandHandler] load_library failed", e)
+            "failed:${e.javaClass.simpleName}"
+        }
+        rely.putString("result", result)
+        return true
+    }
+
+    private fun relayToProxyBinders(commandId: String, relay: Bundle?) {
+        if (relay == null || proxyBinders.isEmpty()) return
+        synchronized(proxyBinders) {
+            proxyBinders.removeIf { proxy ->
+                val binder = proxy.binder
+                if (!binder.isBinderAlive || !binder.pingBinder()) {
+                    true
+                } else {
+                    val proxyRelay = Bundle(relay)
+                    if (!RemoteCommandSecurity.attachEnvelope(
+                            bundle = proxyRelay,
+                            sessionKey = proxy.sessionKey,
+                            sequence = requestSeq.incrementAndGet(),
+                        )
+                    ) {
+                        Logger.error("[RemoteCommandHandler] failed to sign relay $commandId for proxy binder")
+                        return@removeIf true
+                    }
+                    val data = Parcel.obtain()
+                    try {
+                        data.writeString(proxy.sessionKey)
+                        data.writeBundle(proxyRelay)
+                        binder.transact(1, data, null, 0)
+                        false
+                    } catch (t: Throwable) {
+                        Logger.error("[RemoteCommandHandler] failed to relay $commandId to proxy binder", t)
+                        true
+                    } finally {
+                        data.recycle()
+                    }
+                }
+            }
+        }
     }
 
     private fun handleUpdateWifi(rely: Bundle): Boolean {

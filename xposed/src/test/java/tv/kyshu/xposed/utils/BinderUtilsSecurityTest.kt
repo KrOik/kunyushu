@@ -11,10 +11,10 @@ import org.robolectric.annotation.Config
 @Config(sdk = [33])
 class BinderUtilsSecurityTest {
     @Test
-    fun `system uid always passes location provider check`() {
-        // UID < 10000 (system/radio etc.) always allowed
-        assertTrue(BinderUtils.isLocationProviderEnabled(999))
+    fun `system uid passes location provider check without package lookup`() {
         assertTrue(BinderUtils.isLocationProviderEnabled(1000))
+        assertTrue(BinderUtils.isLocationProviderEnabled(1001))
+        assertTrue(BinderUtils.isLocationProviderEnabled(999))
         assertTrue(BinderUtils.isLocationProviderEnabled(0))
     }
 
@@ -23,6 +23,27 @@ class BinderUtilsSecurityTest {
         // In Robolectric, no packages exist for UID 12345 → should return false
         assertFalse(BinderUtils.isLocationProviderEnabled(12_345))
     }
+
+    @Test
+    fun `control package allowlist accepts current and legacy package names only`() {
+        assertTrue(BinderUtils.isAllowedControlPackage(arrayOf(PortalIdentity.APPLICATION_ID)))
+        assertTrue(BinderUtils.isAllowedControlPackage(arrayOf(PortalIdentity.LEGACY_PACKAGE_ID)))
+        assertTrue(BinderUtils.isAllowedControlPackage(arrayOf(PortalIdentity.APPLICATION_ID, PortalIdentity.LEGACY_PACKAGE_ID)))
+        assertFalse(BinderUtils.isAllowedControlPackage(emptyArray()))
+        assertFalse(BinderUtils.isAllowedControlPackage(arrayOf("tv.kyshu.debug")))
+        assertFalse(BinderUtils.isAllowedControlPackage(arrayOf("com.kunyushu.kunyushu.debug")))
+        assertFalse(BinderUtils.isAllowedControlPackage(arrayOf(PortalIdentity.APPLICATION_ID, "com.kunyushu.kunyushu.debug")))
+        assertFalse(BinderUtils.isAllowedControlPackage(arrayOf("tv.kyshu.attacker")))
+    }
+
+    @Test
+    fun `trusted system location package allowlist is exact`() {
+        assertTrue(BinderUtils.isTrustedSystemLocationPackage(arrayOf("com.oplus.location")))
+        assertTrue(BinderUtils.isTrustedSystemLocationPackage(arrayOf("com.android.phone")))
+        assertFalse(BinderUtils.isTrustedSystemLocationPackage(arrayOf("com.oplus.location.evil")))
+        assertFalse(BinderUtils.isTrustedSystemLocationPackage(arrayOf("com.oplus.location", "com.example.attacker")))
+    }
+
     @Test
     fun `system package classification does not trust embedded vendor names`() {
         // isSystemPackages uses substring contains(), so these should be strings

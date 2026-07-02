@@ -3,6 +3,7 @@ package tv.kyshu.xposed.utils
 import android.content.Context
 import android.os.Build
 import java.io.File
+import tv.kyshu.xposed.utils.safeFilesDir
 
 /**
  * Device-specific IPC channel identity.
@@ -53,7 +54,7 @@ object ChannelIdentity {
      * MUST be called early in boot, before any IPC access.
      */
     fun init(context: Context) {
-        cacheDir = context.filesDir
+        cacheDir = context.safeFilesDir()
         // Force initialization while context is available
         // (lazy val will be evaluated on first access, but init ensures
         //  the cache file is resolved while we have context)

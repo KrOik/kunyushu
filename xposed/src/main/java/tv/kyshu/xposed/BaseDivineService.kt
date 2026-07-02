@@ -7,19 +7,73 @@ import android.os.Binder
 import android.os.Build
 import android.os.Bundle
 import android.os.Parcel
+import tv.kyshu.xposed.security.RemoteCommandSecurity
 import tv.kyshu.xposed.utils.BinderUtils
 import tv.kyshu.xposed.utils.FakeLoc
 import tv.kyshu.xposed.utils.ChannelIdentity
 import tv.kyshu.xposed.utils.Logger
+import java.util.concurrent.ConcurrentHashMap
 
 abstract class BaseDivineService {
+    private var commandSequence: Long = 0L
+
+    companion object {
+        private const val DEFERRED_INIT_ATTEMPTS = 60
+        private const val DEFERRED_INIT_INTERVAL_MS = 1_000L
+
+        private val initializedServices = ConcurrentHashMap.newKeySet<String>()
+        private val pendingServices = ConcurrentHashMap.newKeySet<String>()
+    }
+
+    protected fun ensureDivineService(from: String): Boolean {
+        if (FakeLoc.isSystemServerProcess) {
+            return true
+        }
+        if (initializedServices.contains(from)) {
+            return true
+        }
+        if (initDivineService(from, logFailures = false)) {
+            initializedServices.add(from)
+            return true
+        }
+        scheduleDeferredInit(from)
+        return false
+    }
+
+    private fun scheduleDeferredInit(from: String) {
+        if (!pendingServices.add(from)) {
+            return
+        }
+        Thread({
+            try {
+                repeat(DEFERRED_INIT_ATTEMPTS) { attempt ->
+                    try {
+                        Thread.sleep(DEFERRED_INIT_INTERVAL_MS)
+                    } catch (_: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                        return@Thread
+                    }
+                    if (initDivineService(from, logFailures = false)) {
+                        initializedServices.add(from)
+                        Logger.info("[BaseDivineService] Deferred init succeeded in $from after ${attempt + 1}s")
+                        return@Thread
+                    }
+                }
+                Logger.warn("[BaseDivineService] Deferred init unavailable in $from after ${DEFERRED_INIT_ATTEMPTS}s")
+            } finally {
+                pendingServices.remove(from)
+            }
+        }, "Portal-Divine-$from").apply { isDaemon = true }.start()
+    }
+
     /**
      * if the hook is TelephonyService? or other service?
      * this service may not be in the same space as the `system_server`,
      * so a binder is used to talk.
      */
-    protected fun initDivineService(from: String, retryCount: Int = 0): Boolean {
+    protected fun initDivineService(from: String, retryCount: Int = 0, logFailures: Boolean = true): Boolean {
         if (FakeLoc.isSystemServerProcess) {
+            initializedServices.add(from)
             return true
         }
 
@@ -38,67 +92,112 @@ abstract class BaseDivineService {
 
         val locationManager = tryFetchLocationManager()
         if (locationManager == null) {
-            Logger.error("LocationManager not found in $from")
+            if (logFailures) {
+                Logger.warn("LocationManager not found in $from")
+            }
             return false
         }
 
         if (!locationManager.isProviderEnabled(ChannelIdentity.providerName)) {
             if (retryCount > 10) {
+                if (logFailures) {
+                    Logger.warn("Location provider ${ChannelIdentity.providerName} not ready in $from")
+                }
                 return false
             }
             Thread.sleep(100)
-            return initDivineService(from, retryCount + 1)
+            return initDivineService(from, retryCount + 1, logFailures)
         }
 
-        var randomKey = ""
-        val rely = Bundle()
-        if(locationManager.sendExtraCommand(ChannelIdentity.providerName, "exchange_key", rely)) {
-            rely.getString("key")?.let {
-                randomKey = it
+        val randomKey = exchangeSessionKey(locationManager)
+        if (randomKey.isNullOrEmpty()){
+            if (logFailures) {
+                Logger.warn("Failed to init service in $from")
             }
-        }
-
-        if (randomKey.isEmpty()){
-            Logger.error("Failed to init service in $from")
             return false
         }
 
         syncConfig(locationManager, randomKey)
 
-        rely.putBinder("proxy", object: Binder() {
+        val proxyBinder = object: Binder() {
             override fun getInterfaceDescriptor(): String {
                 return "tv.kyshu.service.${from}Helper"
             }
 
             override fun onTransact(code: Int, data: Parcel, reply: Parcel?, flags: Int): Boolean {
                 if (code == 1) {
+                    val sessionKey = data.readString() ?: randomKey
                     val bundle = data.readBundle(javaClass.classLoader)!!
                     if (FakeLoc.enableDebugLog) {
                         Logger.debug("ProxyBinder($from): $bundle")
                     }
-                    if(!RemoteCommandHandler.handleInstruction(randomKey, bundle)) {
+                    if(!RemoteCommandHandler.handleSessionInstruction(sessionKey, bundle)) {
                         Logger.error("Failed to handle instruction in $from")
                     }
                     return true
                 }
                 return super.onTransact(code, data, reply, flags)
             }
-        })
-        rely.putString("command_id", "set_proxy")
-        if (!locationManager.sendExtraCommand(ChannelIdentity.providerName, randomKey, rely)) {
-            Logger.error("Failed to init service proxy in $from")
+        }
+        val (proxyOk, _) = sendAuthenticated(locationManager, randomKey, "set_proxy") {
+            putBinder("proxy", proxyBinder)
+        }
+        if (!proxyOk) {
+            if (logFailures) {
+                Logger.warn("Failed to init service proxy in $from")
+            }
             return false
         }
+        initializedServices.add(from)
         return true
+    }
+
+    private fun exchangeSessionKey(locationManager: LocationManager): String? {
+        val rely = Bundle()
+        if (!locationManager.sendExtraCommand(ChannelIdentity.providerName, "exchange_key", rely)) {
+            return null
+        }
+        val sessionKey = RemoteCommandSecurity.decryptSessionKey(rely) ?: return null
+        RemoteCommandHandler.registerSessionKey(sessionKey)
+        return sessionKey
+    }
+
+    @Synchronized
+    private fun nextCommandSequence(): Long {
+        commandSequence += 1
+        return commandSequence
+    }
+
+    private fun sendAuthenticated(
+        locationManager: LocationManager,
+        randomKey: String,
+        commandId: String,
+        bundleBuilder: Bundle.() -> Unit = {},
+    ): Pair<Boolean, Bundle> {
+        val rely = Bundle().apply {
+            putString("command_id", commandId)
+            bundleBuilder()
+        }
+        if (!RemoteCommandSecurity.attachEnvelope(rely, randomKey, nextCommandSequence())) {
+            Logger.error("Failed to attach auth envelope for DivineService command=$commandId")
+            return false to rely
+        }
+        if (!locationManager.sendExtraCommand(ChannelIdentity.providerName, randomKey, rely)) {
+            return false to rely
+        }
+        if (!RemoteCommandSecurity.decryptSensitivePayload(rely, randomKey)) {
+            Logger.error("Failed to decrypt DivineService response for command=$commandId")
+            return false to rely
+        }
+        return true to rely
     }
 
     /**
      * Synchronize configurations in different processes
      */
     private fun syncConfig(locationManager: LocationManager, randomKey: String) {
-        val rely = Bundle()
-        rely.putString("command_id", "sync_config")
-        if(locationManager.sendExtraCommand(ChannelIdentity.providerName, randomKey, rely)) {
+        val (ok, rely) = sendAuthenticated(locationManager, randomKey, "sync_config")
+        if(ok) {
             FakeLoc.enable = rely.getBoolean("enable", FakeLoc.enable)
             FakeLoc.latitude = rely.getDouble("latitude", FakeLoc.latitude)
             FakeLoc.longitude = rely.getDouble("longitude", FakeLoc.longitude)

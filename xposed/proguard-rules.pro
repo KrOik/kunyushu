@@ -44,6 +44,9 @@
 
 # Security module (used via reflection + JNI)
 -keep class tv.kyshu.xposed.security.RemoteCommandSecurity { *; }
+# App module direct references (ConfigProvider, MockServiceHelper)
+-keep class tv.kyshu.xposed.utils.PortalIdentity { *; }
+-keep class tv.kyshu.xposed.security.RemoteCommandBundleCodec { *; }
 
 # ClassNameStore constants (string keys for reflection)
 -keep class tv.kyshu.xposed.utils.ClassNameStore { *; }

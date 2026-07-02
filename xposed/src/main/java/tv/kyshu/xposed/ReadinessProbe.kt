@@ -38,6 +38,7 @@ object ReadinessProbe {
 
     // Expected .so file name patterns in the native library directory.
     private val SO_PATTERNS = listOf(
+        Regex("^libportal\\.so$"),
         Regex("^libkys_.*\\.so$"),
         Regex("^libkunyushu\\.so$"),
     )
@@ -382,7 +383,7 @@ object ReadinessProbe {
             }
             if (matched.isEmpty()) {
                 return Pair(false,
-                    "No matching .so found. Expected: libkys_*.so, libkunyushu.so. " +
+                    "No matching .so found. Expected: libportal.so, libkys_*.so, libkunyushu.so. " +
                     "Found: ${soFiles.map { it.name }.take(5)}")
             }
             val paths = matched.joinToString(", ") { "${it.name} (${it.length() / 1024}KB)" }

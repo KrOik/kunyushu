@@ -222,10 +222,22 @@ abstract class BaseLocationHook: BaseDivineService() {
                     val lonMin = (absLon - lonDeg) * 60
                     value.longitude = (lonDeg * 100.0) + lonMin
 
+                    // 注入方位角（字段8：trackAngle），使用模拟方位
+                    var modBearing = FakeLoc.bearing % 360.0 + 0.0
+                    if (modBearing < 0) modBearing += 360.0
+                    value.trackAngle = modBearing
+
                     return value.toNmeaString()
                 }
                 is NmeaValue.VTG -> {
-                    return null
+                    // 注入方位角（trueTrack），使用模拟方位
+                    var modBearing = FakeLoc.bearing % 360.0 + 0.0
+                    if (modBearing < 0) modBearing += 360.0
+                    value.trueTrack = modBearing
+                    if (value.magneticTrack != null) {
+                        value.magneticTrack = modBearing
+                    }
+                    return value.toNmeaString()
                 }
             }
         }.onFailure {

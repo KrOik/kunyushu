@@ -9,9 +9,8 @@ import tv.kyshu.xposed.utils.onceHookMethodBefore
 
 object MiuiLocationManagerHook: BaseLocationHook() {
     operator fun invoke(classLoader: ClassLoader) {
-        if (!initDivineService("MiuiLocationManagerHook")) {
-            Logger.error("Failed to init DivineService in MiuiLocationManagerHook")
-            return
+        if (!ensureDivineService("MiuiLocationManagerHook")) {
+            Logger.warn("DivineService not ready in MiuiLocationManagerHook; installing hooks with deferred config sync")
         }
 
         // MIUI 14+ uses MiuiLocationManager / MiuiDeviceConfigProvider

@@ -229,7 +229,7 @@ object TelephonyHook: BaseTelephonyHook() {
 
         val cTelephonyRegistry = XposedHelpers.findClassIfExists("com.android.server.TelephonyRegistry", classLoader)
         if (cTelephonyRegistry == null) {
-            Logger.error("TelephonyRegistry not found")
+            Logger.debug("TelephonyRegistry not present in this process; system_server hook owns it")
         } else {
             hookTelephonyRegistry(cTelephonyRegistry)
             }

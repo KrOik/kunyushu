@@ -337,7 +337,7 @@ object FakeLoc {
      * 是否禁用GetCurrentLocation方法（在部分系统不禁用可能导致hook失效）
      */
     @Volatile
-    var disableGetCurrentLocation = true
+    var disableGetCurrentLocation = false
 
     /**
      * 是否禁用RegisterLocationListener方法

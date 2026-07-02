@@ -6,6 +6,7 @@ import de.robv.android.xposed.IXposedHookZygoteInit
 import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.callbacks.XC_LoadPackage
+import tv.kyshu.dobby.Dobby
 import tv.kyshu.xposed.hooks.blindhook.BlindHookLocation
 import tv.kyshu.xposed.hooks.LocationManagerHook
 import tv.kyshu.xposed.hooks.LocationServiceHook
@@ -26,9 +27,13 @@ import tv.kyshu.xposed.stability.BootStateStore
 import tv.kyshu.xposed.stability.SafeFaultResult
 import tv.kyshu.xposed.utils.CrashForensics
 import tv.kyshu.xposed.RemoteCommandHandler
-import org.json.JSONObject
+import tv.kyshu.xposed.security.RemoteCommandBundleCodec
 import tv.kyshu.xposed.utils.FlightRecorder
 import tv.kyshu.xposed.utils.LogRouter
+import tv.kyshu.xposed.utils.PortalIdentity
+import tv.kyshu.xposed.utils.safeCacheDir
+import tv.kyshu.xposed.utils.safeFilesDir
+import java.io.File
 
 class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
     private lateinit var cServiceManager: Class<*> // android.os.ServiceManager
@@ -46,6 +51,17 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
         const val BOOT_DELAY_MS = 80_000L
 
         private const val DELAY_MARKER_PREFIX = "portal.delay_active_"
+
+        private val TARGET_PACKAGES = setOf(
+            "android",
+            "com.android.phone",
+            "com.android.location.fused",
+            "com.xiaomi.location.fused",
+            "com.oplus.location",
+            "com.vivo.location.fused",
+            "com.huawei.location.fused",
+            "com.samsung.location.fused",
+        ) + PortalIdentity.CONTROL_PACKAGES
 
         /**
          * Injected package set — survives System property clearing,
@@ -99,37 +115,21 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                                     while (it.moveToNext()) {
                                         val json = it.getString(it.getColumnIndexOrThrow("command"))
                                         val obj = org.json.JSONObject(json)
-                                        val commandId = obj.getString("command_id")
-                                        val bundle = android.os.Bundle()
-
-                                        for (key in obj.keys()) {
-                                            if (key == "timestamp_ms") continue
-                                            val value = obj.get(key)
-                                            when (value) {
-                                                is String -> bundle.putString(key, value)
-                                                is Int -> bundle.putInt(key, value)
-                                                is Long -> bundle.putLong(key, value)
-                                                is Double -> bundle.putDouble(key, value)
-                                                is Boolean -> bundle.putBoolean(key, value)
-                                                else -> {
-                                                    if (key != "command_id") {
-                                                        bundle.putString(key, value.toString())
-                                                    }
-                                                }
-                                            }
+                                        val sessionKey = obj.optString("session_key").takeIf { value ->
+                                            value.isNotBlank()
+                                        } ?: run {
+                                            Logger.warn("[DelayedCommandPoller] Missing session key")
+                                            return@runCatching
+                                        }
+                                        val bundle = RemoteCommandBundleCodec.decode(obj.getString("bundle"))
+                                        val commandId = bundle.getString("command_id") ?: run {
+                                            Logger.warn("[DelayedCommandPoller] Missing command_id")
+                                            return@runCatching
                                         }
 
-                                        val sessionKey = RemoteCommandHandler.randomKey
-                                        if (sessionKey.isNotBlank()) {
-                                            if (!RemoteCommandHandler.handleSessionInstruction(sessionKey, bundle)) {
-                                                Logger.warn("[DelayedCommandPoller] Auth rejected for command: $commandId")
-                                                return@runCatching
-                                            }
-                                        } else {
-                                            if (commandId != "exchange_key") {
-                                                Logger.warn("[DelayedCommandPoller] No session key, rejecting: $commandId")
-                                                return@runCatching
-                                            }
+                                        if (!RemoteCommandHandler.handleSessionInstruction(sessionKey, bundle)) {
+                                            Logger.warn("[DelayedCommandPoller] Auth rejected for command: $commandId")
+                                            return@runCatching
                                         }
                                     }
                                 }
@@ -169,6 +169,62 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
         }.isSuccess
     }
 
+    private fun runBootInitStep(step: String, block: () -> Unit) {
+        runCatching(block).onFailure { e ->
+            Logger.warn("[FakeLocation] $step init skipped", e)
+        }
+    }
+
+    private fun resolveNativeSafetyCacheDir(context: android.content.Context): File? {
+        val candidates = listOfNotNull(
+            context.safeCacheDir(),
+            context.safeFilesDir()?.resolve("cache"),
+            File("/data/system/portal-cache"),
+        )
+        return candidates.firstOrNull { dir ->
+            runCatching {
+                if (!dir.exists()) dir.mkdirs()
+                dir.isDirectory && dir.canWrite()
+            }.getOrDefault(false)
+        }
+    }
+
+    private fun ensureNativeLoaded(stage: String): Boolean {
+        if (Dobby.isAvailable()) return true
+        val loaded = Dobby.loadFromClassLoader()
+        if (!loaded) {
+            Logger.warn("[FakeLocation] Native library unavailable at $stage: ${Dobby.unavailableReason}")
+        }
+        return loaded
+    }
+
+    private fun isTerminalDespairLocked(pkgName: String): Boolean {
+        if (!Dobby.isAvailable()) return false
+        return kotlin.runCatching { Dobby.isTerminalDespairLocked() }
+            .onFailure { Logger.warn("[FakeLocation] Terminal despair check failed for $pkgName", it) }
+            .getOrDefault(false)
+    }
+
+    private fun runKitIntegrityCheck(): Boolean {
+        if (!Dobby.isAvailable()) return true
+        val integrityOk = try {
+            Dobby.kitIntegrityCheck(
+                PortalIdentity.APPLICATION_ID,
+                PortalIdentity.VERSION_NAME,
+                PortalIdentity.VERSION_CODE
+            )
+        } catch (t: Throwable) {
+            Logger.warn("[FakeLocation] Kit integrity check unavailable; continuing without native gate", t)
+            null
+        }
+        when (integrityOk) {
+            true -> Logger.info("[FakeLocation] Kit integrity check PASSED")
+            false -> Logger.error("[FakeLocation] Kit integrity check FAILED; terminal lock written, hooks skipped")
+            null -> Unit
+        }
+        return integrityOk != false
+    }
+
     /**
      * Called very early during startup of Zygote.
      * @param startupParam Details about the module itself and the started process.
@@ -176,20 +232,8 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
      */
     override fun initZygote(startupParam: IXposedHookZygoteInit.StartupParam?) {
         if(startupParam == null) return
-
-        // Kit integrity check — verifies the app module hasn't been tampered with
-        if (kotlin.runCatching {
-            tv.kyshu.dobby.Dobby.kitIntegrityCheck("tv.kyshu", "2.3.2", 1)
-        }.getOrDefault(false)) {
-            Logger.info("[FakeLocation] Kit integrity check PASSED")
-        } else {
-            Logger.warn("[FakeLocation] Kit integrity check FAILED — entering safe mode")
-            kotlin.runCatching {
-                tv.kyshu.dobby.Dobby.writeTerminalDespairLock()
-            }.onFailure { e ->
-                Logger.error("[FakeLocation] Failed to write terminal despair lock", e)
-            }
-        }
+        // Dobby/native initialization is intentionally deferred until a concrete
+        // target process is loaded. Loading JNI from zygote can poison every fork.
     }
 
     /**
@@ -202,18 +246,7 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
      */
     override fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam?) {
         val pkgName = lpparam?.packageName ?: return
-        if (pkgName !in setOf(
-                "android",
-                "com.android.phone",
-                "com.android.location.fused",
-                "com.xiaomi.location.fused",
-                "com.oplus.location",
-                "com.vivo.location.fused",
-                "com.huawei.location.fused",
-                "com.samsung.location.fused",
-                "tv.kyshu"
-            )
-        ) {
+        if (pkgName !in TARGET_PACKAGES) {
             return
         }
 
@@ -225,7 +258,7 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
             return
         }
         // Check native despair lock before proceeding
-        if (kotlin.runCatching { tv.kyshu.dobby.Dobby.isTerminalDespairLocked() }.getOrDefault(false)) {
+        if (isTerminalDespairLocked(pkgName)) {
             Logger.error("[FakeLocation] Terminal despair lock active, all hooks skipped for $pkgName")
             return
         }
@@ -324,14 +357,52 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                     at.javaClass.getMethod("getSystemContext").invoke(at) as? android.content.Context
                 }.getOrNull()
                 if (systemContext != null) {
-                    FakeLoc.setContext(systemContext)
-                    LogRouter.setContext(systemContext)
-                    FlightRecorder.setContext(systemContext)
-                    CrashForensics.setContext(systemContext)
-                    ChannelIdentity.init(systemContext)
+                    runBootInitStep("FakeLoc context") {
+                        FakeLoc.setContext(systemContext)
+                    }
+                    runBootInitStep("LogRouter") {
+                        LogRouter.setContext(systemContext)
+                    }
+                    runBootInitStep("FlightRecorder") {
+                        FlightRecorder.setContext(systemContext)
+                    }
+                    runBootInitStep("CrashForensics") {
+                        CrashForensics.setContext(systemContext)
+                    }
+                    runBootInitStep("ChannelIdentity") {
+                        ChannelIdentity.init(systemContext)
+                    }
                     // 持久化状态存储 — 必须在 checkInstallCrashLoop 之前初始化
-                    BootStateStore.setContext(systemContext)
+                    runBootInitStep("BootStateStore") {
+                        BootStateStore.setContext(systemContext)
+                    }
                     FlightRecorder.bootstrapState("system_server")
+                    val nativeReady = ensureNativeLoaded("system_server")
+                    if (nativeReady) {
+                        var nativeSafetyInitialized = false
+                        runCatching {
+                            val cacheDir = resolveNativeSafetyCacheDir(systemContext)
+                            if (cacheDir == null) {
+                                Logger.warn("[FakeLocation] Safety framework cache dir unavailable, native safety disabled")
+                            } else {
+                                Dobby.initSafetyFramework(cacheDir.absolutePath)
+                                nativeSafetyInitialized = true
+                            }
+                        }.onFailure { e ->
+                            FlightRecorder.hookFail("BOOT", "SAFETY_FRAMEWORK_INIT",
+                                mapOf("error" to e.javaClass.simpleName))
+                        }
+                        if (isTerminalDespairLocked(pkgName)) {
+                            Logger.error("[FakeLocation] Terminal despair lock active, all hooks skipped for $pkgName")
+                            return
+                        }
+                        if (!runKitIntegrityCheck()) {
+                            return
+                        }
+                        if (!nativeSafetyInitialized) {
+                            Logger.warn("[FakeLocation] Native safety cache unavailable; integrity failure lock cannot be persisted")
+                        }
+                    }
 
                     // Safety mode check: BootStateStore 已加载持久化状态，方可判断安全模式
                     if (DomainGuard.checkInstallCrashLoop()) {
@@ -348,23 +419,21 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                             mapOf("error" to throwable.javaClass.simpleName))
                         defaultHandler?.uncaughtException(thread, throwable)
                     }
-                    runCatching {
-                        tv.kyshu.dobby.Dobby.initSafetyFramework(systemContext.cacheDir.absolutePath)
-                    }.onFailure { e ->
-                        FlightRecorder.hookFail("BOOT", "SAFETY_FRAMEWORK_INIT",
-                            mapOf("error" to e.javaClass.simpleName))
-                    }
-                    runCatching {
-                        tv.kyshu.dobby.Dobby.writeArtVersionLock()
-                    }.onFailure { e ->
-                        FlightRecorder.hookFail("BOOT", "ART_VERSION_LOCK_WRITE",
-                            mapOf("error" to e.javaClass.simpleName))
-                    }
-                    runCatching {
-                        tv.kyshu.dobby.Dobby.installProcMapsHooks()
-                    }.onFailure { e ->
-                        FlightRecorder.hookFail("BOOT", "PROC_MAPS_HOOK_INSTALL",
-                            mapOf("error" to e.javaClass.simpleName))
+                    if (!nativeReady) {
+                        Logger.warn("[FakeLocation] Native safety disabled: ${Dobby.unavailableReason}")
+                    } else {
+                        runCatching {
+                            Dobby.writeArtVersionLock()
+                        }.onFailure { e ->
+                            FlightRecorder.hookFail("BOOT", "ART_VERSION_LOCK_WRITE",
+                                mapOf("error" to e.javaClass.simpleName))
+                        }
+                        runCatching {
+                            Dobby.installProcMapsHooks()
+                        }.onFailure { e ->
+                            FlightRecorder.hookFail("BOOT", "PROC_MAPS_HOOK_INSTALL",
+                                mapOf("error" to e.javaClass.simpleName))
+                        }
                     }
                 }
                 // Start DelayedCommandPoller for ContentProvider fallback command channel
@@ -601,7 +670,7 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
             "com.vivo.location.fused" -> installBlindHook(lpparam, Domain.FUSED_LOCATION, "VIVO_FUSED")
             "com.huawei.location.fused" -> installBlindHook(lpparam, Domain.FUSED_LOCATION, "HUAWEI_FUSED")
             "com.samsung.location.fused" -> installBlindHook(lpparam, Domain.FUSED_LOCATION, "SAMSUNG_FUSED")
-            "tv.kyshu" -> {
+            in PortalIdentity.CONTROL_PACKAGES -> {
                 Logger.info("[FakeLocation] Self-module package: $pkgName, installing anti-forensics hooks...")
                 runCatching {
                     XposedHelpers.findAndHookMethod(

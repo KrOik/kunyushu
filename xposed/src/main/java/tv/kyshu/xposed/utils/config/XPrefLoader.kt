@@ -3,9 +3,9 @@ package tv.kyshu.xposed.utils.config
 import android.os.FileObserver
 import android.os.SystemClock
 import java.io.File
-import java.util.concurrent.ConcurrentLinkedQueue
 import tv.kyshu.xposed.utils.FakeLoc
 import tv.kyshu.xposed.utils.Logger
+import tv.kyshu.xposed.utils.PortalIdentity
 
 /**
  * Best-effort fallback config loader for Xposed environments that already
@@ -33,17 +33,24 @@ class XPrefLoader : ConfigLoader {
             if (now - lastFailTimeMs < backoffMs) return null
         }
 
-        return try {
-            de.robv.android.xposed.XSharedPreferences(
-                "com.kunyushu.kunyushu",
-                "gnss_debug"
-            ).also { prefs = it; failCount = 0 }
-        } catch (t: Throwable) {
-            lastFailTimeMs = now
-            failCount++
-            Logger.warn("XPrefLoader: Failed to create XSharedPreferences (attempt $failCount)", t)
-            null
+        val packages = listOf(
+            PortalIdentity.APPLICATION_ID,
+            PortalIdentity.LEGACY_PACKAGE_ID,
+        ).distinct()
+        for (packageName in packages) {
+            try {
+                return de.robv.android.xposed.XSharedPreferences(
+                    packageName,
+                    "gnss_debug"
+                ).also { prefs = it; failCount = 0 }
+            } catch (t: Throwable) {
+                Logger.warn("XPrefLoader: Failed to create XSharedPreferences for $packageName", t)
+            }
         }
+        lastFailTimeMs = now
+        failCount++
+        Logger.warn("XPrefLoader: Failed to create XSharedPreferences (attempt $failCount)")
+        return null
     }
 
     override fun load(): Map<String, Any?>? {
@@ -71,13 +78,13 @@ object XPrefWatcher {
     fun startWatching(context: android.content.Context) {
         kotlin.runCatching {
             val prefsDir = File(context.dataDir, "shared_prefs")
-            val targetFile = File(prefsDir, "tv.kyshu_preferences.xml")
+            val targetFile = File(prefsDir, "${PortalIdentity.APPLICATION_ID}_preferences.xml")
 
             // Also try alternate file names
             val filesToWatch = listOf(
                 targetFile,
                 File(prefsDir, "portal.xml"),
-                File(prefsDir, "com.kunyushu.kunyushu_preferences.xml"),
+                File(prefsDir, "${PortalIdentity.LEGACY_PACKAGE_ID}_preferences.xml"),
             )
 
             val existingFile = filesToWatch.firstOrNull { it.exists() } ?: run {

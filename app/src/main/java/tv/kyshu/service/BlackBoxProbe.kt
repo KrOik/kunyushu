@@ -93,8 +93,8 @@ object BlackBoxProbe {
     /**
      * 探针 1 — IPC 连通性
      *
-     * 通过 sendExtraCommand 发送 PING 命令，期望收到 PONG。
-     * 如果失败说明 xposed hook 未注入 system_server，或 provider name 不匹配。
+     * 通过当前认证 IPC 发送 PING 命令，期望收到 PONG。
+     * 如果失败说明 xposed hook 未注入 system_server、provider name 不匹配，或安全通道未初始化。
      */
     private fun probeIpcPing(locationManager: LocationManager?): ProbeResult {
         val start = SystemClock.elapsedRealtime()
@@ -106,23 +106,19 @@ object BlackBoxProbe {
         }
 
         return try {
-            val rely = Bundle()
-            rely.putString("command_id", "ping")
             val providerName = MockServiceHelper.PROVIDER_NAME
-            val ok = locationManager.sendExtraCommand(providerName, "ping", rely)
-            val hasPong = rely.containsKey("pong")
+            if (!MockServiceHelper.isServiceInit()) {
+                MockServiceHelper.tryInitService(locationManager)
+            }
+            val ok = MockServiceHelper.ping(locationManager)
 
-            if (ok && hasPong) {
+            if (ok) {
                 ProbeResult(name, true,
                     "sendExtraCommand 成功, provider=$providerName, 收到 pong",
                     SystemClock.elapsedRealtime() - start, Severity.INFO)
-            } else if (ok) {
-                ProbeResult(name, false,
-                    "sendExtraCommand 返回 true 但 bundle 无 pong 字段, 可能 hook 未正确注入",
-                    SystemClock.elapsedRealtime() - start, Severity.CRITICAL)
             } else {
                 ProbeResult(name, false,
-                    "sendExtraCommand 返回 false, xposed hook 未注入或 provider 未注册",
+                    "认证 ping 失败, xposed hook 未注入、provider 未注册或安全通道未建立",
                     SystemClock.elapsedRealtime() - start, Severity.CRITICAL)
             }
         } catch (e: SecurityException) {

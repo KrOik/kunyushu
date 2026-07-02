@@ -31,9 +31,12 @@ import tv.kyshu.xposed.utils.Logger
 import tv.kyshu.xposed.utils.afterHook
 import tv.kyshu.xposed.utils.beforeHook
 import tv.kyshu.xposed.utils.hookAllMethods
+import tv.kyshu.xposed.utils.onceHook
 import tv.kyshu.xposed.utils.onceHookAllMethod
 import java.lang.reflect.InvocationTargetException
 import java.lang.reflect.Method
+import java.lang.reflect.Modifier
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.random.Random
@@ -56,6 +59,71 @@ data class MockGnssData(
 internal object LocationServiceHook: BaseLocationHook() {
 
     val locationListeners = LinkedBlockingQueue<Triple<String, IInterface, IBinder.DeathRecipient>>()
+    private val gnssStatusCallbackMethods = setOf(
+        "onSvStatusChanged",
+        "onSatelliteStatusChanged",
+        "onGnssStatusChanged",
+    )
+    private val loggedGnssStatusCallbackMisses = ConcurrentHashMap.newKeySet<String>()
+
+    internal fun findGnssStatusCallback(args: Array<Any?>): Any? {
+        return args.filterNotNull().firstOrNull {
+            hasHookableGnssStatusCallbackMethod(it.javaClass)
+        } ?: args.filterIsInstance<IInterface>().firstOrNull()
+    }
+
+    internal fun hasHookableGnssStatusCallbackMethod(type: Class<*>): Boolean {
+        return type.concreteClassHierarchy().any { clazz ->
+            clazz.declaredMethods.any(::isHookableGnssStatusMethod)
+        }
+    }
+
+    private fun isHookableGnssStatusMethod(method: Method): Boolean {
+        return method.name in gnssStatusCallbackMethods &&
+                !Modifier.isAbstract(method.modifiers)
+    }
+
+    private fun Class<*>.concreteClassHierarchy(): Sequence<Class<*>> = sequence {
+        var clazz: Class<*>? = this@concreteClassHierarchy
+        while (clazz != null && clazz != Any::class.java) {
+            if (!clazz.isInterface) yield(clazz)
+            clazz = clazz.superclass
+        }
+    }
+
+    private fun hookGnssStatusCallbackMethods(callback: Any, hook: XC_MethodHook): Int {
+        var hooked = 0
+        val seen = mutableSetOf<String>()
+        callback.javaClass.concreteClassHierarchy().forEach { clazz ->
+            clazz.declaredMethods
+                .filter(::isHookableGnssStatusMethod)
+                .forEach { method ->
+                    val key = "${method.declaringClass.name}#${method.name}(${method.parameterTypes.joinToString(",") { it.name }})"
+                    if (!seen.add(key)) return@forEach
+                    runCatching {
+                        method.isAccessible = true
+                        method.onceHook(hook)
+                    }.onSuccess { unhook ->
+                        if (unhook != null) hooked++
+                    }.onFailure {
+                        Logger.warn("[LocationServiceHook] GNSS status callback hook failed: $key", it)
+                    }
+                }
+        }
+        return hooked
+    }
+
+    private fun logMissingGnssStatusCallback(callback: Any) {
+        val type = callback.javaClass
+        if (!loggedGnssStatusCallbackMisses.add(type.name)) return
+        val methodSummary = type.concreteClassHierarchy()
+            .flatMap { it.declaredMethods.asSequence() }
+            .map { it.name }
+            .distinct()
+            .take(16)
+            .joinToString(",")
+        Logger.warn("[LocationServiceHook] GNSS status callback method not found: ${type.name}; methods=$methodSummary")
+    }
 
     // A random command is generated to prevent some apps from detecting Portal
     operator fun invoke(classLoader: ClassLoader) {
@@ -355,9 +423,12 @@ internal object LocationServiceHook: BaseLocationHook() {
 
         if(XposedBridge.hookAllMethods(cILocationManager, "registerGnssStatusCallback", object: XC_MethodHook() {
                 override fun afterHookedMethod(param: MethodHookParam?) {
-                    if(param == null || param.args.isEmpty() || param.args[0] == null) return
+                    if(param == null || param.args.isEmpty()) return
 
-                    val callback = param.args[0] ?: return
+                    val callback = findGnssStatusCallback(param.args) ?: run {
+                        Logger.warn("[LocationServiceHook] registerGnssStatusCallback: callback not found in ${param.method}")
+                        return
+                    }
                     val cIGnssStatusListener = callback.javaClass
 
                     if(FakeLoc.enableDebugLog) {
@@ -367,7 +438,7 @@ internal object LocationServiceHook: BaseLocationHook() {
                         return
                     }
 
-                    if (cIGnssStatusListener.onceHookAllMethod("onSvStatusChanged", beforeHook {
+                    val gnssStatusHook = beforeHook {
                         // android 7.0.0
                         // void onSvStatusChanged(int svCount, in int[] svidWithFlags, in float[] cn0s,
                         //            in float[] elevations, in float[] azimuths);
@@ -422,17 +493,18 @@ internal object LocationServiceHook: BaseLocationHook() {
                                 cn0s[index] = Random.nextFloat(sat.type.minCn0, sat.type.maxCn0)
                                 elevations[index] = Random.nextFloat(sat.type.elevationRange.start, sat.type.elevationRange.endInclusive)
                                 azimuths[index] = Random.nextFloat(0f, 360f)
+                                // Android GnssStatus.getCarrierFrequencyHz() 返回 Hz，需将 MHz 转 Hz
                                 carrierFreqs[index] = when (sat.constellation) {
-                                    GnssFlags.CONSTELLATION_GPS -> 1575.42f
-                                    GnssFlags.CONSTELLATION_GLONASS -> 1602.0f
-                                    GnssFlags.CONSTELLATION_GALILEO -> 1575.42f
-                                    GnssFlags.CONSTELLATION_QZSS -> 1575.42f
-                                    GnssFlags.CONSTELLATION_SBAS -> 1575.42f
-                                    GnssFlags.CONSTELLATION_IRNSS -> 1176.45f
+                                    GnssFlags.CONSTELLATION_GPS -> 1575.42e6f
+                                    GnssFlags.CONSTELLATION_GLONASS -> 1602.0e6f
+                                    GnssFlags.CONSTELLATION_GALILEO -> 1575.42e6f
+                                    GnssFlags.CONSTELLATION_QZSS -> 1575.42e6f
+                                    GnssFlags.CONSTELLATION_SBAS -> 1575.42e6f
+                                    GnssFlags.CONSTELLATION_IRNSS -> 1176.45e6f
                                     else -> when (Random.nextInt(3)) {
-                                        0 -> 1561.098f
-                                        1 -> 1207.140f
-                                        else -> 1268.520f
+                                        0 -> 1561.098e6f
+                                        1 -> 1207.140e6f
+                                        else -> 1268.520e6f
                                     }
                                 }
                             }
@@ -486,8 +558,9 @@ internal object LocationServiceHook: BaseLocationHook() {
                         }
 
                         Logger.error("onSvStatusChanged: unsupported version: $method")
-                    }).isEmpty()) {
-                        Logger.error("find onSvStatusChanged failed!")
+                    }
+                    if (hookGnssStatusCallbackMethods(callback, gnssStatusHook) == 0) {
+                        logMissingGnssStatusCallback(callback)
                     }
 
                     cIGnssStatusListener.onceHookAllMethod("onNmeaReceived", beforeHook {

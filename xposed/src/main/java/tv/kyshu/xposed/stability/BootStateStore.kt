@@ -21,6 +21,7 @@ import android.os.SystemClock
 import org.json.JSONArray
 import org.json.JSONObject
 import tv.kyshu.xposed.utils.Logger
+import tv.kyshu.xposed.utils.safeCacheDir
 import java.io.File
 import java.security.MessageDigest
 import java.util.concurrent.locks.ReentrantLock
@@ -89,7 +90,7 @@ object BootStateStore {
      * 传入 null 或 context.cacheDir 不可用时 → 所有读写降级为 no-op。
      */
     fun setContext(context: Context?) {
-        val cacheDir = context?.cacheDir ?: return
+        val cacheDir = context?.safeCacheDir() ?: return
         lock.withLock {
             if (!cacheDir.exists()) cacheDir.mkdirs()
             stateFile = File(cacheDir, FILE_NAME)

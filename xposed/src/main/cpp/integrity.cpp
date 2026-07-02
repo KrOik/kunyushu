@@ -23,18 +23,19 @@
 // and e(j1, j2) is an 8-byte-step avalanche mix.
 //
 // This implementation follows the same pattern with package/version
-// specific parameters for the tv.kyshu portal.
+// specific parameters for the Portal control app.
 // ==========================================================================
 
 #include "integrity.h"
 #include "logging.h"
+#include "safety_gate.h"
 #include <cstring>
 
 // ============================================================================
 // Expected hash value — compiled-in integrity fingerprint.
 // Compute this from trusted package + version combination.
 // ============================================================================
-static const uint64_t kExpectedHash = 0x6D4A8F2E1B9C3D5EULL;
+static const uint64_t kExpectedHash = 0xEF7E395CE15CA27AULL;
 static const uint64_t kHashSeed = 0x811C9DC5ULL;  // FNV-1a initial seed
 
 // ============================================================================
@@ -129,6 +130,7 @@ Java_tv_kyshu_dobby_Dobby_kitIntegrityCheck(
     if (!match) {
         LOGE("kitIntegrityCheck FAILED: computed=0x%016llX, expected=0x%016llX",
              (unsigned long long)hash, (unsigned long long)kExpectedHash);
+        write_terminal_despair_lock();
     } else {
         LOGI("kitIntegrityCheck PASSED");
     }

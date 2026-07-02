@@ -5,6 +5,7 @@ import android.content.Context
 import android.location.LocationManager
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import tv.kyshu.xposed.utils.Log as XLog
 import tv.kyshu.android.root.ShellUtils
 import tv.kyshu.ext.sharedPrefs
@@ -41,12 +42,15 @@ import tv.kyshu.ext.speedAmplitude
 import tv.kyshu.ext.minSpeed
 import tv.kyshu.ext.maxSpeed
 import tv.kyshu.xposed.utils.FakeLoc
+import tv.kyshu.xposed.security.RemoteCommandBundleCodec
 import tv.kyshu.xposed.security.RemoteCommandSecurity
 import java.io.File
 import java.util.concurrent.Callable
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Lightweight probe logger for app-side operations.
@@ -56,17 +60,38 @@ import java.util.concurrent.TimeoutException
 private object MockServiceProbe {
     private const val TAG = "PortalApp"
     private const val PREFIX = "[Probe]"
+    private const val MOVE_IPC_LOG_INTERVAL_MS = 5_000L
+    private val lastMoveIpcLogMs = AtomicLong(Long.MIN_VALUE)
+    private val suppressedMoveIpcLogs = AtomicInteger(0)
 
     fun init(result: String, detail: String = "") {
         XLog.d(TAG, "$PREFIX [INIT] $result ${detail.trim()}".trim())
     }
 
     fun ipcSent(command: String, detail: String = "") {
+        if (command == "move") return
         XLog.d(TAG, "$PREFIX [IPC_SENT] $command ${detail.trim()}".trim())
     }
 
     fun ipcResult(command: String, success: Boolean, detail: String = "") {
         val status = if (success) "OK" else "FAIL"
+        if (command == "move") {
+            val now = SystemClock.elapsedRealtime()
+            val last = lastMoveIpcLogMs.get()
+            val insideWindow = last != Long.MIN_VALUE && now >= last && now - last < MOVE_IPC_LOG_INTERVAL_MS
+            if (insideWindow) {
+                suppressedMoveIpcLogs.incrementAndGet()
+                return
+            }
+            if (!lastMoveIpcLogMs.compareAndSet(last, now)) {
+                suppressedMoveIpcLogs.incrementAndGet()
+                return
+            }
+            val suppressed = suppressedMoveIpcLogs.getAndSet(0)
+            val suffix = if (suppressed > 0) " suppressed=$suppressed/${MOVE_IPC_LOG_INTERVAL_MS / 1000}s" else ""
+            XLog.d(TAG, "$PREFIX [IPC_RCVD] $command -> $status$suffix")
+            return
+        }
         XLog.d(TAG, "$PREFIX [IPC_RCVD] $command -> $status ${detail.trim()}".trim())
     }
 
@@ -155,6 +180,10 @@ object MockServiceHelper {
         MockServiceProbe.ipcSent(commandId)
         val result = sendWithTimeout(locationManager, randomKey, bundle)
         MockServiceProbe.ipcResult(commandId, result)
+        if (result && !RemoteCommandSecurity.decryptSensitivePayload(bundle, randomKey)) {
+            MockServiceProbe.warn("sendAuthenticated: response decrypt failed for $commandId")
+            return false to bundle
+        }
         return result to bundle
     }
 
@@ -162,23 +191,13 @@ object MockServiceHelper {
         val rely = Bundle()
         MockServiceProbe.init("exchange_key_start")
         if(sendWithTimeout(locationManager, "exchange_key", rely)) {
-            val encryptedKey = rely.getByteArray("_encrypted_key")
-            val keyIv = rely.getByteArray("_key_iv")
-            if (encryptedKey != null && keyIv != null) {
-                try {
-                    val transportKey = java.security.MessageDigest.getInstance("SHA-256").digest(
-                        "portal_transport_v1".toByteArray(Charsets.UTF_8)
-                    )
-                    val decipher = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding")
-                    decipher.init(javax.crypto.Cipher.DECRYPT_MODE,
-                        javax.crypto.spec.SecretKeySpec(transportKey, "AES"),
-                        javax.crypto.spec.GCMParameterSpec(128, keyIv))
-                    val decrypted = decipher.doFinal(encryptedKey)
-                    randomKey = decrypted.decodeToString()
-                    MockServiceProbe.init("exchange_key_ok")
-                } catch (e: Exception) {
-                    MockServiceProbe.error("exchange_key decrypt failed: ${e.message}")
-                }
+            val sessionKey = RemoteCommandSecurity.decryptSessionKey(rely)
+            if (sessionKey != null) {
+                randomKey = sessionKey
+                synchronized(this) { commandSequence = 0L }
+                MockServiceProbe.init("exchange_key_ok")
+            } else {
+                MockServiceProbe.warn("exchange_key response missing encrypted session key")
             }
         } else {
             MockServiceProbe.init("exchange_key_failed")
@@ -188,6 +207,11 @@ object MockServiceHelper {
     fun isMockStart(locationManager: LocationManager): Boolean {
         val (ok, rely) = sendAuthenticated(locationManager, "is_start") {}
         return ok && rely.getBoolean("is_start")
+    }
+
+    fun ping(locationManager: LocationManager): Boolean {
+        val (ok, rely) = sendAuthenticated(locationManager, "ping") {}
+        return ok && rely.getString("pong") == "pong"
     }
 
     fun isGnssMockStart(locationManager: LocationManager): Boolean {
@@ -367,6 +391,13 @@ object MockServiceHelper {
         return ::randomKey.isInitialized
     }
 
+    fun loadLibrary(locationManager: LocationManager, path: String): String? {
+        val (ok, rely) = sendAuthenticated(locationManager, "load_library") {
+            putString("path", path)
+        }
+        return if (ok) rely.getString("result") else null
+    }
+
     @SuppressLint("DiscouragedPrivateApi")
     fun loadPortalLibrary(context: Context): Boolean {
         if (!ShellUtils.hasRoot()) return false
@@ -392,6 +423,7 @@ object MockServiceHelper {
             ShellUtils.executeCommand("mkdir -m 755 ${soDir.absolutePath}")
         }
         val soFile = File(soDir, "libportal.so")
+        var copyOk = false
         runCatching {
             val tmpSoFile = File(soDir, "libportal.so.tmp").also { file ->
                 var nativeDir = context.applicationInfo.nativeLibraryDir
@@ -418,9 +450,12 @@ object MockServiceHelper {
             } else if (tmpSoFile.exists()) {
                 ShellUtils.executeCommand("mv ${tmpSoFile.absolutePath} ${soFile.absolutePath}")
             }
+            copyOk = true
         }.onFailure {
             MockServiceProbe.warn("Failed to copy portal library: ${it?.message}")
-         }
+        }
+
+        if (!copyOk) return false
 
         // TOCTOU guard: verify canonical path is within expected directory
         val resolvedPath = soFile.canonicalPath
@@ -430,7 +465,22 @@ object MockServiceHelper {
             return false
         }
         ShellUtils.executeCommand("chmod 755 ${soFile.absolutePath}")
-        MockServiceProbe.init("load_portal_library", "LOAD_LIBRARY_DISABLED")
+
+        // Try to load via IPC to the Xposed module
+        val locationManager = runCatching {
+            context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        }.getOrNull()
+        if (locationManager != null) {
+            if (!::randomKey.isInitialized) {
+                tryInitService(locationManager)
+            }
+            val result = loadLibrary(locationManager, soFile.absolutePath)
+            MockServiceProbe.init("load_portal_library", result ?: "IPC_FAILED")
+            return result == "success"
+        } else {
+            MockServiceProbe.init("load_portal_library", "NO_LOCATION_MANAGER")
+        }
+
         return false
     }
 
@@ -456,68 +506,23 @@ object MockServiceHelper {
         }
         return kotlin.runCatching {
             val uri = android.net.Uri.parse("content://tv.kyshu.xposed.config/cmd")
-            val json = org.json.JSONObject()
-            json.put("command_id", commandId)
-            val nowMs = System.currentTimeMillis()
+            val commandBundle = Bundle(payload).apply {
+                putString("command_id", commandId)
+            }
             val seq = synchronized(this) { ++commandSequence }
-            json.put("_kys_auth_nonce", java.security.SecureRandom().nextLong().toString(36))
-            json.put("_kys_auth_timestamp_ms", nowMs)
-            json.put("_kys_auth_sequence", seq)
-
-            // Serialize payload fields
-            for (key in payload.keySet()) {
-                val value = payload.get(key)
-                when (value) {
-                    is String -> json.put(key, value)
-                    is Int -> json.put(key, value)
-                    is Long -> json.put(key, value)
-                    is Double -> json.put(key, value)
-                    is Boolean -> json.put(key, value)
-                    else -> json.put(key, value.toString())
-                }
+            if (!RemoteCommandSecurity.attachEnvelope(commandBundle, randomKey, seq)) {
+                MockServiceProbe.warn("sendViaContentProvider: auth envelope attach failed for $commandId")
+                return@runCatching false
             }
 
-            // Compute HMAC matching RemoteCommandSecurity's type-prefixed canonicalization
-            val sortedKeys = json.keys().asSequence().filter {
-                !it.startsWith("_kys_")
-            }.sorted().toList()
-            val canonicalPayload = sortedKeys.joinToString("\n") { key ->
-                val raw = json.get(key)
-                val canonical = when (raw) {
-                    null -> "null"
-                    is String -> "String:${raw.length}:$raw"
-                    is Int -> "Int:$raw"
-                    is Long -> "Long:$raw"
-                    is Float -> "Float:$raw"
-                    is Double -> "Double:$raw"
-                    is Boolean -> "Boolean:$raw"
-                    else -> "${raw.javaClass.name}:$raw"
-                }
-                "$key=$canonical"
-            }
-            val payloadDigest = java.security.MessageDigest.getInstance("SHA-256")
-                .digest(canonicalPayload.toByteArray(Charsets.UTF_8))
-                .joinToString("") { "%02x".format(it) }
-            val hmacInput = buildString {
-                append(commandId); append('\n')
-                append(json.getString("_kys_auth_nonce")); append('\n')
-                append(nowMs); append('\n')
-                append(seq); append('\n')
-                append(payloadDigest)
-            }
-            val mac = javax.crypto.Mac.getInstance("HmacSHA256")
-            mac.init(javax.crypto.spec.SecretKeySpec(
-                randomKey.toByteArray(Charsets.UTF_8), "HmacSHA256"
-            ))
-            val signature = mac.doFinal(hmacInput.toByteArray(Charsets.UTF_8))
-                .joinToString("") { "%02x".format(it) }
-            json.put("_kys_auth_signature", signature)
+            val json = org.json.JSONObject()
+                .put("session_key", randomKey)
+                .put("bundle", RemoteCommandBundleCodec.encode(commandBundle))
 
             val contentValues = android.content.ContentValues().apply {
                 put("command", json.toString())
             }
-            context.contentResolver.insert(uri, contentValues)
-            true
+            context.contentResolver.insert(uri, contentValues) != null
         }.getOrDefault(false)
     }
 
@@ -532,8 +537,20 @@ object MockServiceHelper {
     ): Boolean {
         // Primary: try sendExtraCommand
         if (::randomKey.isInitialized) {
-            val ok = sendWithTimeout(locationManager, randomKey, payload)
-            if (ok) return true
+            val commandBundle = Bundle(payload).apply {
+                putString("command_id", commandId)
+            }
+            if (!RemoteCommandSecurity.attachEnvelope(
+                    commandBundle,
+                    randomKey,
+                    synchronized(this) { ++commandSequence },
+                )
+            ) {
+                MockServiceProbe.warn("sendCommandWithFallback: attachEnvelope failed for $commandId")
+            } else {
+                val ok = sendWithTimeout(locationManager, randomKey, commandBundle)
+                if (ok) return true
+            }
             MockServiceProbe.warn("sendCommandWithFallback: sendExtraCommand failed for $commandId, falling back to ContentProvider")
         }
         // Fallback: write to ContentProvider

@@ -25,6 +25,7 @@ object MockCommandContract {
         const val EXPORT_LOGS = "export_logs"
         const val GET_SPEED = "get_speed"
         const val GET_BEARING = "get_bearing"
+        const val LOAD_LIBRARY = "load_library"
     }
 
     object Keys {
