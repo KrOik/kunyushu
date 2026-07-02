@@ -400,7 +400,16 @@ internal object LocationServiceHook: BaseLocationHook() {
 
         val usedSatellites = multiConstellationSatellites.map { getOrCreateState(it) }
             .filter { it.usedInFix }
-            .sortedByDescending { it.cn0 }
+            .sortedWith(Comparator { a, b ->
+                val ca = a.cn0
+                val cb = b.cn0
+                when {
+                    ca.isNaN() && cb.isNaN() -> 0
+                    ca.isNaN() -> -1   // NaN treated as smallest
+                    cb.isNaN() -> 1
+                    else -> cb.compareTo(ca)  // descending
+                }
+            })
 
         if (usedSatellites.size > 24) {
             usedSatellites.drop(24).forEach { it.usedInFix = false }
@@ -1302,6 +1311,8 @@ private fun Random.nextFloat(min: Float, max: Float): Float {
 }
 
 private fun clamp(value: Float, min: Float, max: Float): Float {
+    // NaN breaks comparison contract; treat as minimum valid value
+    if (value.isNaN()) return min
     return when {
         value < min -> min
         value > max -> max

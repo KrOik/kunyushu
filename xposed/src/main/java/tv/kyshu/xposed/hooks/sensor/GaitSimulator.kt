@@ -24,6 +24,8 @@ import kotlin.math.PI
 import kotlin.math.exp
 import kotlin.math.sin
 import kotlin.random.Random
+import java.net.URI
+import java.util.zip.ZipFile
 
 data class HarmonicComponent(val magnitude: Float, val phase: Float)
 data class PulseComponent(val mu: Float, val sigmaPhi: Float, val amplitude: Float)
@@ -299,18 +301,35 @@ class GaitSimulator(private val params: GaitModelParams) {
 
         /**
          * 从 assets/gait_default.json 加载默认步态参数。
-         * 失败时返回 null。
+         * 优先用 Context 的 AssetManager，后备用模块 APK ZipFile 读取。
          */
         fun loadDefault(context: Context?): GaitSimulator? {
             if (context == null) return null
-            return try {
-                val json = context.assets.open(ASSET_NAME).bufferedReader().use { it.readText() }
-                val params = parseJson(JSONObject(json))
-                GaitSimulator(params)
+            val json = try {
+                context.assets.open(ASSET_NAME).bufferedReader().use { it.readText() }
+            } catch (e1: Throwable) {
+                // 后备1: 从模块自身 APK 的 assets/ 读取（system_server 环境下可用）
+                try {
+                    val codeSource = GaitSimulator::class.java.protectionDomain.codeSource
+                    val jarPath = URI(codeSource.location.toExternalForm()).path
+                    ZipFile(jarPath).use { zip ->
+                        val entry = zip.getEntry("assets/$ASSET_NAME")
+                            ?: zip.getEntry(ASSET_NAME)
+                            ?: return@use null
+                        zip.getInputStream(entry).bufferedReader().use { it.readText() }
+                    }
+                } catch (e2: Throwable) {
+                    Logger.error("GaitSimulator: Failed to load $ASSET_NAME via APK zip", e2)
+                    null
+                }
+            } ?: return null
+            val params = try {
+                parseJson(JSONObject(json))
             } catch (e: Throwable) {
-                Logger.error("GaitSimulator: Failed to load $ASSET_NAME", e)
-                null
+                Logger.error("GaitSimulator: Failed to parse $ASSET_NAME", e)
+                return null
             }
+            return GaitSimulator(params)
         }
 
         /**
