@@ -19,6 +19,8 @@ import tv.kyshu.xposed.utils.toClass
 import kotlin.random.Random
 
 object WlanHook {
+    private const val MAX_MOCK_SCAN_RESULTS = 32
+
     operator fun invoke(classLoader: ClassLoader) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             val cSystemServerClassLoaderFactory = XposedHelpers.findClassIfExists("com.android.internal.os.SystemServerClassLoaderFactory", classLoader)
@@ -60,8 +62,8 @@ object WlanHook {
         }
     }
 
-    private fun hookWifiServiceImpl(wifiClazz: Class<*>) {
-        if (!FakeLoc.hookWifi) return
+	    private fun hookWifiServiceImpl(wifiClazz: Class<*>) {
+	        if (!FakeLoc.hookWifi) return
 
         // 使用 afterHook 让原方法执行，保留真实连接状态（networkId/supplicantState/linkSpeed/frequency 等），
         // 仅在副本上覆盖身份字段（MAC/BSSID/SSID/IP/RSSI），避免裸 WifiInfo 导致系统判定未连接而断网。
@@ -110,8 +112,8 @@ object WlanHook {
             result = fakeInfo
         })
 
-        wifiClazz.hookAllMethods("getScanResults", afterHook {
-            val packageName = args[0] as? String
+	        wifiClazz.hookAllMethods("getScanResults", afterHook {
+	            val packageName = args[0] as? String
             if (packageName.isNullOrEmpty()) {
                 return@afterHook
             }
@@ -119,73 +121,99 @@ object WlanHook {
             if (FakeLoc.enableDebugLog)
                 Logger.debug("In getScanResults with caller: $packageName, state: ${FakeLoc.enableMockWifi}")
 
-            if(FakeLoc.enableMockWifi) {
-                if(result == null) {
-                    return@afterHook 
-                }
+	            if(FakeLoc.enableMockWifi) {
+	                if(result == null) {
+	                    return@afterHook
+	                }
 
-                val wifiData = FakeLoc.wifiData
-                val count = wifiData.mockWifiScanCount
-                val scanResults = if (count > 0) {
-                    (1..count).map {
-                        val sr = XposedHelpers.newInstance(ScanResult::class.java)
-                        XposedHelpers.setObjectField(sr, "SSID", "WiFi_${Random.nextInt(1000, 9999)}")
-                        val bssid = String.format("%02x:%02x:%02x:%02x:%02x:%02x", Random.nextInt(256), Random.nextInt(256), Random.nextInt(256), Random.nextInt(256), Random.nextInt(256), Random.nextInt(256))
-                        XposedHelpers.setObjectField(sr, "BSSID", bssid)
-                        XposedHelpers.setIntField(sr, "level", Random.nextInt(-90, -29))
-                        XposedHelpers.setIntField(sr, "frequency", 2412 + Random.nextInt(0, 13) * 5)
-                        sr
-                    }
-                } else {
-                    val wifiList = wifiData.mockWifiList
-                    if (wifiList.isNotEmpty()) {
-                        wifiList.map { wifi ->
-                            val sr = XposedHelpers.newInstance(ScanResult::class.java)
-                            XposedHelpers.setObjectField(sr, "SSID", wifi.ssid)
-                            XposedHelpers.setObjectField(sr, "BSSID", wifi.bssid)
-                            XposedHelpers.setIntField(sr, "level", wifi.rssi)
-                            XposedHelpers.setIntField(sr, "frequency", wifi.frequency)
-                            sr
-                        }
-                    } else {
-                        (1..(3 + Random.nextInt(0, 3))).map {
-                            val sr = XposedHelpers.newInstance(ScanResult::class.java)
-                            XposedHelpers.setObjectField(sr, "SSID", "WiFi_${Random.nextInt(1000, 9999)}")
-                            val bssid = String.format("%02x:%02x:%02x:%02x:%02x:%02x", Random.nextInt(256), Random.nextInt(256), Random.nextInt(256), Random.nextInt(256), Random.nextInt(256), Random.nextInt(256))
-                            XposedHelpers.setObjectField(sr, "BSSID", bssid)
-                            XposedHelpers.setIntField(sr, "level", Random.nextInt(-90, -29))
-                            XposedHelpers.setIntField(sr, "frequency", 2412 + Random.nextInt(0, 13) * 5)
-                            sr
-                        }
-                    }
-                }
+	                val scanResults = buildMockScanResults()
 
-                if (result is List<*>) {
-                    result = scanResults
-                    return@afterHook
-                }
+	                if (replaceScanResult(scanResults, "getScanResults")) return@afterHook
 
-                if (result is Array<*>) {
-                    result = scanResults.toTypedArray()
-                    return@afterHook
-                }
+	                if (FakeLoc.enableDebugLog) {
+	                    Logger.error("getScanResults: Unknown return type: ${result?.javaClass?.name}")
+	                }
+	            }
+	        })
 
-                val resultClass = result.javaClass
-                if (resultClass.name.contains("ParceledListSlice")) runCatching {
-                    val constructor = resultClass.getConstructor(List::class.java)
-                    if (!constructor.isAccessible) {
-                        constructor.isAccessible = true
-                    }
-                    result = constructor.newInstance(scanResults)
-                    return@afterHook
-                }.onFailure {
-                    Logger.error("getScanResults: ParceledListSlice failed", it)
-                }
+        wifiClazz.hookAllMethods("getMatchingScanResults", afterHook {
+            val packageName = args.firstOrNull { it is String } as? String ?: return@afterHook
+            if (FakeLoc.enableDebugLog)
+                Logger.debug("In getMatchingScanResults with caller: $packageName, state: ${FakeLoc.enableMockWifi}")
 
-                if (FakeLoc.enableDebugLog) {
-                    Logger.error("getScanResults: Unknown return type: ${result?.javaClass?.name}")
-                }
-            }
+            if (!FakeLoc.enableMockWifi || result == null) return@afterHook
+            replaceScanResult(buildMockScanResults(), "getMatchingScanResults")
         })
+	    }
+
+    private fun buildMockScanResults(): List<ScanResult> {
+        val wifiData = FakeLoc.wifiData
+        val count = wifiData.mockWifiScanCount.coerceIn(0, MAX_MOCK_SCAN_RESULTS)
+        return if (count > 0) {
+            (1..count).map { randomScanResult() }
+        } else {
+            val wifiList = wifiData.mockWifiList
+            if (wifiList.isNotEmpty()) {
+                wifiList.take(MAX_MOCK_SCAN_RESULTS).map { wifi ->
+                    XposedHelpers.newInstance(ScanResult::class.java).also { sr ->
+                        XposedHelpers.setObjectField(sr, "SSID", wifi.ssid)
+                        XposedHelpers.setObjectField(sr, "BSSID", wifi.bssid)
+                        XposedHelpers.setIntField(sr, "level", wifi.rssi)
+                        XposedHelpers.setIntField(sr, "frequency", wifi.frequency)
+                    } as ScanResult
+                }
+            } else {
+                (1..(3 + Random.nextInt(0, 3))).map { randomScanResult() }
+            }
+        }
+    }
+
+    private fun randomScanResult(): ScanResult {
+        return XposedHelpers.newInstance(ScanResult::class.java).also { sr ->
+            XposedHelpers.setObjectField(sr, "SSID", "WiFi_${Random.nextInt(1000, 9999)}")
+            XposedHelpers.setObjectField(sr, "BSSID", randomMac())
+            XposedHelpers.setIntField(sr, "level", Random.nextInt(-90, -29))
+            XposedHelpers.setIntField(sr, "frequency", 2412 + Random.nextInt(0, 13) * 5)
+        } as ScanResult
+    }
+
+    private fun XC_MethodHook.MethodHookParam.replaceScanResult(scanResults: List<ScanResult>, label: String): Boolean {
+        if (result is List<*>) {
+            result = scanResults
+            return true
+        }
+
+        if (result is Array<*>) {
+            result = scanResults.toTypedArray()
+            return true
+        }
+
+        val resultClass = result.javaClass
+        if (resultClass.name.contains("ParceledListSlice")) {
+            runCatching {
+                val constructor = resultClass.getConstructor(List::class.java)
+                if (!constructor.isAccessible) {
+                    constructor.isAccessible = true
+                }
+                result = constructor.newInstance(scanResults)
+                return true
+            }.onFailure {
+                Logger.error("$label: ParceledListSlice failed", it)
+            }
+        }
+
+        return false
+    }
+
+    private fun randomMac(): String {
+        return String.format(
+            "%02x:%02x:%02x:%02x:%02x:%02x",
+            Random.nextInt(256),
+            Random.nextInt(256),
+            Random.nextInt(256),
+            Random.nextInt(256),
+            Random.nextInt(256),
+            Random.nextInt(256)
+        )
     }
 }

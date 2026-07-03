@@ -182,8 +182,8 @@ class MockServiceHelperSecurityTest {
         val guard = RemoteCommandSecurity.ReplayGuard()
 
         assertFalse(commandJson.has("command_id"))
-        assertNotNull(decoded.getByteArray("_enc_lat"))
-        assertNotNull(decoded.getByteArray("_enc_lon"))
+        assertNotNull(decoded.getByteArray("p_lat"))
+        assertNotNull(decoded.getByteArray("p_lon"))
         assertTrue(guard.registerSession("auth_fallback_key"))
         assertTrue(guard.accept("auth_fallback_key", decoded))
         assertTrue(RemoteCommandSecurity.decryptSensitivePayload(decoded, "auth_fallback_key"))

@@ -16,6 +16,7 @@ add_library(portal SHARED
         maps_filter.cpp
         proc_maps_filter.cpp
         integrity.cpp)
+target_compile_definitions(portal PRIVATE "$<$<CONFIG:Debug>:KUNYUSHU_DEBUG>")
 target_link_options(portal PRIVATE
     -Wl,--strip-all
     -Wl,-z,max-page-size=16384

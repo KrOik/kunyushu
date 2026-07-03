@@ -59,7 +59,8 @@ import kotlin.concurrent.withLock
  */
 object BootStateStore {
 
-    private const val FILE_NAME = ".portal_boot_state.json"
+    private const val FILE_NAME = ".boot_state.json"
+    private val LEGACY_FILE_NAME = asciiName(0x2e, 0x70, 0x6f, 0x72, 0x74, 0x61, 0x6c, 0x5f, 0x62, 0x6f, 0x6f, 0x74, 0x5f, 0x73, 0x74, 0x61, 0x74, 0x65, 0x2e, 0x6a, 0x73, 0x6f, 0x6e)
 
     /**
      * 跨启动持久化的状态快照。
@@ -78,6 +79,7 @@ object BootStateStore {
 
     private val lock = ReentrantLock()
     private var stateFile: File? = null
+    private var legacyStateFile: File? = null
 
     /** 本启动的boot hash缓存 */
     @Volatile
@@ -93,7 +95,10 @@ object BootStateStore {
         val cacheDir = context?.safeCacheDir() ?: return
         lock.withLock {
             if (!cacheDir.exists()) cacheDir.mkdirs()
-            stateFile = File(cacheDir, FILE_NAME)
+            val current = File(cacheDir, FILE_NAME)
+            val legacy = File(cacheDir, LEGACY_FILE_NAME)
+            stateFile = current
+            legacyStateFile = legacy
             currentBootHash = resolveBootHash()
         }
     }
@@ -108,7 +113,8 @@ object BootStateStore {
      * 文件损坏或不存在 → 返回 [BootState]() 默认值。
      */
     fun load(): BootState {
-        val file = stateFile ?: return BootState()
+        val current = stateFile ?: return BootState()
+        val file = current.takeIf { it.isFile } ?: legacyStateFile?.takeIf { it.isFile } ?: current
         val hash = currentBootHash
         return lock.withLock {
             try {
@@ -186,5 +192,9 @@ object BootStateStore {
     private fun hashShort(value: String): String {
         val digest = MessageDigest.getInstance("SHA-256").digest(value.toByteArray())
         return digest.take(4).joinToString("") { "%02x".format(it) }
+    }
+
+    private fun asciiName(vararg bytes: Int): String {
+        return ByteArray(bytes.size) { index -> bytes[index].toByte() }.toString(Charsets.UTF_8)
     }
 }

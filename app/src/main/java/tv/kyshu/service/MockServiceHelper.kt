@@ -59,7 +59,7 @@ import java.util.concurrent.atomic.AtomicLong
  * matching the xposed module's MockProbeLog format.
  */
 private object MockServiceProbe {
-    private const val TAG = "PortalApp"
+    private const val TAG = "PTL.App"
     private const val PREFIX = "[Probe]"
     private const val MOVE_IPC_LOG_INTERVAL_MS = 5_000L
     private val lastMoveIpcLogMs = AtomicLong(Long.MIN_VALUE)
@@ -115,14 +115,14 @@ object MockServiceHelper {
     val PROVIDER_NAME: String
         get() {
             // Dynamic provider name derived from device fingerprint (like VoxLoction)
-            // Falls back to "portal" for backward compatibility and emulator/test environments
+            // Falls back to a neutral command channel for emulator/test environments.
             val derived = tv.kyshu.xposed.utils.ChannelIdentity.providerName
-            return if (derived.isNotBlank()) derived else "portal"
+            return if (derived.isNotBlank()) derived else "cmd"
         }
     private lateinit var randomKey: String
     private var commandSequence: Long = 0
     private val sendCommandExecutor = Executors.newSingleThreadExecutor { runnable ->
-        Thread(runnable, "Portal-IPC-Timeout").apply { isDaemon = true }
+        Thread(runnable, "Svc-IPC-Timeout").apply { isDaemon = true }
     }
 
     /** Wraps sendExtraCommand with a timeout to prevent permanent Binder blocking. */
@@ -477,10 +477,10 @@ object MockServiceHelper {
                 tryInitService(locationManager)
             }
             val result = loadLibrary(locationManager, soFile.absolutePath)
-            MockServiceProbe.init("load_portal_library", result ?: "IPC_FAILED")
+            MockServiceProbe.init("load_native_library", result ?: "IPC_FAILED")
             return result == "success"
         } else {
-            MockServiceProbe.init("load_portal_library", "NO_LOCATION_MANAGER")
+            MockServiceProbe.init("load_native_library", "NO_LOCATION_MANAGER")
         }
 
         return false

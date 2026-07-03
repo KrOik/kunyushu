@@ -8,6 +8,7 @@ import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 import tv.kyshu.dobby.Dobby
 import tv.kyshu.xposed.hooks.blindhook.BlindHookLocation
+import tv.kyshu.xposed.hooks.bluetooth.BluetoothHook
 import tv.kyshu.xposed.hooks.LocationManagerHook
 import tv.kyshu.xposed.hooks.LocationServiceHook
 import tv.kyshu.xposed.hooks.fused.AndroidFusedLocationProviderHook
@@ -50,7 +51,7 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
          */
         const val BOOT_DELAY_MS = 80_000L
 
-        private const val DELAY_MARKER_PREFIX = "portal.delay_active_"
+        private const val DELAY_MARKER_PREFIX = "svc.delay."
 
         private val TARGET_PACKAGES = setOf(
             "android",
@@ -58,10 +59,11 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
             "com.android.location.fused",
             "com.xiaomi.location.fused",
             "com.oplus.location",
-            "com.vivo.location.fused",
-            "com.huawei.location.fused",
-            "com.samsung.location.fused",
-        ) + PortalIdentity.CONTROL_PACKAGES
+	            "com.vivo.location.fused",
+	            "com.huawei.location.fused",
+	            "com.samsung.location.fused",
+	            "com.android.bluetooth",
+	        ) + PortalIdentity.CONTROL_PACKAGES
 
         /**
          * Injected package set — survives System property clearing,
@@ -144,7 +146,7 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                         polling = false
                         pollerThread = null
                     }
-                }, "Portal-CmdPoller")
+                }, "Svc-CmdPoller")
                 pollerThread = thread
                 thread.start()
                 Logger.info("[DelayedCommandPoller] Started polling every ${periodMs}ms")
@@ -179,7 +181,7 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
         val candidates = listOfNotNull(
             context.safeCacheDir(),
             context.safeFilesDir()?.resolve("cache"),
-            File("/data/system/portal-cache"),
+            File("/data/system/.svc-cache"),
         )
         return candidates.firstOrNull { dir ->
             runCatching {
@@ -253,7 +255,7 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
 
         // Hardened two-phase re-entry guard:
         // Phase 1 — derived property key (not string-table searchable)
-        val guardKey = ("portal.injected_" + pkgName).hashCode().toString()
+        val guardKey = ("svc.injected." + pkgName).hashCode().toString()
         // Phase 2 — companion-level set (survives System property clearing)
         if (System.getProperty(guardKey) == "true" || isPackageInjected(pkgName)) {
             return
@@ -333,7 +335,7 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                                 RuntimeException("SafeFaultHarness recovered: ${miuiResult.message}"))
                         }
                     }
-                }, "PortalBootDelay-$pkgName").start()
+                }, "SvcBootDelay-$pkgName").start()
             }
             "android" -> {
                 val systemClassLoader = (kotlin.runCatching {
@@ -448,7 +450,7 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                 // 设置生命周期标记，用于外部取消和线程醒来后的状态检查
                 System.setProperty(DELAY_MARKER_PREFIX + pkgName, "true")
 
-                val bootThreadLabel = "PortalBootDelay-$pkgName"
+                val bootThreadLabel = "SvcBootDelay-$pkgName"
                 FlightRecorder.execStart("BOOT", "DELAY_THREAD_START",
                     mapOf("delay_ms" to BOOT_DELAY_MS, "thread" to bootThreadLabel))
 
@@ -668,10 +670,37 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                         DomainGuard.reportCrash(Domain.FUSED_LOCATION, e)
                     }
             }
-            "com.vivo.location.fused" -> installBlindHook(lpparam, Domain.FUSED_LOCATION, "VIVO_FUSED")
-            "com.huawei.location.fused" -> installBlindHook(lpparam, Domain.FUSED_LOCATION, "HUAWEI_FUSED")
-            "com.samsung.location.fused" -> installBlindHook(lpparam, Domain.FUSED_LOCATION, "SAMSUNG_FUSED")
-            in PortalIdentity.CONTROL_PACKAGES -> {
+	            "com.vivo.location.fused" -> installBlindHook(lpparam, Domain.FUSED_LOCATION, "VIVO_FUSED")
+	            "com.huawei.location.fused" -> installBlindHook(lpparam, Domain.FUSED_LOCATION, "HUAWEI_FUSED")
+	            "com.samsung.location.fused" -> installBlindHook(lpparam, Domain.FUSED_LOCATION, "SAMSUNG_FUSED")
+	            "com.android.bluetooth" -> {
+	                if (DomainGuard.isDomainDisabled(Domain.BLE)) {
+	                    Logger.warn("[FakeLocation] BLE domain disabled, skipping BluetoothHook for $pkgName")
+	                    return
+	                }
+	                FlightRecorder.hookInstall("BLE", "BLUETOOTH_HOOK", mapOf("process" to pkgName))
+	                when (val bleResult = SafeFaultHarness.run("install:BluetoothHook", timeoutMs = 3_000L) {
+	                    BluetoothHook(lpparam.classLoader)
+	                }) {
+	                    is SafeFaultResult.Completed -> {
+	                        FlightRecorder.hookInstall("BLE", "BLUETOOTH_HOOK_OK",
+	                            mapOf("process" to pkgName))
+	                    }
+	                    is SafeFaultResult.Blocked -> {
+	                        Logger.error("[FakeLocation] BluetoothHook BLOCKED: ${bleResult.message}")
+	                        FlightRecorder.hookFail("BLE", "BLUETOOTH_HOOK_BLOCKED",
+	                            mapOf("process" to pkgName, "fault" to bleResult.faultClass.name))
+	                        DomainGuard.reportCrash(Domain.BLE,
+	                            RuntimeException("SafeFaultHarness blocked: ${bleResult.message}"))
+	                    }
+	                    is SafeFaultResult.Recovered -> {
+	                        Logger.warn("[FakeLocation] BluetoothHook RECOVERED: ${bleResult.message}")
+	                        FlightRecorder.hookFail("BLE", "BLUETOOTH_HOOK_RECOVERED",
+	                            mapOf("process" to pkgName, "fault" to bleResult.faultClass.name))
+	                    }
+	                }
+	            }
+	            in PortalIdentity.CONTROL_PACKAGES -> {
                 Logger.info("[FakeLocation] Self-module package: $pkgName, installing anti-forensics hooks...")
                 runCatching {
                     XposedHelpers.findAndHookMethod(

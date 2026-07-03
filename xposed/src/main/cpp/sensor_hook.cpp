@@ -84,9 +84,10 @@ void ConvertToSensorEvent(void *src, void *dst) {
         // Android: TYPE_STEP_DETECTOR=18, TYPE_STEP_COUNTER=19
         if (b == 19) {
             // Step counter (TYPE_STEP_COUNTER = 19): accumulate small increments
-            float prior = *(float *)((char*)dst + 16);
-            float delta = (float)((rand() % 3) + 1);
-            *(float *)((char*)dst + 16) = prior + delta;
+            // sensors_event_t has uint64_t step_counter at offset 16
+            uint64_t prior = *(uint64_t *)((char*)dst + 16);
+            int delta = (rand() % 3) + 1;
+            *(uint64_t *)((char*)dst + 16) = prior + static_cast<uint64_t>(delta);
             *(int32_t *)((char*)dst + 24) = 0;
         } else if (b == 18) {
             // Step detector (TYPE_STEP_DETECTOR = 18): binary with probabilistic trigger

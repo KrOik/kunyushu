@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2025-2026 The KunYuShu Project
- * Ported to Portal (tv.kyshu) with path prefix adjustments.
+ * Ported to tv.kyshu with path prefix adjustments.
  *
  * Licensed under the Apache License, Version 2.0
  */
@@ -20,6 +20,8 @@ extern char g_app_cache_dir[256];
 
 void set_app_cache_dir(const char* cache_dir);
 const char* get_app_cache_dir();
+bool get_persist_path(char* buf, size_t size, const char* filename);
+bool build_step_disable_filename(char* buf, size_t size, const char* step_id);
 
 bool is_device_whitelisted_strict();
 bool is_device_allowed();
@@ -48,7 +50,7 @@ bool safe_execute_failfast(const char* step_id, Func&& operation) {
         log_skip(step_id, "ART_VERSION_LOCK");
         return false;
     }
-    if (!is_device_whitelisted_strict()) {
+    if (!is_device_allowed()) {
         log_skip(step_id, "VERSION_GATE");
         return false;
     }
@@ -85,7 +87,7 @@ bool safe_execute_with_watchdog(const char* step_id, Func&& operation, int timeo
         log_skip(step_id, "ART_VERSION_LOCK");
         return false;
     }
-    if (!is_device_whitelisted_strict()) {
+    if (!is_device_allowed()) {
         log_skip(step_id, "VERSION_GATE");
         return false;
     }

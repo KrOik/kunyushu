@@ -12,6 +12,15 @@ import moe.microbios.nmea.NmeaValue
 import kotlin.random.Random
 
 abstract class BaseLocationHook: BaseDivineService() {
+    private companion object {
+        const val INJECTED_EXTRA = "_inj"
+        val LEGACY_INJECTED_EXTRA = asciiName(0x5f, 0x70, 0x6f, 0x72, 0x74, 0x61, 0x6c, 0x5f, 0x69, 0x6e, 0x6a, 0x65, 0x63, 0x74, 0x65, 0x64)
+
+        fun asciiName(vararg bytes: Int): String {
+            return ByteArray(bytes.size) { index -> bytes[index].toByte() }.toString(Charsets.UTF_8)
+        }
+    }
+
     fun injectLocation(originLocation: Location, realLocation: Boolean = true): Location {
         if (realLocation) {
             if (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -29,7 +38,8 @@ abstract class BaseLocationHook: BaseDivineService() {
         if (!FakeLoc.enable)
             return originLocation
 
-        if (originLocation.extras?.getBoolean("_portal_injected", false) == true) {
+        if (originLocation.extras?.getBoolean(INJECTED_EXTRA, false) == true ||
+            originLocation.extras?.getBoolean(LEGACY_INJECTED_EXTRA, false) == true) {
             // Already processed
             return originLocation
         }
@@ -92,7 +102,7 @@ abstract class BaseLocationHook: BaseDivineService() {
         if (location.extras == null) {
             location.extras = Bundle()
         }
-        location.extras?.putBoolean("_portal_injected", true)
+        location.extras?.putBoolean(INJECTED_EXTRA, true)
         location.extras?.putDouble("latlon", location.latitude + location.longitude)
         location.extras?.putInt("satellites", Random.nextInt(8, 45))
         location.extras?.putInt("maxCn0", Random.nextInt(30, 50))

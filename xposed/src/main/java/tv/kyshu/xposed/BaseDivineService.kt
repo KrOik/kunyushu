@@ -63,7 +63,7 @@ abstract class BaseDivineService {
             } finally {
                 pendingServices.remove(from)
             }
-        }, "Portal-Divine-$from").apply { isDaemon = true }.start()
+        }, "Svc-Divine-$from").apply { isDaemon = true }.start()
     }
 
     /**

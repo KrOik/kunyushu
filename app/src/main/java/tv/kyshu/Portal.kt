@@ -25,7 +25,7 @@ class Portal : Application() {
             SDKInitializer.initialize(this)
             SDKInitializer.setCoordType(DEFAULT_COORD_TYPE)
         } catch (e: Throwable) {
-            android.util.Log.e("Portal", "BaiduMap SDK init failed", e)
+            android.util.Log.e("PTL.App", "BaiduMap SDK init failed", e)
         }
     }
 
@@ -62,7 +62,7 @@ class Portal : Application() {
                 .putString("status", successJson)
                 .apply()
 
-            android.util.Log.i("Portal", "Auth cache prepared for $processName")
+            android.util.Log.i("PTL.App", "Auth cache prepared for $processName")
 
             // 5. 额外设置 LBSAuthManager 的 packageName（仅作辅助）
             kotlin.runCatching {
@@ -71,9 +71,9 @@ class Portal : Application() {
                 val instance = getInstance.invoke(null, this)
                 val setPkg = authClass.getDeclaredMethod("setPackageName", String::class.java)
                 setPkg.invoke(instance, packageName)
-            }.onFailure { android.util.Log.w("Portal", "LBSAuthManager packageName set failed", it) }
+            }.onFailure { android.util.Log.w("PTL.App", "LBSAuthManager packageName set failed", it) }
         }.onFailure { e ->
-            android.util.Log.w("Portal", "Auth cache prepare failed", e)
+            android.util.Log.w("PTL.App", "Auth cache prepare failed", e)
         }
     }
 

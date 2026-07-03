@@ -24,7 +24,7 @@ static bool is_system_server_process() {
 
 JNIEXPORT jint JNICALL
 JNI_OnLoad(JavaVM* vm, void* reserved) {
-    LOGI("JNI_OnLoad called: Portal Native Hook is loading...");
+    LOGI("JNI_OnLoad called: native hook is loading...");
     JNIEnv* env;
     if (vm->GetEnv((void**) &env, JNI_VERSION_1_6) != JNI_OK) {
         return JNI_ERR;

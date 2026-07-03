@@ -576,7 +576,7 @@ object RemoteCommandHandler {
             val ts = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US).format(java.util.Date())
 
             sb.appendLine("============================================")
-            sb.appendLine("Portal Log Export — $ts")
+            sb.appendLine("PTL Log Export - $ts")
             sb.appendLine("============================================")
             sb.appendLine()
 
@@ -603,7 +603,7 @@ object RemoteCommandHandler {
             val logDir = context.filesDir.resolve("logs")
             if (logDir.isDirectory) {
                 val logFiles = logDir.listFiles()
-                    ?.filter { it.isFile && it.name.startsWith("portal_") }
+                    ?.filter { it.isFile && it.name.startsWith("svc_") }
                     ?.sortedByDescending { it.lastModified() }
                     ?.take(3) ?: emptyList()
                 if (logFiles.isEmpty()) {

@@ -17,8 +17,9 @@ import tv.kyshu.xposed.utils.safeFilesDir
  * access — typically from FakeLocation.handleLoadPackage("android").
  */
 object ChannelIdentity {
-    private const val CACHE_FILE = ".portal_channel_id"
-    private const val FALLBACK_NAME = "portal"
+    private const val CACHE_FILE = ".cmd_channel_id"
+    private val LEGACY_CACHE_FILE = asciiName(0x2e, 0x70, 0x6f, 0x72, 0x74, 0x61, 0x6c, 0x5f, 0x63, 0x68, 0x61, 0x6e, 0x6e, 0x65, 0x6c, 0x5f, 0x69, 0x64)
+    private const val FALLBACK_NAME = "cmd"
 
     @Volatile
     private var cacheDir: File? = null
@@ -78,9 +79,14 @@ object ChannelIdentity {
 
     private fun readCached(): String? {
         val file = cacheFile() ?: return null
+        val legacyFile = file.resolveSibling(LEGACY_CACHE_FILE)
         return kotlin.runCatching {
-            if (!file.isFile) return null
-            file.readText().trim().takeIf { it.isNotBlank() }
+            val source = when {
+                file.isFile -> file
+                legacyFile.isFile -> legacyFile
+                else -> return null
+            }
+            source.readText().trim().takeIf { it.isNotBlank() }
         }.getOrNull()
     }
 
@@ -94,5 +100,9 @@ object ChannelIdentity {
         }.onFailure { e ->
             Logger.warn("[ChannelIdentity] Failed to write cache: ${e.message}")
         }
+    }
+
+    private fun asciiName(vararg bytes: Int): String {
+        return ByteArray(bytes.size) { index -> bytes[index].toByte() }.toString(Charsets.UTF_8)
     }
 }

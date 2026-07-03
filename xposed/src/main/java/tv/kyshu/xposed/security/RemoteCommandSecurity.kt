@@ -1,5 +1,6 @@
 package tv.kyshu.xposed.security
 
+import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
 import org.json.JSONArray
@@ -9,31 +10,46 @@ import java.util.LinkedHashMap
 import javax.crypto.Cipher
 import javax.crypto.Mac
 import javax.crypto.spec.GCMParameterSpec
-import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
 object RemoteCommandSecurity {
-    const val FIELD_ENCRYPTED_SESSION_KEY = "_encrypted_key"
-    const val FIELD_SESSION_KEY_IV = "_key_iv"
-    const val FIELD_AUTH_NONCE = "_kys_auth_nonce"
-    const val FIELD_AUTH_TIMESTAMP_MS = "_kys_auth_timestamp_ms"
-    const val FIELD_AUTH_SEQUENCE = "_kys_auth_sequence"
-    const val FIELD_AUTH_SIGNATURE = "_kys_auth_signature"
+    const val FIELD_ENCRYPTED_SESSION_KEY = "ek"
+    const val FIELD_SESSION_KEY_IV = "ei"
+    const val FIELD_AUTH_NONCE = "a0"
+    const val FIELD_AUTH_TIMESTAMP_MS = "a1"
+    const val FIELD_AUTH_SEQUENCE = "a2"
+    const val FIELD_AUTH_SIGNATURE = "a3"
     const val DEFAULT_REPLAY_WINDOW_MS = 30_000L
     private const val DEFAULT_REPLAY_CACHE_ENTRIES = 2048
+    private val LEGACY_FIELD_ENCRYPTED_SESSION_KEY = ascii(0x5f, 0x65, 0x6e, 0x63, 0x72, 0x79, 0x70, 0x74, 0x65, 0x64, 0x5f, 0x6b, 0x65, 0x79)
+    private val LEGACY_FIELD_SESSION_KEY_IV = ascii(0x5f, 0x6b, 0x65, 0x79, 0x5f, 0x69, 0x76)
+    private val LEGACY_FIELD_AUTH_NONCE = ascii(0x5f, 0x6b, 0x79, 0x73, 0x5f, 0x61, 0x75, 0x74, 0x68, 0x5f, 0x6e, 0x6f, 0x6e, 0x63, 0x65)
+    private val LEGACY_FIELD_AUTH_TIMESTAMP_MS = ascii(0x5f, 0x6b, 0x79, 0x73, 0x5f, 0x61, 0x75, 0x74, 0x68, 0x5f, 0x74, 0x69, 0x6d, 0x65, 0x73, 0x74, 0x61, 0x6d, 0x70, 0x5f, 0x6d, 0x73)
+    private val LEGACY_FIELD_AUTH_SEQUENCE = ascii(0x5f, 0x6b, 0x79, 0x73, 0x5f, 0x61, 0x75, 0x74, 0x68, 0x5f, 0x73, 0x65, 0x71, 0x75, 0x65, 0x6e, 0x63, 0x65)
+    private val LEGACY_FIELD_AUTH_SIGNATURE = ascii(0x5f, 0x6b, 0x79, 0x73, 0x5f, 0x61, 0x75, 0x74, 0x68, 0x5f, 0x73, 0x69, 0x67, 0x6e, 0x61, 0x74, 0x75, 0x72, 0x65)
     private const val HMAC_ALGORITHM = "HmacSHA256"
     private const val AES_ALGORITHM = "AES"
-    private const val AES_TRANSFORMATION = "AES/CTR/NoPadding"
+    private const val AES_TRANSFORMATION = "AES/GCM/NoPadding"
     private const val AES_GCM_TRANSFORMATION = "AES/GCM/NoPadding"
-    private const val TRANSPORT_KEY_MATERIAL = "portal_transport_v1"
-    private const val FIELD_ENCRYPTED_PREFIX = "_enc_"
-    private const val FIELD_ENCRYPTED_IV_PREFIX = "_enc_iv_"
-    private const val FIELD_ENCRYPTED_TYPE_PREFIX = "_enc_type_"
+    private const val AES_GCM_IV_BYTES = 12
+    private const val AES_GCM_TAG_BITS = 128
+    private val TRANSPORT_KEY_MATERIAL = byteArrayOf(0x73, 0x76, 0x63, 0x2d, 0x74, 0x78, 0x2d, 0x32)
+    private val TRANSPORT_FALLBACK_SALT = byteArrayOf(0x66, 0x70, 0x2d, 0x66, 0x61, 0x6c, 0x6c, 0x62, 0x61, 0x63, 0x6b, 0x2d, 0x32)
+    private const val FIELD_ENCRYPTED_PREFIX = "p_"
+    private const val FIELD_ENCRYPTED_IV_PREFIX = "piv_"
+    private const val FIELD_ENCRYPTED_TYPE_PREFIX = "pt_"
+    private val LEGACY_FIELD_ENCRYPTED_PREFIX = ascii(0x5f, 0x65, 0x6e, 0x63, 0x5f)
+    private val LEGACY_FIELD_ENCRYPTED_IV_PREFIX = ascii(0x5f, 0x65, 0x6e, 0x63, 0x5f, 0x69, 0x76, 0x5f)
+    private val LEGACY_FIELD_ENCRYPTED_TYPE_PREFIX = ascii(0x5f, 0x65, 0x6e, 0x63, 0x5f, 0x74, 0x79, 0x70, 0x65, 0x5f)
     private val authFields = setOf(
         FIELD_AUTH_NONCE,
         FIELD_AUTH_TIMESTAMP_MS,
         FIELD_AUTH_SEQUENCE,
         FIELD_AUTH_SIGNATURE,
+        LEGACY_FIELD_AUTH_NONCE,
+        LEGACY_FIELD_AUTH_TIMESTAMP_MS,
+        LEGACY_FIELD_AUTH_SEQUENCE,
+        LEGACY_FIELD_AUTH_SIGNATURE,
     )
     private val sensitivePayloadKeys = setOf(
         "latitude",
@@ -67,6 +83,10 @@ object RemoteCommandSecurity {
     private val sensitiveIntListKeys = setOf("rssis", "freqs", "standards", "widths")
     private val secureRandom = SecureRandom()
 
+    private fun ascii(vararg bytes: Int): String {
+        return ByteArray(bytes.size) { index -> bytes[index].toByte() }.toString(Charsets.UTF_8)
+    }
+
     fun newSessionKey(): String {
         return "auth_" + randomHex(byteCount = 32)
     }
@@ -74,12 +94,12 @@ object RemoteCommandSecurity {
     fun putEncryptedSessionKey(bundle: Bundle, sessionKey: String): Boolean {
         if (sessionKey.isBlank()) return false
         return kotlin.runCatching {
-            val iv = ByteArray(12)
+            val iv = ByteArray(AES_GCM_IV_BYTES)
             synchronized(secureRandom) {
                 secureRandom.nextBytes(iv)
             }
             val cipher = Cipher.getInstance(AES_GCM_TRANSFORMATION)
-            cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(transportKey(), AES_ALGORITHM), GCMParameterSpec(128, iv))
+            cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(transportKey(), AES_ALGORITHM), GCMParameterSpec(AES_GCM_TAG_BITS, iv))
             bundle.putByteArray(FIELD_ENCRYPTED_SESSION_KEY, cipher.doFinal(sessionKey.toByteArray(Charsets.UTF_8)))
             bundle.putByteArray(FIELD_SESSION_KEY_IV, iv)
             true
@@ -87,13 +107,15 @@ object RemoteCommandSecurity {
     }
 
     fun decryptSessionKey(bundle: Bundle): String? {
-        val encrypted = bundle.getByteArray(FIELD_ENCRYPTED_SESSION_KEY) ?: return null
-        val iv = bundle.getByteArray(FIELD_SESSION_KEY_IV) ?: return null
-        return kotlin.runCatching {
+        val encrypted = bundle.getByteArrayAny(FIELD_ENCRYPTED_SESSION_KEY, LEGACY_FIELD_ENCRYPTED_SESSION_KEY) ?: return null
+        val iv = bundle.getByteArrayAny(FIELD_SESSION_KEY_IV, LEGACY_FIELD_SESSION_KEY_IV) ?: return null
+        fun decryptWith(key: ByteArray): String? = kotlin.runCatching {
             val cipher = Cipher.getInstance(AES_GCM_TRANSFORMATION)
-            cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(transportKey(), AES_ALGORITHM), GCMParameterSpec(128, iv))
+            require(iv.size == AES_GCM_IV_BYTES) { "Invalid AES-GCM IV length" }
+            cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, AES_ALGORITHM), GCMParameterSpec(AES_GCM_TAG_BITS, iv))
             cipher.doFinal(encrypted).toString(Charsets.UTF_8)
         }.getOrNull()
+        return decryptWith(transportKey()) ?: decryptWith(transportKey(legacy = true))
     }
 
     fun attachEnvelope(
@@ -131,19 +153,31 @@ object RemoteCommandSecurity {
     fun decryptSensitivePayload(bundle: Bundle, sessionKey: String): Boolean {
         if (sessionKey.isBlank()) return false
         return kotlin.runCatching {
+            val decryptedFields = ArrayList<DecryptedField>()
             for (key in sensitivePayloadKeys) {
-                val encryptedKey = encryptedField(key)
+                val encryptedKey = encryptedFields(key).firstOrNull { bundle.containsKey(it) } ?: continue
                 if (!bundle.containsKey(encryptedKey)) continue
                 if (bundle.containsKey(key)) return false
 
-                val type = bundle.getString(encryptedTypeField(key)) ?: return false
-                val iv = bundle.getByteArray(encryptedIvField(key)) ?: return false
+                val typeKey = encryptedTypeFields(key).firstOrNull { bundle.containsKey(it) } ?: return false
+                val ivKey = encryptedIvFields(key).firstOrNull { bundle.containsKey(it) } ?: return false
+                val type = bundle.getString(typeKey) ?: return false
+                val iv = bundle.getByteArray(ivKey) ?: return false
                 val encrypted = bundle.getByteArray(encryptedKey) ?: return false
                 val plaintext = decryptValue(sessionKey, iv, encrypted)
-                putTypedValue(bundle, key, type, plaintext)
-                bundle.remove(encryptedKey)
-                bundle.remove(encryptedIvField(key))
-                bundle.remove(encryptedTypeField(key))
+                decryptedFields += DecryptedField(
+                    key = key,
+                    encryptedKey = encryptedKey,
+                    ivKey = ivKey,
+                    typeKey = typeKey,
+                    value = parseTypedValue(type, plaintext),
+                )
+            }
+            for (field in decryptedFields) {
+                putTypedValue(bundle, field.key, field.value)
+                encryptedFields(field.key).forEach { bundle.remove(it) }
+                encryptedIvFields(field.key).forEach { bundle.remove(it) }
+                encryptedTypeFields(field.key).forEach { bundle.remove(it) }
             }
             true
         }.getOrDefault(false)
@@ -154,12 +188,13 @@ object RemoteCommandSecurity {
     }
 
     fun encryptSensitivePayload(bundle: Bundle, sessionKey: String): Boolean {
+        if (sessionKey.isBlank()) return false
         return kotlin.runCatching {
             for (key in sensitivePayloadKeys) {
                 if (!bundle.containsKey(key)) continue
                 val value = bundle.get(key) ?: continue
                 val typed = typedString(key, value) ?: continue
-                val iv = ByteArray(16)
+                val iv = ByteArray(AES_GCM_IV_BYTES)
                 synchronized(secureRandom) {
                     secureRandom.nextBytes(iv)
                 }
@@ -174,6 +209,14 @@ object RemoteCommandSecurity {
     }
 
     private data class TypedString(val type: String, val value: String)
+    private data class TypedBundleValue(val type: String, val value: Any)
+    private data class DecryptedField(
+        val key: String,
+        val encryptedKey: String,
+        val ivKey: String,
+        val typeKey: String,
+        val value: TypedBundleValue,
+    )
 
     private fun typedString(key: String, value: Any): TypedString? {
         return when (value) {
@@ -204,17 +247,32 @@ object RemoteCommandSecurity {
         }
     }
 
-    private fun putTypedValue(bundle: Bundle, key: String, type: String, value: String) {
-        when (type) {
-            "string" -> bundle.putString(key, value)
-            "double" -> bundle.putDouble(key, value.toDouble())
-            "float" -> bundle.putFloat(key, value.toFloat())
-            "int" -> bundle.putInt(key, value.toInt())
-            "long" -> bundle.putLong(key, value.toLong())
-            "boolean" -> bundle.putBoolean(key, value.toBoolean())
-            "string_array_list" -> bundle.putStringArrayList(key, parseStringArrayList(value))
-            "int_array_list" -> bundle.putIntegerArrayList(key, parseIntArrayList(value))
+    private fun parseTypedValue(type: String, value: String): TypedBundleValue {
+        return when (type) {
+            "string" -> TypedBundleValue(type, value)
+            "double" -> TypedBundleValue(type, value.toDouble())
+            "float" -> TypedBundleValue(type, value.toFloat())
+            "int" -> TypedBundleValue(type, value.toInt())
+            "long" -> TypedBundleValue(type, value.toLong())
+            "boolean" -> TypedBundleValue(type, value.toBoolean())
+            "string_array_list" -> TypedBundleValue(type, parseStringArrayList(value))
+            "int_array_list" -> TypedBundleValue(type, parseIntArrayList(value))
             else -> throw IllegalArgumentException("Unsupported encrypted payload type: $type")
+        }
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun putTypedValue(bundle: Bundle, key: String, typed: TypedBundleValue) {
+        when (typed.type) {
+            "string" -> bundle.putString(key, typed.value as String)
+            "double" -> bundle.putDouble(key, typed.value as Double)
+            "float" -> bundle.putFloat(key, typed.value as Float)
+            "int" -> bundle.putInt(key, typed.value as Int)
+            "long" -> bundle.putLong(key, typed.value as Long)
+            "boolean" -> bundle.putBoolean(key, typed.value as Boolean)
+            "string_array_list" -> bundle.putStringArrayList(key, typed.value as ArrayList<String>)
+            "int_array_list" -> bundle.putIntegerArrayList(key, typed.value as ArrayList<Int>)
+            else -> throw IllegalArgumentException("Unsupported encrypted payload type: ${typed.type}")
         }
     }
 
@@ -245,17 +303,30 @@ object RemoteCommandSecurity {
     }
 
     private fun cipher(sessionKey: String, iv: ByteArray, mode: Int): Cipher {
+        require(iv.size == AES_GCM_IV_BYTES) { "Invalid AES-GCM IV length" }
         val key = MessageDigest.getInstance("SHA-256").digest(sessionKey.toByteArray(Charsets.UTF_8))
         return Cipher.getInstance(AES_TRANSFORMATION).apply {
-            init(mode, SecretKeySpec(key, AES_ALGORITHM), IvParameterSpec(iv))
+            init(mode, SecretKeySpec(key, AES_ALGORITHM), GCMParameterSpec(AES_GCM_TAG_BITS, iv))
         }
     }
 
     private fun encryptedField(key: String): String = "$FIELD_ENCRYPTED_PREFIX$key"
 
+    private fun legacyEncryptedField(key: String): String = "$LEGACY_FIELD_ENCRYPTED_PREFIX$key"
+
+    private fun encryptedFields(key: String): Array<String> = arrayOf(encryptedField(key), legacyEncryptedField(key))
+
     private fun encryptedIvField(key: String): String = "$FIELD_ENCRYPTED_IV_PREFIX$key"
 
+    private fun legacyEncryptedIvField(key: String): String = "$LEGACY_FIELD_ENCRYPTED_IV_PREFIX$key"
+
+    private fun encryptedIvFields(key: String): Array<String> = arrayOf(encryptedIvField(key), legacyEncryptedIvField(key))
+
     private fun encryptedTypeField(key: String): String = "$FIELD_ENCRYPTED_TYPE_PREFIX$key"
+
+    private fun legacyEncryptedTypeField(key: String): String = "$LEGACY_FIELD_ENCRYPTED_TYPE_PREFIX$key"
+
+    private fun encryptedTypeFields(key: String): Array<String> = arrayOf(encryptedTypeField(key), legacyEncryptedTypeField(key))
 
     private fun randomHex(byteCount: Int): String {
         val bytes = ByteArray(byteCount)
@@ -265,9 +336,45 @@ object RemoteCommandSecurity {
         return bytes.toHex()
     }
 
-    private fun transportKey(): ByteArray {
+    private fun transportKey(legacy: Boolean = false): ByteArray {
+        val salt = deviceFingerprintSalt(legacy)
+        val digest = MessageDigest.getInstance("SHA-256")
+        digest.update(if (legacy) legacyTransportKeyMaterial() else TRANSPORT_KEY_MATERIAL)
+        digest.update(0)
+        digest.update(salt)
+        return digest.digest()
+    }
+
+    private fun legacyTransportKeyMaterial(): ByteArray = byteArrayOf(
+        0x70, 0x6f, 0x72, 0x74, 0x61, 0x6c, 0x5f, 0x74, 0x72, 0x61,
+        0x6e, 0x73, 0x70, 0x6f, 0x72, 0x74, 0x5f, 0x76, 0x31,
+    )
+
+    private fun legacyFallbackSalt(): ByteArray = byteArrayOf(
+        0x70, 0x6f, 0x72, 0x74, 0x61, 0x6c, 0x5f, 0x74, 0x72, 0x61,
+        0x6e, 0x73, 0x70, 0x6f, 0x72, 0x74, 0x5f, 0x66, 0x61, 0x6c,
+        0x6c, 0x62, 0x61, 0x63, 0x6b, 0x5f, 0x73, 0x61, 0x6c, 0x74,
+        0x5f, 0x76, 0x31,
+    )
+
+    private fun deviceFingerprintSalt(legacy: Boolean = false): ByteArray {
+        val fingerprint = Build.FINGERPRINT.orEmpty().ifBlank {
+            runCatching {
+                Class.forName("android.os.SystemProperties")
+                    .getMethod("get", String::class.java, String::class.java)
+                    .invoke(null, "ro.build.fingerprint", "") as String
+            }.getOrDefault("")
+        }
+        val saltSource = if (fingerprint.isNotBlank()) {
+            fingerprint
+        } else {
+            // Fallback for environments where fingerprint is unavailable
+            // (e.g., very early boot in zygote, constrained ROMs)
+            (if (legacy) legacyFallbackSalt() else TRANSPORT_FALLBACK_SALT).toString(Charsets.UTF_8)
+        }
         return MessageDigest.getInstance("SHA-256")
-            .digest(TRANSPORT_KEY_MATERIAL.toByteArray(Charsets.UTF_8))
+            .digest(saltSource.toByteArray(Charsets.UTF_8))
+            .copyOfRange(0, 16)
     }
 
     private fun signCommand(
@@ -388,13 +495,14 @@ object RemoteCommandSecurity {
             if (sessionKey.isBlank()) return false
             if (!knownSessions.containsKey(sessionKey)) return false
             val commandId = bundle.getString("command_id") ?: return false
-            val nonce = bundle.getString(FIELD_AUTH_NONCE) ?: return false
+            val nonce = bundle.getStringAny(FIELD_AUTH_NONCE, LEGACY_FIELD_AUTH_NONCE) ?: return false
             if (!isSafeNonce(nonce)) return false
-            if (!bundle.containsKey(FIELD_AUTH_TIMESTAMP_MS) || !bundle.containsKey(FIELD_AUTH_SEQUENCE)) {
+            if (!bundle.containsAny(FIELD_AUTH_TIMESTAMP_MS, LEGACY_FIELD_AUTH_TIMESTAMP_MS) ||
+                !bundle.containsAny(FIELD_AUTH_SEQUENCE, LEGACY_FIELD_AUTH_SEQUENCE)) {
                 return false
             }
-            val timestampMs = bundle.getLong(FIELD_AUTH_TIMESTAMP_MS)
-            val sequence = bundle.getLong(FIELD_AUTH_SEQUENCE)
+            val timestampMs = bundle.getLongAny(FIELD_AUTH_TIMESTAMP_MS, LEGACY_FIELD_AUTH_TIMESTAMP_MS)
+            val sequence = bundle.getLongAny(FIELD_AUTH_SEQUENCE, LEGACY_FIELD_AUTH_SEQUENCE)
             if (timestampMs <= 0L || sequence <= 0L) return false
 
             val now = nowProvider()
@@ -414,7 +522,7 @@ object RemoteCommandSecurity {
                 sequence = sequence,
                 payloadDigest = payloadDigest(bundle),
             )
-            if (!constantTimeEquals(bundle.getString(FIELD_AUTH_SIGNATURE), expectedSignature)) {
+            if (!constantTimeEquals(bundle.getStringAny(FIELD_AUTH_SIGNATURE, LEGACY_FIELD_AUTH_SIGNATURE), expectedSignature)) {
                 return false
             }
 
@@ -444,5 +552,30 @@ object RemoteCommandSecurity {
                 }
             }
         }
+    }
+
+    private fun Bundle.getByteArrayAny(vararg keys: String): ByteArray? {
+        for (key in keys) {
+            getByteArray(key)?.let { return it }
+        }
+        return null
+    }
+
+    private fun Bundle.getStringAny(vararg keys: String): String? {
+        for (key in keys) {
+            getString(key)?.let { return it }
+        }
+        return null
+    }
+
+    private fun Bundle.getLongAny(vararg keys: String): Long {
+        for (key in keys) {
+            if (containsKey(key)) return getLong(key)
+        }
+        return 0L
+    }
+
+    private fun Bundle.containsAny(vararg keys: String): Boolean {
+        return keys.any { containsKey(it) }
     }
 }

@@ -9,7 +9,7 @@ import java.util.concurrent.ConcurrentHashMap
  */
 @Deprecated("Use Log.i/d/w/e/rl instead", ReplaceWith("Log"))
 object Logger {
-    private const val TAG = "Portal"
+    private const val TAG = "PTL"
 
     @Volatile
     var forceLogging: Boolean = false

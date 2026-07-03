@@ -9,6 +9,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -96,6 +97,19 @@ class RemoteCommandSecurityTest {
     }
 
     @Test
+    fun `tampered encrypted session key is rejected`() {
+        val bundle = Bundle()
+        val sessionKey = "auth_abcdef1234567890"
+
+        assertTrue(RemoteCommandSecurity.putEncryptedSessionKey(bundle, sessionKey))
+        val encrypted = bundle.getByteArray(RemoteCommandSecurity.FIELD_ENCRYPTED_SESSION_KEY)!!
+        encrypted[encrypted.lastIndex] = (encrypted[encrypted.lastIndex].toInt() xor 0x01).toByte()
+        bundle.putByteArray(RemoteCommandSecurity.FIELD_ENCRYPTED_SESSION_KEY, encrypted)
+
+        assertNull(RemoteCommandSecurity.decryptSessionKey(bundle))
+    }
+
+    @Test
     fun `stale envelope is rejected`() {
         val now = 1_000_000L
         val key = "auth_test_key"
@@ -159,15 +173,35 @@ class RemoteCommandSecurityTest {
         assertFalse(bundle.containsKey("latitude"))
         assertFalse(bundle.containsKey("accuracy"))
         assertFalse(bundle.containsKey("mock_ssid"))
-        assertTrue(bundle.containsKey("_enc_latitude"))
-        assertTrue(bundle.containsKey("_enc_accuracy"))
-        assertTrue(bundle.containsKey("_enc_mock_ssid"))
+        assertTrue(bundle.containsKey("p_latitude"))
+        assertTrue(bundle.containsKey("p_accuracy"))
+        assertTrue(bundle.containsKey("p_mock_ssid"))
         assertTrue(guard.accept(key, bundle))
         assertTrue(RemoteCommandSecurity.decryptSensitivePayload(bundle, key))
 
         assertEquals(39.9, bundle.getDouble("latitude"), 0.0)
         assertEquals(4.5f, bundle.getFloat("accuracy"), 0f)
         assertEquals("PrivateWifi", bundle.getString("mock_ssid"))
+    }
+
+    @Test
+    fun `tampered sensitive payload fails without partial plaintext rollback`() {
+        val key = "auth_test_key"
+        val bundle = Bundle().apply {
+            putDouble("lat", 39.9087)
+            putDouble("lon", 116.3975)
+        }
+
+        assertTrue(RemoteCommandSecurity.encryptSensitivePayload(bundle, key))
+        val encryptedLon = bundle.getByteArray("p_lon")!!
+        encryptedLon[encryptedLon.lastIndex] = (encryptedLon[encryptedLon.lastIndex].toInt() xor 0x01).toByte()
+        bundle.putByteArray("p_lon", encryptedLon)
+
+        assertFalse(RemoteCommandSecurity.decryptSensitivePayload(bundle, key))
+        assertFalse(bundle.containsKey("lat"))
+        assertFalse(bundle.containsKey("lon"))
+        assertTrue(bundle.containsKey("p_lat"))
+        assertTrue(bundle.containsKey("p_lon"))
     }
 
     @Test
@@ -192,9 +226,9 @@ class RemoteCommandSecurityTest {
         assertFalse(bundle.containsKey("ssids"))
         assertFalse(bundle.containsKey("bssids"))
         assertFalse(bundle.containsKey("rssis"))
-        assertTrue(bundle.containsKey("_enc_ssids"))
-        assertTrue(bundle.containsKey("_enc_bssids"))
-        assertTrue(bundle.containsKey("_enc_rssis"))
+        assertTrue(bundle.containsKey("p_ssids"))
+        assertTrue(bundle.containsKey("p_bssids"))
+        assertTrue(bundle.containsKey("p_rssis"))
         assertTrue(guard.accept(key, bundle))
         assertTrue(RemoteCommandSecurity.decryptSensitivePayload(bundle, key))
 

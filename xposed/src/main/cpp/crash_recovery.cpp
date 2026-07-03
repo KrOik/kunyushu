@@ -44,7 +44,9 @@ void init_our_code_ranges() {
                 }
             }
             if (end > info->dlpi_addr && g_code_range_count < kMaxCodeRanges) {
-                g_our_code_ranges[g_code_range_count++] = {info->dlpi_addr, end};
+                int index = g_code_range_count;
+                g_our_code_ranges[index] = {info->dlpi_addr, end};
+                g_code_range_count = index + 1;
             }
         }
         return 0;
@@ -119,9 +121,9 @@ static void crash_recovery_handler(int signo, siginfo_t* info, void* ctx) {
         }
     }
 
-    recovery->recovery_count++;
+    recovery->recovery_count = recovery->recovery_count + 1;
     recovery->recovered = true;
-    g_total_recoveries++;
+    g_total_recoveries = g_total_recoveries + 1;
 
     siglongjmp(recovery->jmp_buf, signo);
     return;
@@ -148,24 +150,25 @@ chain:
 // ---- Post-recovery file I/O ----
 void crash_recovery_post_action(CrashRecoveryState* state) {
     if (state->step_id && state->step_id[0] != '\0') {
-        const char* cache_dir = get_app_cache_dir();
-        if (cache_dir && cache_dir[0] != '\0') {
-            char path[320];
-            int len = snprintf(path, sizeof(path), "%s/.portal_disable_%s",
-                              cache_dir, state->step_id);
-            if (len > 0 && len < (int)sizeof(path)) {
-                int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
-                if (fd >= 0) {
-                    char buf[128];
-                    int blen = snprintf(buf, sizeof(buf),
-                        "RECOVERY:%d:count=%d:total=%d\n",
-                        state->recovery_count,
-                        static_cast<int>(g_total_recoveries),
-                        kMaxRecoveriesPerBoot);
-                    (void)!write(fd, buf, blen);
-                    close(fd);
-                }
+        char path[320];
+        char disable_file[64];
+        if (build_step_disable_filename(disable_file, sizeof(disable_file), state->step_id) &&
+            get_persist_path(path, sizeof(path), disable_file)) {
+            int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+            if (fd >= 0) {
+                char buf[128];
+                int blen = snprintf(buf, sizeof(buf),
+                    "RECOVERY:%d:count=%d:total=%d\n",
+                    state->recovery_count,
+                    static_cast<int>(g_total_recoveries),
+                    kMaxRecoveriesPerBoot);
+                (void)!write(fd, buf, blen);
+                close(fd);
+            } else {
+                LOGW("Crash recovery persist open failed: %s", path);
             }
+        } else {
+            LOGW("Crash recovery skipped persist write for step id: %s", state->step_id);
         }
     }
 
@@ -207,8 +210,8 @@ bool install_crash_handlers() {
         LOGE("Failed to install SIGILL handler");
     }
 
-    LOGI("Crash recovery handlers installed, %zu code ranges",
-         g_code_range_count);
+    LOGI("Crash recovery handlers installed, %d code ranges",
+         static_cast<int>(g_code_range_count));
 
     return true;
 }

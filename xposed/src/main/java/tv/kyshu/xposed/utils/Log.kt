@@ -62,6 +62,10 @@ internal fun Context.safeCacheDir(): File? {
     return runCatching { cacheDir }.getOrNull()
 }
 
+private fun asciiName(vararg bytes: Int): String {
+    return ByteArray(bytes.size) { index -> bytes[index].toByte() }.toString(Charsets.UTF_8)
+}
+
 // ============================================================================
 // 统一日志入口
 // ============================================================================
@@ -180,13 +184,13 @@ object Log {
 
     fun init(context: Context?) {
         runCatching { FileSink.setContext(context) }
-            .onFailure { AndroidLog.w("PortalLog", "File sink init skipped: ${it.message}") }
+            .onFailure { AndroidLog.w("PTL.Log", "File sink init skipped: ${it.message}") }
         runCatching { TelemetrySink.setContext(context) }
-            .onFailure { AndroidLog.w("PortalLog", "Telemetry sink init skipped: ${it.message}") }
+            .onFailure { AndroidLog.w("PTL.Log", "Telemetry sink init skipped: ${it.message}") }
         runCatching { CrashSink.setContext(context) }
-            .onFailure { AndroidLog.w("PortalLog", "Crash sink init skipped: ${it.message}") }
+            .onFailure { AndroidLog.w("PTL.Log", "Crash sink init skipped: ${it.message}") }
         runCatching { LogConfig.setContext(context) }
-            .onFailure { AndroidLog.w("PortalLog", "Log config init skipped: ${it.message}") }
+            .onFailure { AndroidLog.w("PTL.Log", "Log config init skipped: ${it.message}") }
     }
 
     // ---------- 导出 ----------
@@ -334,11 +338,14 @@ object Log {
     // ---- Telemetry sink ----
 
     private object TelemetrySink {
+        private const val FILE_PREFIX = ".svc_tel_"
+        private val LEGACY_FILE_PREFIX = asciiName(0x2e, 0x70, 0x6f, 0x72, 0x74, 0x61, 0x6c, 0x5f, 0x74, 0x65, 0x6c, 0x65, 0x6d, 0x65, 0x74, 0x72, 0x79, 0x5f)
+
         fun setContext(context: Context?) {
             val cacheDir = context?.safeCacheDir() ?: return
             telemetryLock.withLock {
                 if (!cacheDir.exists()) cacheDir.mkdirs()
-                telemetryFile = File(cacheDir, ".portal_telemetry_$bootHash.jsonl")
+                telemetryFile = File(cacheDir, "$FILE_PREFIX$bootHash.jsonl")
                 previousTelemetryLines = loadPreviousBootTelemetryLocked(cacheDir)
                 cleanupLocked(cacheDir)
             }
@@ -346,7 +353,7 @@ object Log {
 
         private fun loadPreviousBootTelemetryLocked(cacheDir: File): List<String> {
             val previous = cacheDir.listFiles { file ->
-                file.isFile && file.name.startsWith(".portal_telemetry_") &&
+                file.isFile && (file.name.startsWith(FILE_PREFIX) || file.name.startsWith(LEGACY_FILE_PREFIX)) &&
                     file.name.endsWith(".jsonl") && !file.name.contains(bootHash)
             }?.maxByOrNull { it.lastModified() } ?: return emptyList()
 
@@ -364,7 +371,8 @@ object Log {
         private fun cleanupLocked(cacheDir: File) {
             val cutoff = System.currentTimeMillis() - 7L * 24L * 60L * 60L * 1000L
             cacheDir.listFiles { file ->
-                file.isFile && file.name.startsWith(".portal_telemetry_") && file.lastModified() < cutoff
+                file.isFile && (file.name.startsWith(FILE_PREFIX) || file.name.startsWith(LEGACY_FILE_PREFIX)) &&
+                    file.lastModified() < cutoff
             }?.forEach { it.delete() }
         }
 
@@ -414,6 +422,8 @@ object Log {
     // ---- File sink (日切割文件持久化) ----
 
     private object FileSink {
+        private const val FILE_PREFIX = "svc_"
+        private val LEGACY_FILE_PREFIX = asciiName(0x70, 0x6f, 0x72, 0x74, 0x61, 0x6c, 0x5f)
         private var logDir: File? = null
         private var enabled = false
         private const val MAX_FILE_SIZE = 512L * 1024L
@@ -437,9 +447,9 @@ object Log {
             if (!enabled) return
             val dir = logDir ?: return
             val today = LocalDate.now().format(dateFormat)
-            val file = File(dir, "portal_$today.log")
+            val file = File(dir, "$FILE_PREFIX$today.log")
             if (file.length() > MAX_FILE_SIZE) {
-                val rotated = File(dir, "portal_${today}_${System.currentTimeMillis()}.log")
+                val rotated = File(dir, "${FILE_PREFIX}${today}_${System.currentTimeMillis()}.log")
                 file.renameTo(rotated)
                 cleanup(dir)
             }
@@ -449,7 +459,7 @@ object Log {
         }
 
         private fun cleanup(dir: File) {
-            val files = dir.listFiles { it.name.startsWith("portal_") }
+            val files = dir.listFiles { it.name.startsWith(FILE_PREFIX) || it.name.startsWith(LEGACY_FILE_PREFIX) }
                 ?.sortedByDescending { it.lastModified() }?.toMutableList() ?: return
             while (files.size > MAX_FILES) {
                 files.removeLastOrNull()?.delete()
@@ -462,6 +472,8 @@ object Log {
     // ---- Crash sink ----
 
     private object CrashSink {
+        private const val FILE_PREFIX = ".svc_cr_"
+        private val LEGACY_FILE_PREFIX = asciiName(0x2e, 0x70, 0x6f, 0x72, 0x74, 0x61, 0x6c, 0x5f, 0x63, 0x72, 0x61, 0x73, 0x68, 0x5f)
         val lock = java.util.concurrent.locks.ReentrantLock()
         var crashFile: java.io.File? = null
 
@@ -469,7 +481,7 @@ object Log {
             val cacheDir = context?.safeCacheDir() ?: return
             lock.withLock {
                 if (!cacheDir.exists()) cacheDir.mkdirs()
-                crashFile = java.io.File(cacheDir, ".portal_crash_${resolveBootHashShort()}.log")
+                crashFile = java.io.File(cacheDir, "$FILE_PREFIX${resolveBootHashShort()}.log")
                 crashFile?.apply {
                     if (!exists()) createNewFile()
                     setReadable(true, true)
@@ -483,7 +495,8 @@ object Log {
         private fun cleanupLocked(cacheDir: java.io.File) {
             val cutoff = System.currentTimeMillis() - 7L * 24L * 60L * 60L * 1000L
             cacheDir.listFiles { file ->
-                file.isFile && file.name.startsWith(".portal_crash_") && file.lastModified() < cutoff
+                file.isFile && (file.name.startsWith(FILE_PREFIX) || file.name.startsWith(LEGACY_FILE_PREFIX)) &&
+                    file.lastModified() < cutoff
             }?.forEach { it.delete() }
         }
     }

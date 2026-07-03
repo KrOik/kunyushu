@@ -427,7 +427,7 @@ internal object LocationServiceHook: BaseLocationHook() {
 
     // ==================== 操作入口 ====================
 
-    // A random command is generated to prevent some apps from detecting Portal
+    // A random command is generated to reduce static detection of the control channel.
     operator fun invoke(classLoader: ClassLoader) {
         if (DomainGuard.isDomainDisabled(DomainGuard.Domain.LOCATION_SERVICE)) {
             Logger.warn("[LocationServiceHook] Domain LOCATION_SERVICE is disabled, skipping hook installation")
@@ -859,7 +859,7 @@ internal object LocationServiceHook: BaseLocationHook() {
                     })
                 }
             }).isEmpty()) {
-            XposedBridge.log("[Portal] hook registerGnssStatusCallback failed")
+            XposedBridge.log("[PTL] hook registerGnssStatusCallback failed")
         }
         // android 11+
         // @EnforcePermission("LOCATION_HARDWARE")
@@ -1294,7 +1294,7 @@ internal object LocationServiceHook: BaseLocationHook() {
 //                    override fun beforeHookedMethod(param: MethodHookParam?) {
 //                        if (param == null) return
 //
-//                        XposedBridge.log("[Portal] ILocationManager.Stub.Proxy: c = ${param.thisObject?.javaClass}, m = ${param.method}")
+//                        XposedBridge.log("[PTL] ILocationManager.Stub.Proxy: c = ${param.thisObject?.javaClass}, m = ${param.method}")
 //                    }
 //                })
 //            }
