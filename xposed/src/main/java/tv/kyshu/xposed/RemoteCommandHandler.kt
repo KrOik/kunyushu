@@ -28,6 +28,7 @@ import java.io.File
 import tv.kyshu.xposed.utils.FakeLoc
 import tv.kyshu.xposed.utils.BinderUtils
 import tv.kyshu.xposed.utils.CrashForensics
+import tv.kyshu.xposed.utils.DiagnosticAspect
 import tv.kyshu.xposed.utils.FlightRecorder
 import tv.kyshu.xposed.utils.Logger
 import tv.kyshu.xposed.utils.MockAuditTrail
@@ -147,24 +148,29 @@ object RemoteCommandHandler {
 
     @SuppressLint("UnsafeDynamicallyLoadedCode")
     fun handleInstruction(command: String, rely: Bundle): Boolean {
-        return kotlin.runCatching {
-            if (command == "exchange_key") {
-                val userId = BinderUtils.getCallerUid()
-                if (BinderUtils.isLocationProviderEnabled(userId)) {
-                    val rawKey = rotateSessionKey()
-                    RemoteCommandSecurity.putEncryptedSessionKey(rely, rawKey)
+        return DiagnosticAspect.traceBusiness(
+            label = "RemoteCommandHandler.handleInstruction",
+            detail = "command=$command ${DiagnosticAspect.bundleSummary(rely)}",
+        ) {
+            kotlin.runCatching {
+                if (command == "exchange_key") {
+                    val userId = BinderUtils.getCallerUid()
+                    if (BinderUtils.isLocationProviderEnabled(userId)) {
+                        val rawKey = rotateSessionKey()
+                        RemoteCommandSecurity.putEncryptedSessionKey(rely, rawKey)
+                    } else {
+                        Logger.warn("exchange_key: Permission denied for UID $userId")
+                        false
+                    }
                 } else {
-                    Logger.warn("exchange_key: Permission denied for UID $userId")
-                    false
+                    val commandId = rely.getString("command_id") ?: return@runCatching false
+                    handleAuthenticatedInstruction(command, commandId, rely, replayGuard)
                 }
-            } else {
-                val commandId = rely.getString("command_id") ?: return@runCatching false
-                handleAuthenticatedInstruction(command, commandId, rely, replayGuard)
-            }
-        }.onFailure { e ->
-            Logger.error("[RemoteCommandHandler] handleInstruction crash", e)
-            false
-        }.getOrDefault(false)
+            }.onFailure { e ->
+                Logger.error("[RemoteCommandHandler] handleInstruction crash", e)
+                false
+            }.getOrDefault(false)
+        }
     }
 
     @Synchronized
@@ -184,8 +190,13 @@ object RemoteCommandHandler {
         rely: Bundle,
         replayGuard: RemoteCommandSecurity.ReplayGuard = this.replayGuard,
     ): Boolean {
-        val commandId = rely.getString("command_id") ?: return false
-        return handleAuthenticatedInstruction(sessionKey, commandId, rely, replayGuard)
+        return DiagnosticAspect.traceBusiness(
+            label = "RemoteCommandHandler.handleSessionInstruction",
+            detail = DiagnosticAspect.bundleSummary(rely),
+        ) {
+            val commandId = rely.getString("command_id") ?: return@traceBusiness false
+            handleAuthenticatedInstruction(sessionKey, commandId, rely, replayGuard)
+        }
     }
 
     private fun structuredLog(level: String, commandId: String, msg: String, rely: Bundle? = null, latencyMs: Long? = null) {

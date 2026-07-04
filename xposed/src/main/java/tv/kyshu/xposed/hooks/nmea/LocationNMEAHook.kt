@@ -30,7 +30,9 @@ import java.util.Collections
 import kotlin.math.roundToInt
 import tv.kyshu.xposed.utils.satelliteList
 import tv.kyshu.xposed.utils.GnssFlags
+import tv.kyshu.xposed.utils.OrbitType
 import tv.kyshu.xposed.hooks.LocationServiceHook
+import java.util.concurrent.ConcurrentHashMap
 import java.util.Locale
 
 object LocationNMEAHook: BaseLocationHook() {
@@ -40,7 +42,16 @@ object LocationNMEAHook: BaseLocationHook() {
     private var gsvSequenceTotal: Int = 0
     private var gsvSequenceSent: Int = 0
     private val gsvCacheLock = Any()
+    private val diagnosticKeys = ConcurrentHashMap.newKeySet<String>()
+
+    private fun logOnce(key: String, message: String) {
+        if (diagnosticKeys.add(key)) {
+            Logger.info(message)
+        }
+    }
+
     operator fun invoke(classILocationManager: Class<*>) {
+        Logger.info("[LocationNMEAHook] install start on ${classILocationManager.name}")
         hookGnssNmea(classILocationManager)
 
         val doNothingMethod = object: XC_MethodHook() {
@@ -52,6 +63,8 @@ object LocationNMEAHook: BaseLocationHook() {
                 }
 
                 if (FakeLoc.enable && !FakeLoc.enableNMEA && !FakeLoc.enableAGPS) {
+                    logOnce("gnss.raw.disabled.${param.method.name}",
+                        "[LocationNMEAHook] ${param.method.name} blocked: enableNMEA=false enableAGPS=false")
                     if (FakeLoc.enableDebugLog) {
                         Logger.debug("${param.method.name}: disable")
                     }
@@ -60,50 +73,90 @@ object LocationNMEAHook: BaseLocationHook() {
             }
         }
 
-        XposedBridge.hookAllMethods(classILocationManager, "addGnssMeasurementsListener", doNothingMethod)
-        XposedBridge.hookAllMethods(classILocationManager, "removeGnssMeasurementsListener", doNothingMethod)
-        XposedBridge.hookAllMethods(classILocationManager, "addGnssNavigationMessageListener", doNothingMethod)
-        XposedBridge.hookAllMethods(classILocationManager, "removeGnssNavigationMessageListener", doNothingMethod)
-        XposedBridge.hookAllMethods(classILocationManager, "addGnssAntennaInfoListener", doNothingMethod)
-        XposedBridge.hookAllMethods(classILocationManager, "removeGnssAntennaInfoListener", doNothingMethod)
+        listOf(
+            "addGnssMeasurementsListener",
+            "removeGnssMeasurementsListener",
+            "addGnssNavigationMessageListener",
+            "removeGnssNavigationMessageListener",
+            "addGnssAntennaInfoListener",
+            "removeGnssAntennaInfoListener",
+        ).forEach { methodName ->
+            val count = runCatching { XposedBridge.hookAllMethods(classILocationManager, methodName, doNothingMethod).size }
+                .onFailure { Logger.warn("[LocationNMEAHook] $methodName hook failed", it) }
+                .getOrDefault(0)
+            if (count == 0) {
+                Logger.warn("[LocationNMEAHook] $methodName not found on ${classILocationManager.name}")
+            } else {
+                Logger.info("[LocationNMEAHook] hooked $count overload(s): ${classILocationManager.name}#$methodName")
+            }
+        }
     }
 
     private fun hookGnssNmea(classILocationManager: Class<*>) {
         val hookedGnssCallback = Collections.synchronizedSet(HashSet<String>())
-        val unhooks = classILocationManager.declaredMethods.filter {
+        val candidateMethods = classILocationManager.declaredMethods.filter {
             it.name == "registerGnssNmeaCallback" && it.parameterTypes.size > 1
-        }.map { method ->
+        }
+        if (candidateMethods.isEmpty()) {
+            Logger.warn("[LocationNMEAHook] registerGnssNmeaCallback not found on ${classILocationManager.name}")
+        } else {
+            Logger.info("[LocationNMEAHook] found ${candidateMethods.size} registerGnssNmeaCallback candidate(s): " +
+                candidateMethods.joinToString { it.parameterTypes.joinToString(prefix = "(", postfix = ")") { type -> type.simpleName } })
+        }
+        val unhooks = candidateMethods.map { method ->
             method.onceHookBefore {
-                val cIGnssNmeaCallback = (args[0] ?: return@onceHookBefore).javaClass
+                val callback = args.firstOrNull { arg ->
+                    arg != null && arg.javaClass.declaredMethods.any { it.name == "onNmeaReceived" }
+                } ?: args.firstOrNull()
+                val cIGnssNmeaCallback = (callback ?: run {
+                    Logger.warn("[LocationNMEAHook] registerGnssNmeaCallback callback missing: method=$method args=${args.map { it?.javaClass?.name }}")
+                    return@onceHookBefore
+                }).javaClass
 
                 if (hookedGnssCallback.contains(cIGnssNmeaCallback.name)) return@onceHookBefore
                 hookedGnssCallback.add(cIGnssNmeaCallback.name)
 
+                Logger.info("[LocationNMEAHook] registerGnssNmeaCallback hit: callback=${cIGnssNmeaCallback.name}, args=${args.map { it?.javaClass?.simpleName }}")
                 if (FakeLoc.enableDebugLog) {
                     Logger.debug("registerGnssNmeaCallback: $cIGnssNmeaCallback")
                 }
 
                 cIGnssNmeaCallback.onceHookMethodBefore("onNmeaReceived", Long::class.java, String::class.java) {
-                    if (!FakeLoc.enable) return@onceHookMethodBefore
+                    if (!FakeLoc.enable) {
+                        logOnce("nmea.runtime.disabled",
+                            "[LocationNMEAHook] onNmeaReceived skipped: FakeLoc.enable=false")
+                        return@onceHookMethodBefore
+                    }
 
                     if (!FakeLoc.enableNMEA && !FakeLoc.enableAGPS) {
+                        logOnce("nmea.runtime.blocked",
+                            "[LocationNMEAHook] onNmeaReceived blocked: enableNMEA=false enableAGPS=false")
                         result = null
                         return@onceHookMethodBefore
                     }
 
                     val nmea = args[1] as? String ?: return@onceHookMethodBefore
-                    args[1] = injectNMEA(nmea) ?: nmea
+                    val injected = injectNMEA(nmea)
+                    if (injected != null) {
+                        logOnce("nmea.runtime.injected.${nmea.take(6)}",
+                            "[LocationNMEAHook] NMEA injected: ${nmea.take(6)} -> ${injected.take(6)}, len=${nmea.length}->${injected.length}")
+                        args[1] = injected
+                    } else {
+                        logOnce("nmea.runtime.pass.${nmea.take(6)}",
+                            "[LocationNMEAHook] NMEA passed through: ${nmea.take(16)}")
+                    }
                 }
             }
         }
 
-        if (FakeLoc.enableDebugLog) {
-            Logger.debug("found ${unhooks.size} registerGnssNmeaCallback")
-        }
+        Logger.info("[LocationNMEAHook] installed ${unhooks.size} registerGnssNmeaCallback hook(s)")
     }
 
     override fun injectNMEA(nmea: String): String? {
-        if (!FakeLoc.enable) return null
+        if (!FakeLoc.enable) {
+            logOnce("injectNMEA.disabled", "[LocationNMEAHook] injectNMEA skipped: FakeLoc.enable=false")
+            return null
+        }
         
         // Handle GSV injection with multi-sentence caching
         if (nmea.contains("GSV")) {
@@ -137,12 +190,16 @@ object LocationNMEAHook: BaseLocationHook() {
                 }
 
                 // Generate complete GSV sequence, split into individual sentences, cache them
-                val fullSequence = runCatching { generateGSV(constellation) }.getOrNull() ?: return null
+                val fullSequence = runCatching { generateGSV(constellation) }
+                    .onFailure { Logger.warn("[LocationNMEAHook] generateGSV failed constellation=$constellation", it) }
+                    .getOrNull() ?: return null
                 val sentences = fullSequence.split("\r\n")
                 gsvSentenceCache.clear()
                 gsvSentenceCache.addAll(sentences)
                 gsvSequenceTotal = sentences.size
                 gsvSequenceSent = 1 // 第 0 句即将返回
+                logOnce("gsv.generated.$constellation",
+                    "[LocationNMEAHook] generated GSV constellation=$constellation sentences=${sentences.size}")
 
                 return sentences.getOrNull(0)
             }
@@ -225,27 +282,69 @@ object LocationNMEAHook: BaseLocationHook() {
     }
 
     private fun generateGSV(constellation: Int): String? {
-        // Filter satellites by constellation and generate random state for each
         data class SatState(val prn: Int, val elevation: Float, val azimuth: Float, val cn0: Float)
-        
-        val satellites = satelliteList.filter { 
-            it.constellation == constellation 
+
+        val observerLat = FakeLoc.latitude.toFloat()
+
+        val satellites = satelliteList.filter {
+            it.constellation == constellation
         }.mapNotNull { sat ->
-            // Simulate 70% probability of being visible/used in fix
-            if (kotlin.random.Random.nextFloat() > 0.3f) {
-                SatState(
-                    prn = sat.prn,
-                    elevation = kotlin.random.Random.nextFloat() * 90f,
-                    azimuth = kotlin.random.Random.nextFloat() * 360f,
-                    cn0 = 20f + kotlin.random.Random.nextFloat() * 25f
-                )
-            } else null
+            // 根据轨道类型生成可见性概率和仰角范围
+            val (minElev, maxElev, visibleProb) = when (sat.type) {
+                is OrbitType.GEO -> {
+                    val latAbs = kotlin.math.abs(observerLat)
+                    // 高纬度看不到GEO
+                    if (latAbs > 70f) return@mapNotNull null
+                    Triple(0f, 30f, 0.5f)
+                }
+                is OrbitType.IGSO -> Triple(20f, 75f, 0.7f)
+                is OrbitType.MEO -> Triple(15f, 85f, 0.8f)
+            }
+
+            // 可见性概率过滤
+            if (kotlin.random.Random.nextFloat() > visibleProb) return@mapNotNull null
+
+            // 方位角基于卫星类型和模拟位置生成
+            val azimuth = when (sat.type) {
+                is OrbitType.GEO -> {
+                    // GEO卫星大致在南方（北半球）或北方（南半球）
+                    if (observerLat >= 0f) 150f + kotlin.random.Random.nextFloat() * 60f // 南向
+                    else 330f + kotlin.random.Random.nextFloat() * 60f // 北向
+                }
+                else -> kotlin.random.Random.nextFloat() * 360f // 均匀分布
+            }
+
+            // 仰角在范围内随机但偏向中间值 (triangular分布)
+            val elevation = minElev + (maxElev - minElev) * (0.3f + kotlin.random.Random.nextFloat() * 0.4f)
+
+            // 信噪比基于轨道类型
+            val cn0 = sat.type.minCn0 + kotlin.random.Random.nextFloat() * (sat.type.maxCn0 - sat.type.minCn0)
+
+            SatState(
+                prn = sat.prn,
+                elevation = elevation.coerceIn(0f, 90f),
+                azimuth = azimuth.coerceIn(0f, 360f),
+                cn0 = cn0.coerceIn(10f, 55f)
+            )
         }.sortedByDescending { it.prn }
+
+        // 确保至少有一些卫星
+        val effectiveSats = if (satellites.isEmpty()) {
+            // 保底：生成4颗随机卫星
+            (1..4).map {
+                SatState(
+                    prn = kotlin.random.Random.nextInt(1, 32),
+                    elevation = 20f + kotlin.random.Random.nextFloat() * 50f,
+                    azimuth = kotlin.random.Random.nextFloat() * 360f,
+                    cn0 = 25f + kotlin.random.Random.nextFloat() * 20f
+                )
+            }
+        } else satellites
 
         val sb = StringBuilder()
         val satsPerMsg = 4
-        val totalMsgs = (satellites.size + satsPerMsg - 1) / satsPerMsg
-        
+        val totalMsgs = (effectiveSats.size + satsPerMsg - 1) / satsPerMsg
+
         val talker = when (constellation) {
             GnssFlags.CONSTELLATION_GPS -> "GP"
             GnssFlags.CONSTELLATION_GLONASS -> "GL"
@@ -261,21 +360,21 @@ object LocationNMEAHook: BaseLocationHook() {
             lineSb.append("$talker" + "GSV,")
             lineSb.append("$totalMsgs,")
             lineSb.append("$msgNum,")
-            lineSb.append("${satellites.size}")
+            lineSb.append("${effectiveSats.size}")
 
             val startIdx = i * satsPerMsg
-            val endIdx = minOf(startIdx + satsPerMsg, satellites.size)
-            
+            val endIdx = minOf(startIdx + satsPerMsg, effectiveSats.size)
+
             for (j in startIdx until endIdx) {
-                val sat = satellites[j]
+                val sat = effectiveSats[j]
                 lineSb.append(",")
-                
+
                 var prn = sat.prn
-                
+
                 if (constellation == GnssFlags.CONSTELLATION_QZSS) {
                     if (prn > 192) prn -= 192
                 }
-                
+
                 lineSb.append(String.format(Locale.US, "%02d", prn))
                 lineSb.append(",")
                 lineSb.append(String.format(Locale.US, "%02d", sat.elevation.roundToInt()))
@@ -287,19 +386,19 @@ object LocationNMEAHook: BaseLocationHook() {
                     lineSb.append(String.format(Locale.US, "%02d", snr))
                 }
             }
-            
+
             val content = lineSb.toString()
             val checksum = calculateChecksum(content)
             sb.append("\$")
             sb.append(content)
             sb.append("*")
             sb.append(checksum)
-            
+
             if (i < totalMsgs - 1) {
                 sb.append("\r\n")
             }
         }
-        
+
         return sb.toString()
     }
 

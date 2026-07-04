@@ -7,6 +7,7 @@ import android.os.Build
 import com.baidu.location.LocationClient
 import com.baidu.mapapi.CoordType
 import com.baidu.mapapi.SDKInitializer
+import tv.kyshu.xposed.utils.Log as XLog
 import java.io.BufferedReader
 import java.io.FileReader
 
@@ -14,6 +15,8 @@ class Portal : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        XLog.init(this)
+        XLog.i("PTL.App", "[Startup] application onCreate process=${resolveProcessName()}")
 
         try {
             SDKInitializer.setAgreePrivacy(this, true)

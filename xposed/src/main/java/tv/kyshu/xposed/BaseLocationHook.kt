@@ -9,15 +9,23 @@ import tv.kyshu.xposed.utils.FakeLoc
 import tv.kyshu.xposed.utils.Logger
 import moe.microbios.nmea.NMEA
 import moe.microbios.nmea.NmeaValue
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.random.Random
 
 abstract class BaseLocationHook: BaseDivineService() {
     private companion object {
         const val INJECTED_EXTRA = "_inj"
         val LEGACY_INJECTED_EXTRA = asciiName(0x5f, 0x70, 0x6f, 0x72, 0x74, 0x61, 0x6c, 0x5f, 0x69, 0x6e, 0x6a, 0x65, 0x63, 0x74, 0x65, 0x64)
+        val diagnosticKeys = ConcurrentHashMap.newKeySet<String>()
 
         fun asciiName(vararg bytes: Int): String {
             return ByteArray(bytes.size) { index -> bytes[index].toByte() }.toString(Charsets.UTF_8)
+        }
+
+        fun logOnce(key: String, message: String) {
+            if (diagnosticKeys.add(key)) {
+                Logger.info(message)
+            }
         }
     }
 
@@ -35,16 +43,22 @@ abstract class BaseLocationHook: BaseDivineService() {
             originLocation.altitude = FakeLoc.altitude
         }
 
-        if (!FakeLoc.enable)
+        if (!FakeLoc.enable) {
+            logOnce("injectLocation.disabled.${originLocation.provider}",
+                "[BaseLocationHook] injectLocation skipped: FakeLoc.enable=false provider=${originLocation.provider}")
             return originLocation
+        }
 
         if (originLocation.extras?.getBoolean(INJECTED_EXTRA, false) == true ||
             originLocation.extras?.getBoolean(LEGACY_INJECTED_EXTRA, false) == true) {
-            // Already processed
+            logOnce("injectLocation.already.${originLocation.provider}",
+                "[BaseLocationHook] injectLocation skipped: already injected provider=${originLocation.provider}")
             return originLocation
         }
 
         if (FakeLoc.disableNetworkLocation && originLocation.provider == LocationManager.NETWORK_PROVIDER) {
+            logOnce("injectLocation.network.rewrite",
+                "[BaseLocationHook] network provider rewritten to gps: disableNetworkLocation=${FakeLoc.disableNetworkLocation}")
             originLocation.provider = LocationManager.GPS_PROVIDER
         }
 
@@ -135,6 +149,8 @@ abstract class BaseLocationHook: BaseDivineService() {
         if (FakeLoc.enableDebugLog) {
             Logger.debug("injectLocation success! lat=${location.latitude}, lon=${location.longitude}, acc=${location.accuracy}")
         }
+        logOnce("injectLocation.success.${location.provider}",
+            "[BaseLocationHook] injectLocation first success: provider=${originLocation.provider}->${location.provider}, mock=(${location.latitude},${location.longitude}), hideMock=${FakeLoc.hideMock}, acc=${location.accuracy}")
 
         return location
     }

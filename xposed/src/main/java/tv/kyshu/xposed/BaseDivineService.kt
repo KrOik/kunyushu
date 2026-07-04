@@ -20,6 +20,9 @@ abstract class BaseDivineService {
     companion object {
         private const val DEFERRED_INIT_ATTEMPTS = 60
         private const val DEFERRED_INIT_INTERVAL_MS = 1_000L
+        private const val LOCATION_MANAGER_ATTEMPTS = 3
+        private const val PROVIDER_READY_ATTEMPTS = 10
+        private const val SHORT_RETRY_INTERVAL_MS = 100L
 
         private val initializedServices = ConcurrentHashMap.newKeySet<String>()
         private val pendingServices = ConcurrentHashMap.newKeySet<String>()
@@ -78,16 +81,22 @@ abstract class BaseDivineService {
         }
 
         fun tryFetchLocationManager(): LocationManager? {
-            var locationManager = BinderUtils.getSystemContext()?.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
-            var count = 0
-            while (locationManager == null) {
-                Thread.sleep(1000)
-                if (count++ > 10) {
-                    break
+            repeat(LOCATION_MANAGER_ATTEMPTS) { attempt ->
+                val locationManager = BinderUtils.getSystemContext()
+                    ?.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
+                if (locationManager != null) {
+                    return locationManager
                 }
-                locationManager = BinderUtils.getSystemContext()?.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
+                if (attempt < LOCATION_MANAGER_ATTEMPTS - 1) {
+                    try {
+                        Thread.sleep(SHORT_RETRY_INTERVAL_MS)
+                    } catch (_: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                        return null
+                    }
+                }
             }
-            return locationManager
+            return null
         }
 
         val locationManager = tryFetchLocationManager()
@@ -98,15 +107,34 @@ abstract class BaseDivineService {
             return false
         }
 
-        if (!locationManager.isProviderEnabled(ChannelIdentity.providerName)) {
-            if (retryCount > 10) {
+        var providerReady = false
+        var attempts = retryCount
+        while (attempts <= PROVIDER_READY_ATTEMPTS) {
+            providerReady = runCatching {
+                locationManager.isProviderEnabled(ChannelIdentity.providerName)
+            }.getOrDefault(false)
+            if (providerReady) {
+                break
+            }
+            if (attempts == PROVIDER_READY_ATTEMPTS) {
+                break
+            }
+            attempts += 1
+            try {
+                Thread.sleep(SHORT_RETRY_INTERVAL_MS)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
                 if (logFailures) {
-                    Logger.warn("Location provider ${ChannelIdentity.providerName} not ready in $from")
+                    Logger.warn("Interrupted while waiting for provider ${ChannelIdentity.providerName} in $from")
                 }
                 return false
             }
-            Thread.sleep(100)
-            return initDivineService(from, retryCount + 1, logFailures)
+        }
+        if (!providerReady) {
+            if (logFailures) {
+                Logger.warn("Location provider ${ChannelIdentity.providerName} not ready in $from")
+            }
+            return false
         }
 
         val randomKey = exchangeSessionKey(locationManager)
@@ -127,7 +155,10 @@ abstract class BaseDivineService {
             override fun onTransact(code: Int, data: Parcel, reply: Parcel?, flags: Int): Boolean {
                 if (code == 1) {
                     val sessionKey = data.readString() ?: randomKey
-                    val bundle = data.readBundle(javaClass.classLoader)!!
+                    val bundle = data.readBundle(javaClass.classLoader) ?: run {
+                        Logger.warn("ProxyBinder($from): missing command bundle")
+                        return true
+                    }
                     if (FakeLoc.enableDebugLog) {
                         Logger.debug("ProxyBinder($from): $bundle")
                     }

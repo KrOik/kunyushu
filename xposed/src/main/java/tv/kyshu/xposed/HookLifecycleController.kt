@@ -2,6 +2,7 @@ package tv.kyshu.xposed
 
 import android.os.Bundle
 import tv.kyshu.xposed.stability.DomainGuard
+import tv.kyshu.xposed.utils.DiagnosticAspect
 import tv.kyshu.xposed.utils.FlightRecorder
 import tv.kyshu.xposed.utils.Logger
 
@@ -31,33 +32,38 @@ class HookLifecycleController(
     fun supports(commandId: String): Boolean = commandId in supportedCommands
 
     fun handle(commandId: String, rely: Bundle): Boolean {
+        return DiagnosticAspect.traceBusiness(
+            label = "HookLifecycleController.handle",
+            detail = "command=$commandId ${DiagnosticAspect.bundleSummary(rely)}",
+        ) {
         val result = when (commandId) {
             "start" -> {
                 if (store.forceDisable) {
                     Logger.warn("[HookLifecycle] START blocked: forceDisable is active")
-                    return@handle false
+                    false
+                } else {
+                    if (rely.containsKey("lat") && rely.containsKey("lon")) {
+                        store.latitude = rely.getDouble("lat")
+                        store.longitude = rely.getDouble("lon")
+                    }
+                    if (rely.containsKey("enable_mock_gnss")) {
+                        store.enableMockGnss = rely.getBoolean("enable_mock_gnss")
+                    }
+                    // 星图与位置模拟统一开关：开启位置模拟同时开启GNSS模拟
+                    if (!rely.containsKey("enable_mock_gnss")) {
+                        store.enableMockGnss = true
+                    }
+                    store.enable = true
+                    store.speed = rely.getDouble("speed", store.speed)
+                    store.altitude = rely.getDouble("altitude", store.altitude)
+                    store.accuracy = rely.getFloat("accuracy", store.accuracy)
+                    onStart()
+                    setNativeStatus(true)
+                    if (isSystemServerProcess() && store.enableMockGnss) {
+                        refreshGnssStatus()
+                    }
+                    true
                 }
-                if (rely.containsKey("lat") && rely.containsKey("lon")) {
-                    store.latitude = rely.getDouble("lat")
-                    store.longitude = rely.getDouble("lon")
-                }
-                if (rely.containsKey("enable_mock_gnss")) {
-                    store.enableMockGnss = rely.getBoolean("enable_mock_gnss")
-                }
-                // 星图与位置模拟统一开关：开启位置模拟同时开启GNSS模拟
-                if (!rely.containsKey("enable_mock_gnss")) {
-                    store.enableMockGnss = true
-                }
-                store.enable = true
-                store.speed = rely.getDouble("speed", store.speed)
-                store.altitude = rely.getDouble("altitude", store.altitude)
-                store.accuracy = rely.getFloat("accuracy", store.accuracy)
-                onStart()
-                setNativeStatus(true)
-                if (isSystemServerProcess() && store.enableMockGnss) {
-                    refreshGnssStatus()
-                }
-                true
             }
 
             "stop" -> {
@@ -128,7 +134,8 @@ class HookLifecycleController(
         } else {
             Logger.warn("[HookLifecycle] unknown command: $commandId")
         }
-        return result
+        result
+        }
     }
 
     private fun enabledHookCount(): Int {

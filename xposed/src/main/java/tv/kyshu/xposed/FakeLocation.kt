@@ -30,11 +30,13 @@ import tv.kyshu.xposed.utils.CrashForensics
 import tv.kyshu.xposed.RemoteCommandHandler
 import tv.kyshu.xposed.security.RemoteCommandBundleCodec
 import tv.kyshu.xposed.utils.FlightRecorder
+import tv.kyshu.xposed.utils.Log
 import tv.kyshu.xposed.utils.LogRouter
 import tv.kyshu.xposed.utils.PortalIdentity
 import tv.kyshu.xposed.utils.safeCacheDir
 import tv.kyshu.xposed.utils.safeFilesDir
 import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
 
 class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
     private lateinit var cServiceManager: Class<*> // android.os.ServiceManager
@@ -50,6 +52,7 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
          * 确保用户有充足的操作时间。
          */
         const val BOOT_DELAY_MS = 80_000L
+        private const val PHONE_BOOT_DELAY_MS = 15_000L
 
         private const val DELAY_MARKER_PREFIX = "svc.delay."
 
@@ -93,67 +96,118 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
          * when the primary sendExtraCommand path is unavailable.
          */
         object DelayedCommandPoller {
-            private var polling = false
+            private val polling = AtomicBoolean(false)
             private val periodMs = 5000L
+            private const val MAX_BACKOFF_MS = 60_000L
+            private const val MAX_CONSECUTIVE_FAILURES = 36
+            private const val MAX_COMMANDS_PER_POLL = 50
             @Volatile
             private var pollerThread: Thread? = null
 
 
             fun start() {
-                if (polling) {
-                    if (pollerThread?.isAlive == true) return
-                    polling = false
+                if (FakeLoc.getContext() == null) {
+                    Logger.warn("[DelayedCommandPoller] start skipped: system context unavailable")
+                    return
                 }
-                polling = true
+                if (!polling.compareAndSet(false, true)) {
+                    if (pollerThread?.isAlive == true) {
+                        Logger.info("[DelayedCommandPoller] start skipped: already running")
+                        return
+                    }
+                    polling.set(true)
+                }
                 val thread = Thread({
+                    var consecutiveFailures = 0
+                    var nextDelayMs = periodMs
                     try {
-                        while (polling) {
+                        while (polling.get()) {
                             kotlin.runCatching {
-                                val cursor = FakeLoc.getContext()?.contentResolver?.query(
+                                val context = FakeLoc.getContext()
+                                    ?: throw IllegalStateException("system context unavailable")
+                                val cursor = context.contentResolver?.query(
                                     android.net.Uri.parse("content://tv.kyshu.xposed.config/cmd"),
                                     null, null, null, null
-                                )
-                                cursor?.use {
+                                ) ?: throw IllegalStateException("command provider returned null cursor")
+                                cursor.use {
+                                    val commandColumn = it.getColumnIndex("command")
+                                    if (commandColumn < 0) {
+                                        throw IllegalStateException("command column missing")
+                                    }
+                                    var processed = 0
                                     while (it.moveToNext()) {
-                                        val json = it.getString(it.getColumnIndexOrThrow("command"))
+                                        processed += 1
+                                        if (processed > MAX_COMMANDS_PER_POLL) {
+                                            Logger.warn("[DelayedCommandPoller] command row cap reached: $MAX_COMMANDS_PER_POLL")
+                                            break
+                                        }
+                                        val json = it.getString(commandColumn)
+                                        if (json == null) {
+                                            Logger.warn("[DelayedCommandPoller] null command payload skipped")
+                                            continue
+                                        }
                                         val obj = org.json.JSONObject(json)
                                         val sessionKey = obj.optString("session_key").takeIf { value ->
                                             value.isNotBlank()
-                                        } ?: run {
-                                            Logger.warn("[DelayedCommandPoller] Missing session key")
-                                            return@runCatching
                                         }
-                                        val bundle = RemoteCommandBundleCodec.decode(obj.getString("bundle"))
-                                        val commandId = bundle.getString("command_id") ?: run {
+                                        if (sessionKey == null) {
+                                            Logger.warn("[DelayedCommandPoller] Missing session key")
+                                            continue
+                                        }
+                                        val encodedBundle = obj.optString("bundle").takeIf { value ->
+                                            value.isNotBlank()
+                                        }
+                                        if (encodedBundle == null) {
+                                            Logger.warn("[DelayedCommandPoller] Missing bundle")
+                                            continue
+                                        }
+                                        val bundle = RemoteCommandBundleCodec.decode(encodedBundle)
+                                        val commandId = bundle.getString("command_id")
+                                        if (commandId == null) {
                                             Logger.warn("[DelayedCommandPoller] Missing command_id")
-                                            return@runCatching
+                                            continue
                                         }
 
                                         if (!RemoteCommandHandler.handleSessionInstruction(sessionKey, bundle)) {
                                             Logger.warn("[DelayedCommandPoller] Auth rejected for command: $commandId")
-                                            return@runCatching
+                                            continue
                                         }
                                     }
                                 }
+                                consecutiveFailures = 0
+                                nextDelayMs = periodMs
                             }.onFailure { e ->
-                                if (polling) {
-                                    Logger.warn("[DelayedCommandPoller] poll failed", e)
+                                if (polling.get()) {
+                                    consecutiveFailures++
+                                    nextDelayMs = minOf(MAX_BACKOFF_MS, periodMs * (1L shl minOf(consecutiveFailures, 4)))
+                                    if (consecutiveFailures == 1 || consecutiveFailures % 6 == 0) {
+                                        Logger.warn("[DelayedCommandPoller] poll failed count=$consecutiveFailures nextDelayMs=$nextDelayMs", e)
+                                    }
+                                    if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+                                        Logger.error("[DelayedCommandPoller] stopping after $consecutiveFailures consecutive failures")
+                                        polling.set(false)
+                                    }
                                 }
                             }
-                            try { Thread.sleep(periodMs) } catch (_: InterruptedException) { break }
+                            try {
+                                Thread.sleep(nextDelayMs)
+                            } catch (_: InterruptedException) {
+                                break
+                            }
                         }
                     } finally {
-                        polling = false
+                        polling.set(false)
                         pollerThread = null
                     }
                 }, "Svc-CmdPoller")
+                thread.isDaemon = true
                 pollerThread = thread
                 thread.start()
                 Logger.info("[DelayedCommandPoller] Started polling every ${periodMs}ms")
             }
 
             fun stop() {
-                polling = false
+                polling.set(false)
                 pollerThread?.interrupt()
                 pollerThread = null
                 Logger.info("[DelayedCommandPoller] Stopped")
@@ -272,13 +326,13 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
 
         when (lpparam.packageName) {
             "com.android.phone" -> {
-                Logger.info("Found $pkgName, hooks will be installed after ${BOOT_DELAY_MS / 1000}s delay")
+                Logger.info("Found $pkgName, hooks will be installed after ${PHONE_BOOT_DELAY_MS / 1000}s delay")
 
                 System.setProperty(DELAY_MARKER_PREFIX + pkgName, "true")
 
                 Thread({
                     try {
-                        Thread.sleep(BOOT_DELAY_MS)
+                        Thread.sleep(PHONE_BOOT_DELAY_MS)
                     } catch (e: InterruptedException) {
                         Logger.warn("[FakeLocation] Boot delay interrupted for $pkgName, hooks skipped")
                         Thread.currentThread().interrupt()
@@ -308,11 +362,15 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                         is SafeFaultResult.Completed -> {}
                         is SafeFaultResult.Blocked -> {
                             Logger.error("[FakeLocation] TelephonyHook BLOCKED: ${phoneResult.message}")
+                            DomainGuard.disableDomain(Domain.TELEPHONY,
+                                "phone install blocked: ${phoneResult.faultClass.name}: ${phoneResult.message}")
                             DomainGuard.reportCrash(Domain.TELEPHONY,
                                 RuntimeException("SafeFaultHarness blocked: ${phoneResult.message}"))
                         }
                         is SafeFaultResult.Recovered -> {
                             Logger.warn("[FakeLocation] TelephonyHook RECOVERED: ${phoneResult.message}")
+                            DomainGuard.disableDomain(Domain.TELEPHONY,
+                                "phone install recovered failure: ${phoneResult.faultClass.name}: ${phoneResult.message}")
                             DomainGuard.reportCrash(Domain.TELEPHONY,
                                 RuntimeException("SafeFaultHarness recovered: ${phoneResult.message}"))
                         }
@@ -326,33 +384,39 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                         is SafeFaultResult.Completed -> {}
                         is SafeFaultResult.Blocked -> {
                             Logger.error("[FakeLocation] MiuiTelephonyManagerHook BLOCKED: ${miuiResult.message}")
+                            DomainGuard.disableDomain(Domain.TELEPHONY,
+                                "miui phone install blocked: ${miuiResult.faultClass.name}: ${miuiResult.message}")
                             DomainGuard.reportCrash(Domain.TELEPHONY,
                                 RuntimeException("SafeFaultHarness blocked: ${miuiResult.message}"))
                         }
                         is SafeFaultResult.Recovered -> {
                             Logger.warn("[FakeLocation] MiuiTelephonyManagerHook RECOVERED: ${miuiResult.message}")
+                            DomainGuard.disableDomain(Domain.TELEPHONY,
+                                "miui phone install recovered failure: ${miuiResult.faultClass.name}: ${miuiResult.message}")
                             DomainGuard.reportCrash(Domain.TELEPHONY,
                                 RuntimeException("SafeFaultHarness recovered: ${miuiResult.message}"))
                         }
                     }
-                }, "SvcBootDelay-$pkgName").start()
+                }, "SvcBootDelay-$pkgName").apply { isDaemon = true }.start()
             }
             "android" -> {
-                val systemClassLoader = (kotlin.runCatching {
-                    lpparam.classLoader.loadClass("android.app.ActivityThread")
-                        ?: Class.forName("android.app.ActivityThread")
+                val systemClassLoader = kotlin.runCatching {
+                    val activityThreadClass = runCatching {
+                        lpparam.classLoader.loadClass("android.app.ActivityThread")
+                    }.getOrElse {
+                        Class.forName("android.app.ActivityThread")
+                    }
+                    val activityThread = activityThreadClass
+                        .getMethod("currentActivityThread")
+                        .invoke(null)
+                        ?: throw IllegalStateException("currentActivityThread returned null")
+                    activityThread.javaClass.classLoader
+                        ?: throw IllegalStateException("ActivityThread classLoader is null")
                 }.onFailure {
-                    Logger.error("Failed to find ActivityThread", it)
-                }.getOrNull() ?: return)
-                    .getMethod("currentActivityThread")
-                    .invoke(null)
-                    .javaClass
-                    .getClassLoader()
-
-                if (systemClassLoader == null) {
-                    Logger.error("Failed to get system class loader")
-                    return
-                }
+                    Logger.error("[FakeLocation] Failed to resolve system class loader, android hooks skipped", it)
+                    FlightRecorder.hookFail("BOOT", "SYSTEM_CLASSLOADER_UNAVAILABLE",
+                        mapOf("error" to it.javaClass.simpleName))
+                }.getOrNull() ?: return
                 // Initialize observability + safety infrastructure
                 val systemContext = runCatching {
                     val atCls = lpparam.classLoader.loadClass("android.app.ActivityThread")
@@ -360,6 +424,9 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                     at.javaClass.getMethod("getSystemContext").invoke(at) as? android.content.Context
                 }.getOrNull()
                 if (systemContext != null) {
+                    runBootInitStep("Log") {
+                        Log.init(systemContext)
+                    }
                     runBootInitStep("FakeLoc context") {
                         FakeLoc.setContext(systemContext)
                     }
@@ -503,16 +570,26 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                     FlightRecorder.execDone("BOOT", "DELAY_COMPLETE",
                         mapOf("package" to pkgName))
 
-                    // Concurrency safety: tryLock prevents double-install on rapid handleLoadPackage fires
-                    if (!installLock.tryLock(15, java.util.concurrent.TimeUnit.SECONDS)) {
-                        Logger.error("[FakeLocation] installLock acquire timed out for $pkgName — concurrent install detected, skipping")
-                        FlightRecorder.hookFail("BOOT", "CONCURRENT_INSTALL",
-                            mapOf("package" to pkgName))
-                        DomainGuard.reportInstallCrash(
+	                    // Concurrency safety: tryLock prevents double-install on rapid handleLoadPackage fires
+	                    val installLockAcquired = try {
+	                        installLock.tryLock(15, java.util.concurrent.TimeUnit.SECONDS)
+	                    } catch (_: InterruptedException) {
+	                        Thread.currentThread().interrupt()
+	                        Logger.warn("[FakeLocation] installLock wait interrupted for $pkgName, hooks skipped")
+	                        FlightRecorder.hookFail("BOOT", "INSTALL_LOCK_INTERRUPTED",
+	                            mapOf("package" to pkgName))
+	                        return@Thread
+	                    }
+	                    if (!installLockAcquired) {
+	                        Logger.error("[FakeLocation] installLock acquire timed out for $pkgName — concurrent install detected, skipping")
+	                        FlightRecorder.hookFail("BOOT", "CONCURRENT_INSTALL",
+	                            mapOf("package" to pkgName))
+	                        DomainGuard.reportInstallCrash(
                             IllegalStateException("installLock timeout"))
                         return@Thread
                     }
 
+                    try {
                     // 使用 SafeFaultHarness 隔离关键安装路径，防止死循环或死锁阻塞进程
                     var hasFatalFailure = false
 
@@ -533,6 +610,8 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                             Logger.error("[FakeLocation] startFakeLocHook BLOCKED: ${locResult.message}")
                             FlightRecorder.hookFail("BOOT", "LOCATION_HOOK_BLOCKED",
                                 mapOf("fault" to locResult.faultClass.name, "message" to locResult.message))
+                            DomainGuard.disableDomain(Domain.LOCATION_SERVICE,
+                                "install blocked: ${locResult.faultClass.name}: ${locResult.message}")
                             DomainGuard.reportCrash(Domain.LOCATION_SERVICE,
                                 RuntimeException("SafeFaultHarness blocked: ${locResult.message}"))
                             hasFatalFailure = true
@@ -541,9 +620,21 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                             Logger.warn("[FakeLocation] startFakeLocHook RECOVERED: ${locResult.message}")
                             FlightRecorder.hookFail("BOOT", "LOCATION_HOOK_RECOVERED",
                                 mapOf("fault" to locResult.faultClass.name, "message" to locResult.message))
+                            DomainGuard.disableDomain(Domain.LOCATION_SERVICE,
+                                "install recovered failure: ${locResult.faultClass.name}: ${locResult.message}")
                             DomainGuard.reportCrash(Domain.LOCATION_SERVICE,
                                 RuntimeException("SafeFaultHarness recovered: ${locResult.message}"))
+                            hasFatalFailure = true
                         }
+                    }
+
+                    if (hasFatalFailure) {
+                        Logger.error("[FakeLocation] core location hook blocked; auxiliary hook installation skipped")
+                        FlightRecorder.execDone("BOOT", "HOOK_INSTALL_BATCH",
+                            mapOf("package" to pkgName, "fatal" to "true", "skipped_aux" to "true"))
+                        DomainGuard.reportInstallCrash(
+                            RuntimeException("Fatal core hook install block"))
+                        return@Thread
                     }
 
                     // TelephonyHook.hookSubOnTransact（最长允许10秒）
@@ -555,11 +646,15 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                         is SafeFaultResult.Completed -> {}
                         is SafeFaultResult.Blocked -> {
                             Logger.error("[FakeLocation] TelephonyHook BLOCKED: ${telResult.message}")
+                            DomainGuard.disableDomain(Domain.TELEPHONY,
+                                "install blocked: ${telResult.faultClass.name}: ${telResult.message}")
                             DomainGuard.reportCrash(Domain.TELEPHONY,
                                 RuntimeException("SafeFaultHarness blocked: ${telResult.message}"))
                         }
                         is SafeFaultResult.Recovered -> {
                             Logger.warn("[FakeLocation] TelephonyHook RECOVERED: ${telResult.message}")
+                            DomainGuard.disableDomain(Domain.TELEPHONY,
+                                "install recovered failure: ${telResult.faultClass.name}: ${telResult.message}")
                             DomainGuard.reportCrash(Domain.TELEPHONY,
                                 RuntimeException("SafeFaultHarness recovered: ${telResult.message}"))
                         }
@@ -574,11 +669,15 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                         is SafeFaultResult.Completed -> {}
                         is SafeFaultResult.Blocked -> {
                             Logger.error("[FakeLocation] WlanHook BLOCKED: ${wlanResult.message}")
+                            DomainGuard.disableDomain(Domain.WLAN,
+                                "install blocked: ${wlanResult.faultClass.name}: ${wlanResult.message}")
                             DomainGuard.reportCrash(Domain.WLAN,
                                 RuntimeException("SafeFaultHarness blocked: ${wlanResult.message}"))
                         }
                         is SafeFaultResult.Recovered -> {
                             Logger.warn("[FakeLocation] WlanHook RECOVERED: ${wlanResult.message}")
+                            DomainGuard.disableDomain(Domain.WLAN,
+                                "install recovered failure: ${wlanResult.faultClass.name}: ${wlanResult.message}")
                             DomainGuard.reportCrash(Domain.WLAN,
                                 RuntimeException("SafeFaultHarness recovered: ${wlanResult.message}"))
                         }
@@ -593,11 +692,15 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                         is SafeFaultResult.Completed -> {}
                         is SafeFaultResult.Blocked -> {
                             Logger.error("[FakeLocation] SystemSensorManagerHook BLOCKED: ${sensorResult.message}")
+                            DomainGuard.disableDomain(Domain.SENSOR,
+                                "install blocked: ${sensorResult.faultClass.name}: ${sensorResult.message}")
                             DomainGuard.reportCrash(Domain.SENSOR,
                                 RuntimeException("SafeFaultHarness blocked: ${sensorResult.message}"))
                         }
                         is SafeFaultResult.Recovered -> {
                             Logger.warn("[FakeLocation] SystemSensorManagerHook RECOVERED: ${sensorResult.message}")
+                            DomainGuard.disableDomain(Domain.SENSOR,
+                                "install recovered failure: ${sensorResult.faultClass.name}: ${sensorResult.message}")
                             DomainGuard.reportCrash(Domain.SENSOR,
                                 RuntimeException("SafeFaultHarness recovered: ${sensorResult.message}"))
                         }
@@ -610,7 +713,6 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                     if (hasFatalFailure) {
                         DomainGuard.reportInstallCrash(
                             RuntimeException("Fatal hook install block"))
-                        installLock.unlock()
                         return@Thread
                     }
 
@@ -622,8 +724,12 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                     FlightRecorder.gatePass("BOOT", "BOOT_GATE",
                         mapOf("hooks" to installedHooks))
                     LogRouter.info("BBN:BOOT", "load complete: hooks=$installedHooks")
-                    installLock.unlock()
-                }, bootThreadLabel).start()
+                    } finally {
+                        if (installLock.isHeldByCurrentThread) {
+                            installLock.unlock()
+                        }
+                    }
+                }, bootThreadLabel).apply { isDaemon = true }.start()
             }
             "com.android.location.fused" -> {
                 Logger.info("[FakeLocation] Fused process: $pkgName, installing AndroidFusedLocationProviderHook...")
@@ -637,6 +743,8 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                         Logger.error("[FakeLocation] AndroidFusedLocationProviderHook ($pkgName) failed", e)
                         FlightRecorder.hookFail("FUSED", "ANDROID_FUSED_FAIL",
                             mapOf("process" to pkgName, "error" to e.javaClass.simpleName))
+                        DomainGuard.disableDomain(Domain.FUSED_LOCATION,
+                            "android fused install failed: ${e.javaClass.simpleName}: ${e.message ?: ""}")
                         DomainGuard.reportCrash(Domain.FUSED_LOCATION, e)
                     }
             }
@@ -652,6 +760,8 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                         Logger.error("[FakeLocation] ThirdPartyLocationHook ($pkgName) failed", e)
                         FlightRecorder.hookFail("FUSED", "XIAOMI_FUSED_FAIL",
                             mapOf("process" to pkgName, "error" to e.javaClass.simpleName))
+                        DomainGuard.disableDomain(Domain.FUSED_LOCATION,
+                            "xiaomi fused install failed: ${e.javaClass.simpleName}: ${e.message ?: ""}")
                         DomainGuard.reportCrash(Domain.FUSED_LOCATION, e)
                     }
             }
@@ -667,6 +777,8 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                         Logger.error("[FakeLocation] OplusLocationHook ($pkgName) failed", e)
                         FlightRecorder.hookFail("FUSED", "OPLUS_LOCATION_FAIL",
                             mapOf("process" to pkgName, "error" to e.javaClass.simpleName))
+                        DomainGuard.disableDomain(Domain.FUSED_LOCATION,
+                            "oplus fused install failed: ${e.javaClass.simpleName}: ${e.message ?: ""}")
                         DomainGuard.reportCrash(Domain.FUSED_LOCATION, e)
                     }
             }
@@ -690,6 +802,8 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
 	                        Logger.error("[FakeLocation] BluetoothHook BLOCKED: ${bleResult.message}")
 	                        FlightRecorder.hookFail("BLE", "BLUETOOTH_HOOK_BLOCKED",
 	                            mapOf("process" to pkgName, "fault" to bleResult.faultClass.name))
+	                        DomainGuard.disableDomain(Domain.BLE,
+	                            "install blocked: ${bleResult.faultClass.name}: ${bleResult.message}")
 	                        DomainGuard.reportCrash(Domain.BLE,
 	                            RuntimeException("SafeFaultHarness blocked: ${bleResult.message}"))
 	                    }
@@ -697,6 +811,8 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
 	                        Logger.warn("[FakeLocation] BluetoothHook RECOVERED: ${bleResult.message}")
 	                        FlightRecorder.hookFail("BLE", "BLUETOOTH_HOOK_RECOVERED",
 	                            mapOf("process" to pkgName, "fault" to bleResult.faultClass.name))
+	                        DomainGuard.disableDomain(Domain.BLE,
+	                            "install recovered failure: ${bleResult.faultClass.name}: ${bleResult.message}")
 	                    }
 	                }
 	            }
@@ -762,6 +878,8 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
             Logger.error("[FakeLocation] BlindHook ($label) general failure", e)
             FlightRecorder.hookFail("FUSED", "${label}_FAIL",
                 mapOf("process" to lpparam.packageName, "error" to e.javaClass.simpleName))
+            DomainGuard.disableDomain(domain,
+                "$label install failed: ${e.javaClass.simpleName}: ${e.message ?: ""}")
             DomainGuard.reportCrash(domain, e)
         }
     }

@@ -43,7 +43,9 @@ fun Method.onceHook(callback: XC_MethodHook): XC_MethodHook.Unhook? {
     } finally {
         hookOnceLock.unlock()
     }
-    return XposedBridge.hookMethod(this, callback)
+    val unhook = XposedBridge.hookMethod(this, callback)
+    DiagnosticAspect.hookInstall(this, unhook != null, "once")
+    return unhook
 }
 
 /**
@@ -57,7 +59,9 @@ fun Method.onceHookBefore(callback: XC_MethodHook.MethodHookParam.() -> Unit): X
     return onceHook(object : XC_MethodHook() {
         override fun beforeHookedMethod(param: MethodHookParam) {
             kotlin.runCatching {
-                param.callback()
+                DiagnosticAspect.traceHookCallback("once-before", param) {
+                    param.callback()
+                }
             }.onFailure {
                 XposedBridge.log(it)
             }
@@ -74,7 +78,9 @@ fun Method.onceHookAfter(callback: XC_MethodHook.MethodHookParam.() -> Unit): XC
     return onceHook(object : XC_MethodHook() {
         override fun afterHookedMethod(param: MethodHookParam) {
             kotlin.runCatching {
-                param.callback()
+                DiagnosticAspect.traceHookCallback("once-after", param) {
+                    param.callback()
+                }
             }.onFailure {
                 XposedBridge.log(it)
             }
@@ -92,12 +98,14 @@ fun <T> Class<T>.onceHookAllMethod(methodName: String, callback: XC_MethodHook):
     declaredMethods.forEach { method ->
         if (method.name == methodName) {
             ifNotHook(name, methodName, method.parameterTypes) { key ->
-                method.hook(callback)?.let { unhooks.add(it) }
+                val unhook = method.hook(callback)
+                if (unhook != null) unhooks.add(unhook)
                 hookedMethods.add(key)
             }
         }
     }
     hookOnceLock.unlock()
+    DiagnosticAspect.hookInstall(this, methodName, unhooks.size, "once-all")
     return unhooks
 }
 
@@ -109,7 +117,12 @@ fun <T> Class<T>.onceHookAllMethod(methodName: String, callback: XC_MethodHook):
  * @return Unhook object, you can use it to unhook the method.
  */
 fun <T> Class<T>.onceHookMethod(methodName: String, vararg parameterTypes: Class<*>, callback: XC_MethodHook): XC_MethodHook.Unhook? {
-    return XposedHelpers.findMethodExactIfExists(this, methodName, *parameterTypes)?.onceHook(callback)
+    val method = XposedHelpers.findMethodExactIfExists(this, methodName, *parameterTypes)
+    if (method == null) {
+        DiagnosticAspect.hookInstall(this, methodName, 0, "once-exact")
+        return null
+    }
+    return method.onceHook(callback)
 }
 
 /**
@@ -152,7 +165,9 @@ fun <T> Class<T>.onceHookDoNothingMethod(methodName: String, vararg parameterTyp
  * @return set of Unhook object, you can use it to unhook the method
  */
 fun <T> Class<T>.hookAllMethods(methodName: String, callback: XC_MethodHook): Set<XC_MethodHook.Unhook> {
-    return XposedBridge.hookAllMethods(this, methodName, callback)
+    val unhooks = XposedBridge.hookAllMethods(this, methodName, callback)
+    DiagnosticAspect.hookInstall(this, methodName, unhooks.size, "all")
+    return unhooks
 }
 
 /**
@@ -163,7 +178,9 @@ fun <T> Class<T>.hookAllMethodsBefore(methodName: String, callback: XC_MethodHoo
     return hookAllMethods(methodName, object : XC_MethodHook() {
         override fun beforeHookedMethod(param: MethodHookParam) {
             kotlin.runCatching {
-                param.callback()
+                DiagnosticAspect.traceHookCallback("all-before", param) {
+                    param.callback()
+                }
             }.onFailure {
                 XposedBridge.log(it)
             }
@@ -179,7 +196,9 @@ fun <T> Class<T>.hookAllMethodsAfter(methodName: String, callback: XC_MethodHook
     return hookAllMethods(methodName, object : XC_MethodHook() {
         override fun afterHookedMethod(param: MethodHookParam) {
             kotlin.runCatching {
-                param.callback()
+                DiagnosticAspect.traceHookCallback("all-after", param) {
+                    param.callback()
+                }
             }.onFailure {
                 XposedBridge.log(it)
             }
@@ -195,7 +214,9 @@ fun <T> Class<T>.hookAllMethodsAfter(methodName: String, callback: XC_MethodHook
  * @return Unhook object, you can use it to unhook the method
  */
 fun Method.hook(callback: XC_MethodHook): XC_MethodHook.Unhook? {
-    return XposedBridge.hookMethod(this, callback)
+    val unhook = XposedBridge.hookMethod(this, callback)
+    DiagnosticAspect.hookInstall(this, unhook != null, "method")
+    return unhook
 }
 
 /**
@@ -206,7 +227,9 @@ fun Method.hookBefore(callback: XC_MethodHook.MethodHookParam.() -> Unit): XC_Me
     return hook(object : XC_MethodHook() {
         override fun beforeHookedMethod(param: MethodHookParam) {
             kotlin.runCatching {
-                param.callback()
+                DiagnosticAspect.traceHookCallback("method-before", param) {
+                    param.callback()
+                }
             }.onFailure {
                 XposedBridge.log(it)
             }
@@ -222,7 +245,9 @@ fun Method.hookAfter(callback: XC_MethodHook.MethodHookParam.() -> Unit): XC_Met
     return hook(object : XC_MethodHook() {
         override fun afterHookedMethod(param: MethodHookParam) {
             kotlin.runCatching {
-                param.callback()
+                DiagnosticAspect.traceHookCallback("method-after", param) {
+                    param.callback()
+                }
             }.onFailure {
                 XposedBridge.log(it)
             }
@@ -238,7 +263,12 @@ fun Method.hookAfter(callback: XC_MethodHook.MethodHookParam.() -> Unit): XC_Met
  * @return Unhook object, you can use it to unhook the method
  */
 fun <T> Class<T>.hookMethod(methodName: String, vararg parameterTypes: Class<*>, callback: XC_MethodHook): XC_MethodHook.Unhook? {
-    return XposedHelpers.findMethodExactIfExists(this, methodName, *parameterTypes)?.hook(callback)
+    val method = XposedHelpers.findMethodExactIfExists(this, methodName, *parameterTypes)
+    if (method == null) {
+        DiagnosticAspect.hookInstall(this, methodName, 0, "exact")
+        return null
+    }
+    return method.hook(callback)
 }
 
 /**
@@ -281,7 +311,9 @@ fun beforeHook(
     return object: XC_MethodHook() {
         override fun beforeHookedMethod(param: MethodHookParam) {
             kotlin.runCatching {
-                param.callback()
+                DiagnosticAspect.traceHookCallback("before", param) {
+                    param.callback()
+                }
             }.onFailure {
                 XposedBridge.log(it)
             }
@@ -298,7 +330,9 @@ fun afterHook(
     return object: XC_MethodHook() {
         override fun afterHookedMethod(param: MethodHookParam) {
             kotlin.runCatching {
-                param.callback()
+                DiagnosticAspect.traceHookCallback("after", param) {
+                    param.callback()
+                }
             }.onFailure {
                 XposedBridge.log(it)
             }
@@ -377,9 +411,11 @@ fun Method.diyHook(
         unhook = XposedBridge.hookMethod(this, object: XC_MethodHook() {
             override fun beforeHookedMethod(param: MethodHookParam) {
                 kotlin.runCatching {
-                    if (before(param)) {
-                        unhook?.unhook()
-                        unhookCallback()
+                    DiagnosticAspect.traceHookCallback("diy-before", param) {
+                        if (before(param)) {
+                            unhook?.unhook()
+                            unhookCallback()
+                        }
                     }
                 }.onFailure {
                     XposedBridge.log(it)
@@ -388,16 +424,19 @@ fun Method.diyHook(
 
             override fun afterHookedMethod(param: MethodHookParam) {
                 kotlin.runCatching {
-                    after(param)
-                    if (hookOnce) {
-                        unhook?.unhook()
-                        unhookCallback()
+                    DiagnosticAspect.traceHookCallback("diy-after", param) {
+                        after(param)
+                        if (hookOnce) {
+                            unhook?.unhook()
+                            unhookCallback()
+                        }
                     }
                 }.onFailure {
                     XposedBridge.log(it)
                 }
             }
         })
+        DiagnosticAspect.hookInstall(this, unhook != null, "diy")
     }
     if (soleHook) {
         ifNotHook(declaringClass.name, name, parameterTypes) { key ->

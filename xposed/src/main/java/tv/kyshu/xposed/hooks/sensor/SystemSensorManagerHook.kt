@@ -11,6 +11,7 @@ import android.util.ArrayMap
 import android.util.SparseArray
 import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
+import tv.kyshu.xposed.stability.DomainGuard
 import tv.kyshu.xposed.utils.FakeLoc
 import tv.kyshu.xposed.utils.Logger
 import tv.kyshu.xposed.utils.afterHook
@@ -30,6 +31,17 @@ import java.io.File
 
 // https://github.com/Frazew/VirtualSensor/blob/master/app/src/main/java/fr/frazew/virtualgyroscope/XposedMod.java#L298
 object SystemSensorManagerHook {
+    private const val STEP_PUSH_INTERVAL_MS = 500L
+    private const val STEP_PUSH_IDLE_LIMIT = 20
+    private const val STEP_PUSH_ERROR_LIMIT = 3
+
+    private val diagnosticKeys = ConcurrentHashMap.newKeySet<String>()
+    private fun logOnce(key: String, message: String) {
+        if (diagnosticKeys.add(key)) {
+            Logger.info(message)
+        }
+    }
+
     // listener -> 该 listener 注册的所有 Sensor（支持多传感器注册）
     private val listenerMap = ConcurrentHashMap<SensorEventListener, CopyOnWriteArrayList<Sensor>>()
     // sensor handle -> sensor type 缓存（dispatchSensorEvent 用 handle 定位类型）
@@ -41,7 +53,9 @@ object SystemSensorManagerHook {
     private var mCurrentStepCount: Long = 0L
     @Volatile
     private var mStepGoalEnd: Long = 0L
+    @Volatile
     private var mLastConfiguredStepCount: Int = -1
+    @Volatile
     private var mWasStepMockEnabled: Boolean = false
     // 步数持久化（避免进程重启归零）
     private val stepCountFile: File? by lazy {
@@ -56,6 +70,10 @@ object SystemSensorManagerHook {
     private val magBase = floatArrayOf(25.0f, 2.0f, -42.0f)
     private var lastMagUpdateMs: Long = 0L
     private var lastStepAdvanceMs: Long = 0L
+    // 步数主动事件推送线程
+    @Volatile
+    private var stepEventThread: Thread? = null
+    private val stepEventLock = Any()
 
 
     // 姿态缓存
@@ -66,6 +84,7 @@ object SystemSensorManagerHook {
     private val cachedEuler = FloatArray(3)
 
     operator fun invoke(classLoader: ClassLoader) {
+        Logger.info("[SensorHook] install start: hookSensor=${FakeLoc.sensorData.hookSensor}, motion=${FakeLoc.sensorData.enableMotionMock}, step=${FakeLoc.sensorData.enableStepCountMock}, shake=${FakeLoc.sensorData.enableShakeMock}, keepWalking=${FakeLoc.sensorData.keepWalkingWaveform}, classLoader=$classLoader")
         loadStepCount()
         ensureGaitSimulator()
         unlockGeoSensor(classLoader)
@@ -123,6 +142,7 @@ object SystemSensorManagerHook {
             val clazz = XposedHelpers.findClassIfExists(name, classLoader)
             if (clazz != null) candidates.add(clazz)
         }
+        Logger.info("[SensorHook] queue known candidates=${candidates.map { it.name }}")
 
         // 策略2: 反射扫描内部类
         try {
@@ -146,7 +166,7 @@ object SystemSensorManagerHook {
         }
 
         if (candidates.isEmpty()) {
-            Logger.error("FATAL: Failed to find any SensorEventQueue class! Sensor hook will NOT work.")
+            Logger.error("[SensorHook] FATAL: Failed to find any SensorEventQueue class; passive dispatch hook will NOT work")
             return
         }
 
@@ -160,12 +180,17 @@ object SystemSensorManagerHook {
                     Long::class.javaPrimitiveType,
                     object : de.robv.android.xposed.XC_MethodHook() {
                         override fun beforeHookedMethod(param: MethodHookParam) {
-                            handleDispatchSensorEvent(param)
+                            runCatching {
+                                handleDispatchSensorEvent(param)
+                            }.onFailure {
+                                Logger.warn("[SensorHook] dispatchSensorEvent callback failed; disabling SENSOR domain", it)
+                                DomainGuard.disableDomain(DomainGuard.Domain.SENSOR,
+                                    "dispatch callback failed: ${it.javaClass.simpleName}: ${it.message ?: ""}")
+                                DomainGuard.reportCrash(DomainGuard.Domain.SENSOR, it)
+                            }
                         }
                     })
-                if (FakeLoc.enableDebugLog) {
-                    Logger.debug("Hooked dispatchSensorEvent in ${clazz.name}")
-                }
+                Logger.info("[SensorHook] passive dispatch hook installed: ${clazz.name}#dispatchSensorEvent(int,float[],int,long)")
             } catch (e: Throwable) {
                 // 部分 ROM 签名不同，尝试动态查找
                 try {
@@ -173,21 +198,40 @@ object SystemSensorManagerHook {
                     if (method != null) {
                         XposedBridge.hookMethod(method, object : de.robv.android.xposed.XC_MethodHook() {
                             override fun beforeHookedMethod(param: MethodHookParam) {
-                                handleDispatchSensorEvent(param)
+                                runCatching {
+                                    handleDispatchSensorEvent(param)
+                                }.onFailure {
+                                    Logger.warn("[SensorHook] dynamic dispatchSensorEvent callback failed; disabling SENSOR domain", it)
+                                    DomainGuard.disableDomain(DomainGuard.Domain.SENSOR,
+                                        "dynamic dispatch callback failed: ${it.javaClass.simpleName}: ${it.message ?: ""}")
+                                    DomainGuard.reportCrash(DomainGuard.Domain.SENSOR, it)
+                                }
                             }
                         })
-                        Logger.debug("Hooked dispatchSensorEvent (dynamic) in ${clazz.name}")
+                        Logger.info("[SensorHook] passive dispatch hook installed dynamically: ${clazz.name}#${method.name}${method.parameterTypes.joinToString(prefix = "(", postfix = ")") { it.simpleName }}")
+                    } else {
+                        Logger.warn("[SensorHook] dispatchSensorEvent not found in candidate ${clazz.name}")
                     }
                 } catch (e2: Throwable) {
-                    Logger.error("Failed to hook dispatchSensorEvent in ${clazz.name}", e2)
+                    Logger.error("[SensorHook] Failed to hook dispatchSensorEvent in ${clazz.name}", e2)
                 }
             }
         }
     }
 
     private fun handleDispatchSensorEvent(param: de.robv.android.xposed.XC_MethodHook.MethodHookParam) {
-        if (!FakeLoc.sensorData.hookSensor) return
-        if (!FakeLoc.sensorData.enableStepCountMock && !FakeLoc.sensorData.enableShakeMock) return
+        if (DomainGuard.isDomainDisabled(DomainGuard.Domain.SENSOR)) {
+            logOnce("dispatch.domainDisabled", "[SensorHook] passive dispatch skipped: SENSOR domain disabled")
+            return
+        }
+        if (!FakeLoc.sensorData.hookSensor) {
+            logOnce("dispatch.disabled", "[SensorHook] passive dispatch skipped: hookSensor=false")
+            return
+        }
+        if (!FakeLoc.sensorData.enableStepCountMock && !FakeLoc.sensorData.enableShakeMock && !FakeLoc.sensorData.enableMotionMock) {
+            logOnce("dispatch.noMode", "[SensorHook] passive dispatch skipped: step/shake/motion all disabled")
+            return
+        }
 
         val eventQueue = param.thisObject
 
@@ -195,6 +239,7 @@ object SystemSensorManagerHook {
         try {
             val listener = XposedHelpers.getObjectField(eventQueue, "mListener")
             if (listener != null && listener.javaClass.name.contains("RealSensorListener")) {
+                logOnce("dispatch.realListener", "[SensorHook] passive dispatch ignored RealSensorListener=${listener.javaClass.name}")
                 return
             }
         } catch (e: Throwable) {
@@ -236,16 +281,17 @@ object SystemSensorManagerHook {
                 }
                 if (sensor != null) {
                     sensorHandleMap[handle] = sensor.type
-                    if (FakeLoc.enableDebugLog) {
-                        Logger.debug("Queue: Mapped handle $handle to type ${sensor.type}")
-                    }
+                    logOnce("dispatch.map.$handle", "[SensorHook] passive handle mapped: handle=$handle type=${sensor.type} name=${sensor.name}")
                 }
             } catch (e: Throwable) {
-                Logger.error("Error identifying sensor handle $handle", e)
+                Logger.error("[SensorHook] Error identifying sensor handle $handle", e)
             }
         }
 
-        val type = sensorHandleMap[handle] ?: return
+        val type = sensorHandleMap[handle] ?: run {
+            logOnce("dispatch.unmapped.$handle", "[SensorHook] passive dispatch skipped: unknown sensor handle=$handle")
+            return
+        }
 
         // 节流：doze/screen off/background 时降低频率
         val minIntervalMs = when {
@@ -259,34 +305,46 @@ object SystemSensorManagerHook {
             val lastMs = lastHookTimeMap[handle] ?: 0L
             if (nowMs - lastMs < minIntervalMs) {
                 param.result = 0
+                logOnce("dispatch.throttle.$type", "[SensorHook] passive dispatch throttled: type=$type interval=$minIntervalMs idle=${FakeLoc.isDeviceIdleMode} screenOff=${FakeLoc.isScreenOff} background=${FakeLoc.isAppInBackground}")
                 return
             }
             lastHookTimeMap[handle] = nowMs
         }
-
         val nowMs = SystemClock.elapsedRealtime()
-
-        // 运动传感器：in-place 覆盖 values
         if (isMotionSensor(type)) {
-            if (FakeLoc.sensorData.enableStepCountMock) {
+            if (FakeLoc.sensorData.enableShakeMock && type == Sensor.TYPE_ACCELEROMETER) {
+                getMockShakeAccelValues(nowMs, values)
+                logOnce("dispatch.shake.$type", "[SensorHook] passive IMU replaced by shake waveform: type=$type")
+            } else if (FakeLoc.sensorData.enableMotionMock) {
                 if (FakeLoc.sensorData.keepWalkingWaveform) {
                     getMockMotionValues(type, nowMs, values)
+                    logOnce("dispatch.motion.walk.$type", "[SensorHook] passive IMU replaced by walking waveform: type=$type")
                 } else {
                     getMockStaticValues(type, nowMs, values)
+                    logOnce("dispatch.motion.static.$type", "[SensorHook] passive IMU replaced by static waveform: type=$type")
                 }
-            } else if (FakeLoc.sensorData.enableShakeMock && type == Sensor.TYPE_ACCELEROMETER) {
-                getMockShakeAccelValues(nowMs, values)
+            } else {
+                logOnce("dispatch.motion.pass.$type", "[SensorHook] passive IMU passed through: enableMotionMock=false type=$type")
             }
         } else if (type == Sensor.TYPE_STEP_COUNTER) {
             if (FakeLoc.sensorData.enableStepCountMock) {
                 // 用自增计数器覆盖，避免真实步数泄漏
                 val valueToUse = if (mCurrentStepCount > 0) mCurrentStepCount else values[0].toLong()
                 values[0] = valueToUse.toFloat()
+                logOnce("dispatch.stepCounter", "[SensorHook] passive step counter replaced: current=$mCurrentStepCount goal=$mStepGoalEnd")
             }
         } else if (type == Sensor.TYPE_STEP_DETECTOR) {
             if (FakeLoc.sensorData.enableStepCountMock) {
-                // 抑制真实步检测事件，避免双重计数
-                param.result = 1
+                // 按步进频率概率产生步检测事件
+                val freqHz = FakeLoc.gaitData.gaitFreq.coerceIn(0.6f, 4.0f)
+                val probability = (freqHz * 0.5f).coerceAtMost(0.8f)
+                if (kotlin.random.Random.nextFloat() < probability) {
+                    values[0] = 1.0f
+                    logOnce("dispatch.stepDetector.hit", "[SensorHook] passive step detector emitted: freq=$freqHz probability=$probability")
+                } else {
+                    param.result = 1
+                    logOnce("dispatch.stepDetector.drop", "[SensorHook] passive step detector suppressed: freq=$freqHz probability=$probability")
+                }
             }
         }
     }
@@ -296,16 +354,19 @@ object SystemSensorManagerHook {
     private fun hookSystemSensorManager(classLoader: ClassLoader) {
         val cSystemSensorManager = XposedHelpers.findClassIfExists("android.hardware.SystemSensorManager", classLoader)
         if (cSystemSensorManager == null) {
-            if (FakeLoc.enableDebugLog) {
-                Logger.debug("Failed to find SystemSensorManager")
-            }
+            Logger.warn("[SensorHook] Failed to find SystemSensorManager")
             return
         }
+        Logger.info("[SensorHook] SystemSensorManager found: ${cSystemSensorManager.name}, methods=${cSystemSensorManager.declaredMethods.size}")
 
         val hookRegisterListenerImpl = beforeHook {
-            val listener = args[0] as SensorEventListener
+            val listener = args.getOrNull(0) as? SensorEventListener ?: run {
+                Logger.warn("[SensorHook] registerListenerImpl skipped: listener is null or invalid")
+                return@beforeHook
+            }
             // 排除 RealSensorListener
             if (listener.javaClass.name.contains("RealSensorListener")) {
+                logOnce("register.realListener", "[SensorHook] registerListenerImpl ignored RealSensorListener=${listener.javaClass.name}")
                 return@beforeHook
             }
 
@@ -314,13 +375,15 @@ object SystemSensorManagerHook {
             }
 
             val sensor = args[1] as? Sensor ?: return@beforeHook
+            logOnce("register.${listener.javaClass.name}.${sensor.type}", "[SensorHook] registerListenerImpl hit: listener=${listener.javaClass.name}, sensorType=${sensor.type}, sensor=${sensor.name}, delay=${args.getOrNull(2)}")
 
             // 缓存 handle -> type
             try {
                 val handle = XposedHelpers.getIntField(sensor, "mHandle")
                 sensorHandleMap[handle] = sensor.type
+                logOnce("register.handle.$handle", "[SensorHook] register mapped handle=$handle type=${sensor.type} name=${sensor.name}")
             } catch (e: Throwable) {
-                // 忽略
+                Logger.warn("[SensorHook] register failed to read sensor handle for type=${sensor.type}", e)
             }
 
             // listenerMap 支持多传感器
@@ -331,7 +394,10 @@ object SystemSensorManagerHook {
 
             // onSensorChanged hook：用 event.sensor.type 定位类型（而非 listenerMap 查找）
             listener.javaClass.onceHookAllMethod("onSensorChanged", beforeHook {
-                if (!FakeLoc.sensorData.hookSensor) return@beforeHook
+                if (!FakeLoc.sensorData.hookSensor) {
+                    logOnce("listener.disabled", "[SensorHook] listener onSensorChanged skipped: hookSensor=false")
+                    return@beforeHook
+                }
 
                 val event = args[0] as? SensorEvent ?: return@beforeHook
                 val sensorType = event.sensor.type
@@ -342,63 +408,85 @@ object SystemSensorManagerHook {
                 val nowMs = SystemClock.elapsedRealtime()
 
                 if (isMotionSensor(sensorType)) {
-                    if (FakeLoc.sensorData.enableStepCountMock) {
+                    if (FakeLoc.sensorData.enableShakeMock && sensorType == Sensor.TYPE_ACCELEROMETER) {
+                        getMockShakeAccelValues(nowMs, event.values)
+                        logOnce("listener.shake.$sensorType", "[SensorHook] listener IMU replaced by shake waveform: type=$sensorType")
+                    } else if (FakeLoc.sensorData.enableMotionMock) {
                         if (FakeLoc.sensorData.keepWalkingWaveform) {
                             getMockMotionValues(sensorType, nowMs, event.values)
+                            logOnce("listener.motion.walk.$sensorType", "[SensorHook] listener IMU replaced by walking waveform: type=$sensorType")
                         } else {
                             getMockStaticValues(sensorType, nowMs, event.values)
+                            logOnce("listener.motion.static.$sensorType", "[SensorHook] listener IMU replaced by static waveform: type=$sensorType")
                         }
-                    } else if (FakeLoc.sensorData.enableShakeMock && sensorType == Sensor.TYPE_ACCELEROMETER) {
-                        getMockShakeAccelValues(nowMs, event.values)
+                    } else {
+                        logOnce("listener.motion.pass.$sensorType", "[SensorHook] listener IMU passed through: enableMotionMock=false type=$sensorType")
                     }
                 } else if (sensorType == Sensor.TYPE_STEP_COUNTER) {
                     if (FakeLoc.sensorData.enableStepCountMock) {
                         val valueToUse = if (mCurrentStepCount > 0) mCurrentStepCount else event.values[0].toLong()
                         event.values[0] = valueToUse.toFloat()
+                        logOnce("listener.stepCounter", "[SensorHook] listener step counter replaced: current=$mCurrentStepCount goal=$mStepGoalEnd")
                     }
                 }
             })
         }
-        cSystemSensorManager.declaredMethods.filter {
+        val registerMethods = cSystemSensorManager.declaredMethods.filter {
             it.name == "registerListenerImpl" && it.parameterTypes.isNotEmpty()
                     && it.parameterTypes[0] == SensorEventListener::class.java
                     && it.parameterTypes[1] == Sensor::class.java
-        }.forEach {
+        }
+        if (registerMethods.isEmpty()) {
+            Logger.warn("[SensorHook] registerListenerImpl target overload not found")
+        }
+        registerMethods.forEach {
             it.onceHook(hookRegisterListenerImpl)
+            Logger.info("[SensorHook] hooked registerListenerImpl ${it.parameterTypes.joinToString(prefix = "(", postfix = ")") { type -> type.simpleName }}")
         }
 
         val hookUnregisterListenerImpl = beforeHook {
-            val listener = args[0] as SensorEventListener
+            val listener = args.getOrNull(0) as? SensorEventListener ?: run {
+                Logger.warn("[SensorHook] unregisterListenerImpl skipped: listener is null or invalid")
+                return@beforeHook
+            }
             if (FakeLoc.enableDebugLog) {
                 Logger.debug("UnregisterListenerImpl: $listener")
             }
             val sensor = if (args.size > 1) args[1] as? Sensor else null
             if (sensor == null) {
                 listenerMap.remove(listener)
+                logOnce("unregister.all.${listener.javaClass.name}", "[SensorHook] unregisterListenerImpl removed listener=${listener.javaClass.name}")
             } else {
                 listenerMap[listener]?.removeIf { it.type == sensor.type }
                 if (listenerMap[listener]?.isEmpty() == true) {
                     listenerMap.remove(listener)
                 }
+                logOnce("unregister.${listener.javaClass.name}.${sensor.type}", "[SensorHook] unregisterListenerImpl removed sensorType=${sensor.type} listener=${listener.javaClass.name}")
             }
         }
-        cSystemSensorManager.declaredMethods.filter {
+        val unregisterMethods = cSystemSensorManager.declaredMethods.filter {
             it.name == "unregisterListenerImpl" && it.parameterTypes.isNotEmpty()
                     && it.parameterTypes[0] == SensorEventListener::class.java
-        }.forEach {
+        }
+        if (unregisterMethods.isEmpty()) {
+            Logger.warn("[SensorHook] unregisterListenerImpl target overload not found")
+        }
+        unregisterMethods.forEach {
             it.onceHook(hookUnregisterListenerImpl)
+            Logger.info("[SensorHook] hooked unregisterListenerImpl ${it.parameterTypes.joinToString(prefix = "(", postfix = ")") { type -> type.simpleName }}")
         }
 
-        cSystemSensorManager.hookAllMethods("getSensorList", afterHook {
+        val getSensorListHooks = cSystemSensorManager.hookAllMethods("getSensorList", afterHook {
             if (FakeLoc.enableDebugLog) {
                 Logger.debug("getSensorList: type: ${args[0]} -> $result")
             }
         })
-        cSystemSensorManager.hookAllMethods("getFullSensorsList", afterHook {
+        val getFullSensorsListHooks = cSystemSensorManager.hookAllMethods("getFullSensorsList", afterHook {
             if (FakeLoc.enableDebugLog) {
                 Logger.debug("getFullSensorsList-> $result")
             }
         })
+        Logger.info("[SensorHook] hooked sensor list methods: getSensorList=${getSensorListHooks.size}, getFullSensorsList=${getFullSensorsListHooks.size}")
     }
 
     // ==================== Mock 值生成 ====================
@@ -515,6 +603,7 @@ object SystemSensorManagerHook {
             val deltaMs = if (lastStepAdvanceMs == 0L) 500L else (now - lastStepAdvanceMs).coerceAtMost(2000L)
             advanceStepCounter(deltaMs)
             lastStepAdvanceMs = now
+            ensureStepEventPusher()
         }
     }
 
@@ -712,6 +801,135 @@ object SystemSensorManagerHook {
     }
 
     fun getCurrentStepCount(): Long = mCurrentStepCount
+
+    // ==================== 步数主动事件推送 ====================
+
+    /**
+     * 启动步数主动事件推送线程。
+     * 当enableStepCountMock开启且无硬件事件时，主动向注册的listener推送TYPE_STEP_COUNTER事件。
+     */
+    private fun ensureStepEventPusher() {
+        synchronized(stepEventLock) {
+            if (stepEventThread?.isAlive == true) {
+                logOnce("stepPusher.already", "[SensorHook] active StepEventPusher already running")
+                return
+            }
+            if (!FakeLoc.sensorData.enableStepCountMock) {
+                logOnce("stepPusher.disabled", "[SensorHook] active StepEventPusher skipped: enableStepCountMock=false")
+                return
+            }
+
+            stepEventThread = Thread({
+                Logger.info("[SensorHook] active StepEventPusher loop started")
+                var idlePolls = 0
+                var consecutiveErrors = 0
+                while (!Thread.currentThread().isInterrupted && FakeLoc.sensorData.enableStepCountMock) {
+                    if (DomainGuard.isDomainDisabled(DomainGuard.Domain.SENSOR)) {
+                        Logger.warn("[SensorHook] active StepEventPusher stopped: SENSOR domain disabled")
+                        break
+                    }
+                    try {
+                        Thread.sleep(STEP_PUSH_INTERVAL_MS)
+
+                        val currentCount = mCurrentStepCount
+                        if (currentCount <= 0) {
+                            logOnce("stepPusher.noCount", "[SensorHook] active StepEventPusher waiting: current step count is 0")
+                            continue
+                        }
+
+                        var delivered = 0
+                        var stepListeners = 0
+                        for ((listener, sensors) in listenerMap.entries) {
+                            if (sensors.any { it.type == Sensor.TYPE_STEP_COUNTER }) {
+                                stepListeners += 1
+                                val event = createStepCounterEvent(currentCount.toFloat())
+                                if (event != null) {
+                                    try {
+                                        listener.onSensorChanged(event)
+                                        delivered++
+                                    } catch (t: Throwable) {
+                                        listenerMap.remove(listener)
+                                        consecutiveErrors += 1
+                                        Logger.warn("[SensorHook] active StepEventPusher listener failed and was removed: ${listener.javaClass.name}", t)
+                                        DomainGuard.reportCrash(DomainGuard.Domain.SENSOR, t)
+                                        if (consecutiveErrors >= STEP_PUSH_ERROR_LIMIT) {
+                                            DomainGuard.disableDomain(
+                                                DomainGuard.Domain.SENSOR,
+                                                "StepEventPusher listener failures >= $STEP_PUSH_ERROR_LIMIT",
+                                            )
+                                            break
+                                        }
+                                    }
+                                } else {
+                                    logOnce("stepPusher.eventNull", "[SensorHook] active StepEventPusher could not create SensorEvent")
+                                }
+                            }
+                        }
+                        if (DomainGuard.isDomainDisabled(DomainGuard.Domain.SENSOR)) {
+                            break
+                        }
+                        if (delivered > 0) {
+                            consecutiveErrors = 0
+                            idlePolls = 0
+                            logOnce("stepPusher.delivered", "[SensorHook] active StepEventPusher delivered first event: listeners=$delivered step=$currentCount")
+                        } else if (stepListeners == 0) {
+                            idlePolls += 1
+                            if (idlePolls >= STEP_PUSH_IDLE_LIMIT) {
+                                Logger.info("[SensorHook] active StepEventPusher stopped: no STEP_COUNTER listeners after ${idlePolls * STEP_PUSH_INTERVAL_MS}ms")
+                                break
+                            }
+                            logOnce("stepPusher.noListener", "[SensorHook] active StepEventPusher found no STEP_COUNTER listeners; registered=${listenerMap.size}")
+                        } else {
+                            idlePolls = 0
+                        }
+                    } catch (e: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                        break
+                    } catch (e: Throwable) {
+                        consecutiveErrors += 1
+                        Logger.warn("[SensorHook] active StepEventPusher error", e)
+                        DomainGuard.reportCrash(DomainGuard.Domain.SENSOR, e)
+                        if (consecutiveErrors >= STEP_PUSH_ERROR_LIMIT) {
+                            DomainGuard.disableDomain(
+                                DomainGuard.Domain.SENSOR,
+                                "StepEventPusher loop failures >= $STEP_PUSH_ERROR_LIMIT",
+                            )
+                            break
+                        }
+                    }
+                }
+                Logger.info("[SensorHook] active StepEventPusher loop stopped: enableStepCountMock=${FakeLoc.sensorData.enableStepCountMock}")
+                synchronized(stepEventLock) {
+                    if (stepEventThread === Thread.currentThread()) {
+                        stepEventThread = null
+                    }
+                }
+            }, "StepEventPusher")
+            stepEventThread?.isDaemon = true
+            stepEventThread?.start()
+            Logger.info("[SensorHook] active StepEventPusher thread started")
+        }
+    }
+
+    private fun createStepCounterEvent(stepCount: Float): SensorEvent? {
+        return runCatching {
+            val sensorManager = XposedHelpers.callStaticMethod(
+                XposedHelpers.findClass("android.hardware.SystemSensorManager", null),
+                "getInstance",
+                FakeLoc.getContext()
+            )
+            val defaultSensor = XposedHelpers.callMethod(sensorManager, "getDefaultSensor", Sensor.TYPE_STEP_COUNTER) as? Sensor
+                ?: return@runCatching null
+
+            val ctor = SensorEvent::class.java.getDeclaredConstructors().firstOrNull()
+                ?: return@runCatching null
+            ctor.isAccessible = true
+            val event = ctor.newInstance(defaultSensor, 0, floatArrayOf(stepCount), SystemClock.elapsedRealtimeNanos(), 3) as SensorEvent
+            event
+        }.onFailure {
+            Logger.warn("[SensorHook] createStepCounterEvent failed", it)
+        }.getOrNull()
+    }
 
     // ==================== Geo Sensor 解锁 ====================
 

@@ -3,6 +3,7 @@ package tv.kyshu.service
 import android.annotation.SuppressLint
 import android.content.Context
 import android.location.LocationManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
@@ -50,6 +51,7 @@ import java.util.concurrent.Callable
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
@@ -66,12 +68,12 @@ private object MockServiceProbe {
     private val suppressedMoveIpcLogs = AtomicInteger(0)
 
     fun init(result: String, detail: String = "") {
-        XLog.d(TAG, "$PREFIX [INIT] $result ${detail.trim()}".trim())
+        XLog.i(TAG, "$PREFIX [INIT] $result ${detail.trim()}".trim())
     }
 
     fun ipcSent(command: String, detail: String = "") {
         if (command == "move") return
-        XLog.d(TAG, "$PREFIX [IPC_SENT] $command ${detail.trim()}".trim())
+        XLog.i(TAG, "$PREFIX [IPC_SENT] $command ${detail.trim()}".trim())
     }
 
     fun ipcResult(command: String, success: Boolean, detail: String = "") {
@@ -90,14 +92,18 @@ private object MockServiceProbe {
             }
             val suppressed = suppressedMoveIpcLogs.getAndSet(0)
             val suffix = if (suppressed > 0) " suppressed=$suppressed/${MOVE_IPC_LOG_INTERVAL_MS / 1000}s" else ""
-            XLog.d(TAG, "$PREFIX [IPC_RCVD] $command -> $status$suffix")
+            XLog.i(TAG, "$PREFIX [IPC_RCVD] $command -> $status$suffix")
             return
         }
-        XLog.d(TAG, "$PREFIX [IPC_RCVD] $command -> $status ${detail.trim()}".trim())
+        XLog.i(TAG, "$PREFIX [IPC_RCVD] $command -> $status ${detail.trim()}".trim())
     }
 
     fun configSync(detail: String) {
-        XLog.d(TAG, "$PREFIX [CONFIG_SYNC] $detail")
+        XLog.i(TAG, "$PREFIX [CONFIG_SYNC] $detail")
+    }
+
+    fun startup(detail: String) {
+        XLog.i(TAG, "$PREFIX [STARTUP_DIAG] $detail")
     }
 
     fun error(msg: String, e: Throwable? = null) {
@@ -119,10 +125,13 @@ object MockServiceHelper {
             val derived = tv.kyshu.xposed.utils.ChannelIdentity.providerName
             return if (derived.isNotBlank()) derived else "cmd"
         }
+    private const val MAX_IN_FLIGHT_IPC = 2
     private lateinit var randomKey: String
     private var commandSequence: Long = 0
-    private val sendCommandExecutor = Executors.newSingleThreadExecutor { runnable ->
-        Thread(runnable, "Svc-IPC-Timeout").apply { isDaemon = true }
+    private val activeIpcCalls = AtomicInteger(0)
+    private val ipcThreadIds = AtomicInteger(0)
+    private val sendCommandExecutor = Executors.newCachedThreadPool { runnable ->
+        Thread(runnable, "Svc-IPC-${ipcThreadIds.incrementAndGet()}").apply { isDaemon = true }
     }
 
     /** Wraps sendExtraCommand with a timeout to prevent permanent Binder blocking. */
@@ -132,15 +141,44 @@ object MockServiceHelper {
         bundle: Bundle,
         timeoutMs: Long = 5000L
     ): Boolean {
-        return try {
-            val future = sendCommandExecutor.submit(Callable<Boolean> {
-                locationManager.sendExtraCommand(PROVIDER_NAME, command, bundle)
+        val inFlight = activeIpcCalls.incrementAndGet()
+        if (inFlight > MAX_IN_FLIGHT_IPC) {
+            activeIpcCalls.decrementAndGet()
+            MockServiceProbe.warn("sendExtraCommand skipped because IPC pool is saturated command=$command active=$inFlight")
+            return false
+        }
+        val permitReleased = AtomicBoolean(false)
+        fun releaseIpcPermit() {
+            if (permitReleased.compareAndSet(false, true)) {
+                activeIpcCalls.decrementAndGet()
+            }
+        }
+        val future = try {
+            sendCommandExecutor.submit(Callable<Boolean> {
+                try {
+                    locationManager.sendExtraCommand(PROVIDER_NAME, command, bundle)
+                } finally {
+                    releaseIpcPermit()
+                }
             })
+        } catch (e: Throwable) {
+            releaseIpcPermit()
+            MockServiceProbe.error("sendExtraCommand submit failed for command=$command", e)
+            return false
+        }
+        return try {
             future.get(timeoutMs, TimeUnit.MILLISECONDS)
         } catch (e: TimeoutException) {
+            future.cancel(true)
             MockServiceProbe.warn("sendExtraCommand timed out (${timeoutMs}ms) for command=$command")
             false
+        } catch (e: InterruptedException) {
+            future.cancel(true)
+            Thread.currentThread().interrupt()
+            MockServiceProbe.warn("sendExtraCommand interrupted for command=$command")
+            false
         } catch (e: Exception) {
+            future.cancel(true)
             MockServiceProbe.error("sendExtraCommand failed for command=$command", e)
             false
         }
@@ -156,6 +194,7 @@ object MockServiceHelper {
     private fun sendAuthenticated(
         locationManager: LocationManager,
         commandId: String,
+        timeoutMs: Long = 5000L,
         bundleBuilder: Bundle.() -> Unit
     ): Pair<Boolean, Bundle> {
         if (!::randomKey.isInitialized) {
@@ -179,7 +218,7 @@ object MockServiceHelper {
         }
 
         MockServiceProbe.ipcSent(commandId)
-        val result = sendWithTimeout(locationManager, randomKey, bundle)
+        val result = sendWithTimeout(locationManager, randomKey, bundle, timeoutMs)
         MockServiceProbe.ipcResult(commandId, result)
         if (result && !RemoteCommandSecurity.decryptSensitivePayload(bundle, randomKey)) {
             MockServiceProbe.warn("sendAuthenticated: response decrypt failed for $commandId")
@@ -188,10 +227,10 @@ object MockServiceHelper {
         return result to bundle
     }
 
-    fun tryInitService(locationManager: LocationManager) {
+    fun tryInitService(locationManager: LocationManager, timeoutMs: Long = 5000L) {
         val rely = Bundle()
         MockServiceProbe.init("exchange_key_start")
-        if(sendWithTimeout(locationManager, "exchange_key", rely)) {
+        if(sendWithTimeout(locationManager, "exchange_key", rely, timeoutMs)) {
             val sessionKey = RemoteCommandSecurity.decryptSessionKey(rely)
             if (sessionKey != null) {
                 randomKey = sessionKey
@@ -212,6 +251,11 @@ object MockServiceHelper {
 
     fun ping(locationManager: LocationManager): Boolean {
         val (ok, rely) = sendAuthenticated(locationManager, "ping") {}
+        return ok && rely.getString("pong") == "pong"
+    }
+
+    private fun ping(locationManager: LocationManager, timeoutMs: Long): Boolean {
+        val (ok, rely) = sendAuthenticated(locationManager, "ping", timeoutMs) {}
         return ok && rely.getString("pong") == "pong"
     }
 
@@ -389,6 +433,49 @@ object MockServiceHelper {
         return if (ok) rely else null
     }
 
+    fun diagnoseInterfaces(context: Context, reason: String): Bundle {
+        XLog.init(context.applicationContext ?: context)
+        val report = Bundle().apply {
+            putString("reason", reason)
+            putString("provider_name", PROVIDER_NAME)
+            putString("sdk", Build.VERSION.SDK_INT.toString())
+            putBoolean("session_initialized_before", ::randomKey.isInitialized)
+        }
+        MockServiceProbe.startup(
+            "reason=$reason provider=$PROVIDER_NAME sdk=${Build.VERSION.SDK_INT} " +
+                "session=${::randomKey.isInitialized}"
+        )
+
+        val providerOk = diagnoseConfigProvider(context, report)
+        val locationManager = runCatching {
+            context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
+        }.onFailure {
+            MockServiceProbe.warn("diagnoseInterfaces: LocationManager unavailable: ${it.message}")
+        }.getOrNull()
+        if (locationManager == null) {
+            report.putBoolean("location_manager", false)
+            report.putBoolean("extra_command", false)
+            report.putBoolean("ping", false)
+            MockServiceProbe.startup("result reason=$reason providerOk=$providerOk locationManager=false")
+            return report
+        }
+
+        report.putBoolean("location_manager", true)
+        if (!::randomKey.isInitialized) {
+            tryInitService(locationManager, timeoutMs = 1500L)
+        }
+        val extraCommandOk = ::randomKey.isInitialized
+        report.putBoolean("extra_command", extraCommandOk)
+        val pingOk = if (extraCommandOk) ping(locationManager, timeoutMs = 1500L) else false
+        report.putBoolean("ping", pingOk)
+        report.putBoolean("session_initialized_after", ::randomKey.isInitialized)
+        MockServiceProbe.startup(
+            "result reason=$reason providerOk=$providerOk locationManager=true " +
+                "extraCommand=$extraCommandOk ping=$pingOk session=${::randomKey.isInitialized}"
+        )
+        return report
+    }
+
     fun isServiceInit(): Boolean {
         return ::randomKey.isInitialized
     }
@@ -561,5 +648,38 @@ object MockServiceHelper {
             MockServiceProbe.error("sendCommandWithFallback: ContentProvider fallback also failed for $commandId")
         }
         return fallbackOk
-}
+    }
+
+    private fun diagnoseConfigProvider(context: Context, report: Bundle): Boolean {
+        return kotlin.runCatching {
+            val uri = Uri.parse("content://tv.kyshu.xposed.config/config")
+            val cursor = context.contentResolver.query(uri, null, null, null, null)
+            cursor?.use {
+                val keyIndex = it.getColumnIndex("key")
+                var count = 0
+                val keys = mutableListOf<String>()
+                while (it.moveToNext()) {
+                    count++
+                    if (keyIndex >= 0 && keys.size < 12) {
+                        keys.add(it.getString(keyIndex))
+                    }
+                }
+                report.putBoolean("config_provider", true)
+                report.putInt("config_provider_rows", count)
+                report.putString("config_provider_keys", keys.joinToString(","))
+                MockServiceProbe.startup("configProvider=OK rows=$count keys=${keys.joinToString(",")}")
+                true
+            } ?: run {
+                report.putBoolean("config_provider", false)
+                report.putString("config_provider_error", "null_cursor")
+                MockServiceProbe.warn("diagnoseInterfaces: ConfigProvider returned null cursor")
+                false
+            }
+        }.getOrElse {
+            report.putBoolean("config_provider", false)
+            report.putString("config_provider_error", it.javaClass.simpleName + ":" + (it.message ?: ""))
+            MockServiceProbe.warn("diagnoseInterfaces: ConfigProvider failed: ${it.javaClass.simpleName}: ${it.message}")
+            false
+        }
+    }
 }

@@ -117,6 +117,21 @@ object DomainGuard {
         Logger.info("[DomainGuard] ${domain.label} guard reset")
     }
 
+    fun disableDomain(domain: Domain, reason: String) {
+        val state = domains.getOrPut(domain) { DomainState() }
+        state.disabled.set(1)
+        val msg = "[DomainGuard] ${domain.label} DISABLED: $reason"
+        Logger.forceLogging = true
+        Logger.error(msg)
+        LogRouter.error("DomainGuard", msg)
+        CrashForensics.skip(domain.label, "DOMAIN_DISABLED")
+        FlightRecorder.crashMarker(
+            stepId = "LIFECYCLE",
+            detail = "DOMAIN_DISABLED",
+            extra = mapOf("domain" to domain.label, "reason" to reason),
+        )
+    }
+
     fun resetAll() {
         domains.clear()
         Logger.info("[DomainGuard] all domains reset")

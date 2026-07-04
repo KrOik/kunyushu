@@ -16,66 +16,104 @@ import tv.kyshu.xposed.utils.afterHook
 import tv.kyshu.xposed.utils.hookAllMethods
 import tv.kyshu.xposed.utils.hookMethodAfter
 import tv.kyshu.xposed.utils.toClass
+import tv.kyshu.xposed.utils.onceHookAllMethod
+import tv.kyshu.xposed.utils.onceHookBefore
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.random.Random
 
 object WlanHook {
     private const val MAX_MOCK_SCAN_RESULTS = 32
+    private val diagnosticKeys = ConcurrentHashMap.newKeySet<String>()
+
+    private fun logOnce(key: String, message: String) {
+        if (diagnosticKeys.add(key)) {
+            Logger.info(message)
+        }
+    }
 
     operator fun invoke(classLoader: ClassLoader) {
+        Logger.info("[WlanHook] install start: sdk=${Build.VERSION.SDK_INT}, hookWifi=${FakeLoc.hookWifi}, enableMockWifi=${FakeLoc.enableMockWifi}, classLoader=$classLoader")
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             val cSystemServerClassLoaderFactory = XposedHelpers.findClassIfExists("com.android.internal.os.SystemServerClassLoaderFactory", classLoader)
             if (cSystemServerClassLoaderFactory == null) {
-                Logger.warn("Failed to find SystemServerClassLoaderFactory")
+                Logger.warn("[WlanHook] Failed to find SystemServerClassLoaderFactory")
                 return
             }
             val sLoadedPaths = XposedHelpers.getStaticObjectField(cSystemServerClassLoaderFactory, "sLoadedPaths") as ArrayMap<String, PathClassLoader>
+            Logger.info("[WlanHook] SystemServerClassLoaderFactory paths=${sLoadedPaths.keys.joinToString(limit = 8)}")
             val wifiClassLoader = sLoadedPaths.firstNotNullOfOrNull {
                 if (it.key.contains("service-wifi.jar")) it.value else null
             }
             if (wifiClassLoader == null) {
-                Logger.warn("Failed to find wifiClassLoader")
+                Logger.warn("[WlanHook] Failed to find wifiClassLoader for service-wifi.jar")
                 return
             }
+            Logger.info("[WlanHook] wifiClassLoader resolved: $wifiClassLoader")
             val wifiClazz = "com.android.server.wifi.WifiServiceImpl".toClass(wifiClassLoader)
             if (wifiClazz == null) {
-                Logger.warn("Failed to find WifiServiceImpl class")
+                Logger.warn("[WlanHook] Failed to find WifiServiceImpl class with wifiClassLoader")
                 return
             }
             hookWifiServiceImpl(wifiClazz)
+            hookWifiScannerService(wifiClassLoader, "wifiClassLoader")
         } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             val cSystemServiceManager = XposedHelpers.findClassIfExists("com.android.server.SystemServiceManager", classLoader)
             if (cSystemServiceManager == null) {
-                Logger.warn("Failed to find SystemServiceManager")
+                Logger.warn("[WlanHook] Failed to find SystemServiceManager")
                 return
             }
-            cSystemServiceManager.hookAllMethods("loadClassFromLoader", afterHook {
+            val count = cSystemServiceManager.hookAllMethods("loadClassFromLoader", afterHook {
                 if (args[0] == "com.android.server.wifi.WifiService") {
                     kotlin.runCatching {
                         val classloader = args[1] as PathClassLoader
                         val wifiClazz = classloader.loadClass("com.android.server.wifi.WifiServiceImpl")
+                        Logger.info("[WlanHook] WifiService loaded via SystemServiceManager: loader=$classloader")
                         hookWifiServiceImpl(wifiClazz)
+                        hookWifiScannerService(classloader, "wifiServiceLoader")
                     }.onFailure {
-                        Logger.error("Failed to hook WifiService", it)
+                        Logger.error("[WlanHook] Failed to hook WifiService", it)
                     }
                 }
             })
+            Logger.info("[WlanHook] hooked SystemServiceManager.loadClassFromLoader overloads=${count.size}")
+        }
+
+        // Android 12+ hook WifiScannerService for scan results
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            hookWifiScannerService(classLoader, "systemClassLoader")
         }
     }
 
 	    private fun hookWifiServiceImpl(wifiClazz: Class<*>) {
-	        if (!FakeLoc.hookWifi) return
+	        if (!FakeLoc.hookWifi) {
+            Logger.warn("[WlanHook] WifiServiceImpl hook skipped: hookWifi=false")
+            return
+        }
+        Logger.info("[WlanHook] hooking WifiServiceImpl: ${wifiClazz.name}, loader=${wifiClazz.classLoader}, methods=${wifiClazz.declaredMethods.size}")
 
         // 使用 afterHook 让原方法执行，保留真实连接状态（networkId/supplicantState/linkSpeed/frequency 等），
         // 仅在副本上覆盖身份字段（MAC/BSSID/SSID/IP/RSSI），避免裸 WifiInfo 导致系统判定未连接而断网。
-        wifiClazz.hookAllMethods("getConnectionInfo", afterHook {
-            val packageName = args[0] as? String ?: return@afterHook
+        val connectionHooks = wifiClazz.hookAllMethods("getConnectionInfo", afterHook {
+            val packageName = args.firstOrNull { it is String } as? String ?: run {
+                logOnce("wifi.connection.noPackage", "[WlanHook] getConnectionInfo skipped: no package string args=${args.map { it?.javaClass?.simpleName }}")
+                return@afterHook
+            }
             if (FakeLoc.enableDebugLog)
                 Logger.debug("In getConnectionInfo with caller: $packageName, state: ${FakeLoc.enableMockWifi}")
 
-            if (!FakeLoc.enableMockWifi) return@afterHook
-            if (BinderUtils.isSystemPackages(packageName)) return@afterHook
+            if (!FakeLoc.enableMockWifi) {
+                logOnce("wifi.connection.disabled", "[WlanHook] getConnectionInfo skipped: enableMockWifi=false caller=$packageName")
+                return@afterHook
+            }
+            if (BinderUtils.isSystemPackages(packageName)) {
+                logOnce("wifi.connection.system.$packageName", "[WlanHook] getConnectionInfo skipped for system caller=$packageName")
+                return@afterHook
+            }
 
-            val realInfo = result as? WifiInfo ?: return@afterHook
+            val realInfo = result as? WifiInfo ?: run {
+                logOnce("wifi.connection.badResult", "[WlanHook] getConnectionInfo skipped: result=${result?.javaClass?.name ?: "null"}")
+                return@afterHook
+            }
             val wifiData = FakeLoc.wifiData
 
             // 优先用拷贝构造保留全部真实字段；失败则回退到空实例
@@ -110,11 +148,15 @@ object WlanHook {
             XposedHelpers.setIntField(fakeInfo, "mRssi", (-65 + wifiData.currentRssiOffset).coerceIn(-127, -1))
 
             result = fakeInfo
+            logOnce("wifi.connection.replaced.$packageName",
+                "[WlanHook] getConnectionInfo replaced: caller=$packageName ssid=$ssid bssid=$bssid mac=$mac rssi=${(-65 + wifiData.currentRssiOffset).coerceIn(-127, -1)}")
         })
+        Logger.info("[WlanHook] hooked getConnectionInfo overloads=${connectionHooks.size}")
 
-	        wifiClazz.hookAllMethods("getScanResults", afterHook {
-	            val packageName = args[0] as? String
+	        val scanHooks = wifiClazz.hookAllMethods("getScanResults", afterHook {
+	            val packageName = args.firstOrNull { it is String } as? String
             if (packageName.isNullOrEmpty()) {
+                logOnce("wifi.scan.noPackage", "[WlanHook] getScanResults skipped: no package string args=${args.map { it?.javaClass?.simpleName }}")
                 return@afterHook
             }
 
@@ -123,28 +165,117 @@ object WlanHook {
 
 	            if(FakeLoc.enableMockWifi) {
 	                if(result == null) {
+	                    logOnce("wifi.scan.null.$packageName", "[WlanHook] getScanResults skipped: null result caller=$packageName")
 	                    return@afterHook
 	                }
 
 	                val scanResults = buildMockScanResults()
 
-	                if (replaceScanResult(scanResults, "getScanResults")) return@afterHook
+	                if (replaceScanResult(scanResults, "getScanResults")) {
+                        logOnce("wifi.scan.replaced.$packageName",
+                            "[WlanHook] getScanResults replaced: caller=$packageName resultType=${result?.javaClass?.name}, fakeSize=${scanResults.size}")
+                        return@afterHook
+                    }
 
-	                if (FakeLoc.enableDebugLog) {
-	                    Logger.error("getScanResults: Unknown return type: ${result?.javaClass?.name}")
-	                }
+                    Logger.warn("[WlanHook] getScanResults unsupported return type: ${result?.javaClass?.name}")
+	            } else {
+                    logOnce("wifi.scan.disabled", "[WlanHook] getScanResults skipped: enableMockWifi=false caller=$packageName")
 	            }
 	        })
+        Logger.info("[WlanHook] hooked getScanResults overloads=${scanHooks.size}")
 
-        wifiClazz.hookAllMethods("getMatchingScanResults", afterHook {
+        val matchingHooks = wifiClazz.hookAllMethods("getMatchingScanResults", afterHook {
             val packageName = args.firstOrNull { it is String } as? String ?: return@afterHook
             if (FakeLoc.enableDebugLog)
                 Logger.debug("In getMatchingScanResults with caller: $packageName, state: ${FakeLoc.enableMockWifi}")
 
-            if (!FakeLoc.enableMockWifi || result == null) return@afterHook
-            replaceScanResult(buildMockScanResults(), "getMatchingScanResults")
+            if (!FakeLoc.enableMockWifi || result == null) {
+                logOnce("wifi.matching.skipped.$packageName", "[WlanHook] getMatchingScanResults skipped: enableMockWifi=${FakeLoc.enableMockWifi}, result=${result?.javaClass?.name ?: "null"}")
+                return@afterHook
+            }
+            val scanResults = buildMockScanResults()
+            if (replaceScanResult(scanResults, "getMatchingScanResults")) {
+                logOnce("wifi.matching.replaced.$packageName", "[WlanHook] getMatchingScanResults replaced: caller=$packageName fakeSize=${scanResults.size}")
+            }
         })
+        Logger.info("[WlanHook] hooked getMatchingScanResults overloads=${matchingHooks.size}")
 	    }
+
+    private fun hookWifiScannerService(classLoader: ClassLoader, source: String) {
+        if (!FakeLoc.hookWifi) {
+            Logger.warn("[WlanHook] WifiScannerService hook skipped from $source: hookWifi=false")
+            return
+        }
+
+        // Android 12+ WifiScannerService
+        val cWifiScannerService = XposedHelpers.findClassIfExists("com.android.server.wifi.scanner.WifiScannerService", classLoader)
+            ?: XposedHelpers.findClassIfExists("com.android.server.wifi.WifiScannerServiceImpl", classLoader)
+            ?: XposedHelpers.findClassIfExists("com.android.server.wifi.scanner.WifiScanningServiceImpl", classLoader)
+            ?: run {
+                Logger.warn("[WlanHook] WifiScannerService not found from $source loader=$classLoader")
+                return
+            }
+
+        Logger.info("[WlanHook] Found WifiScannerService from $source: ${cWifiScannerService.name}, loader=${cWifiScannerService.classLoader}")
+
+        val directHooks = cWifiScannerService.hookAllMethods("getScanResults", afterHook {
+            if (result == null || !FakeLoc.enableMockWifi) {
+                logOnce("wifi.scanner.direct.skipped.$source", "[WlanHook] WifiScannerService.getScanResults skipped: enableMockWifi=${FakeLoc.enableMockWifi}, result=${result?.javaClass?.name ?: "null"} source=$source")
+                return@afterHook
+            }
+            val scanResults = buildMockScanResults()
+            if (replaceScanResult(scanResults, "WifiScannerService.getScanResults")) {
+                logOnce("wifi.scanner.direct.replaced.$source", "[WlanHook] WifiScannerService.getScanResults replaced: source=$source fakeSize=${scanResults.size}")
+                return@afterHook
+            }
+            Logger.warn("[WlanHook] WifiScannerService.getScanResults unsupported result=${result?.javaClass?.name}")
+        })
+        Logger.info("[WlanHook] hooked WifiScannerService.getScanResults overloads=${directHooks.size} from $source")
+
+        // Also hook requestSingleScan and callback for scan results
+        val listenerMethods = cWifiScannerService.declaredMethods.filter {
+            it.name == "registerScanListener" || it.name == "registerWifiScanner"
+        }
+        if (listenerMethods.isEmpty()) {
+            Logger.warn("[WlanHook] WifiScannerService listener registration methods not found on ${cWifiScannerService.name}")
+        }
+        listenerMethods.forEach { method ->
+            method.onceHookBefore {
+                if (!FakeLoc.enableMockWifi) {
+                    logOnce("wifi.scanner.listener.disabled.$source", "[WlanHook] ${method.name} skipped: enableMockWifi=false source=$source")
+                    return@onceHookBefore
+                }
+                logOnce("wifi.scanner.listener.hit.$source.${method.name}", "[WlanHook] ${method.name} hit: args=${args.map { it?.javaClass?.name }} source=$source")
+                // Hook the listener's onScanResults/onResults callback
+                args.filterNotNull().forEach { arg ->
+                    runCatching {
+                        val listenerClass = arg.javaClass
+                        listenerClass.onceHookAllMethod("onScanResults", afterHook {
+                            if (FakeLoc.enableMockWifi && result != null) {
+                                val scanResults = buildMockScanResults()
+                                if (replaceScanResult(scanResults, "WifiScannerService.onScanResults")) {
+                                    logOnce("wifi.scanner.callback.onScanResults.${listenerClass.name}", "[WlanHook] onScanResults callback replaced: listener=${listenerClass.name} fakeSize=${scanResults.size}")
+                                    return@afterHook
+                                }
+                            }
+                        })
+                        listenerClass.onceHookAllMethod("onResults", afterHook {
+                            if (FakeLoc.enableMockWifi && result != null) {
+                                val scanResults = buildMockScanResults()
+                                if (replaceScanResult(scanResults, "WifiScannerService.onResults")) {
+                                    logOnce("wifi.scanner.callback.onResults.${listenerClass.name}", "[WlanHook] onResults callback replaced: listener=${listenerClass.name} fakeSize=${scanResults.size}")
+                                    return@afterHook
+                                }
+                            }
+                        })
+                    }.onFailure {
+                        Logger.warn("[WlanHook] Failed to hook scan listener callbacks", it)
+                    }
+                }
+            }
+            Logger.info("[WlanHook] hooked WifiScannerService listener method: ${method.name} ${method.parameterTypes.joinToString(prefix = "(", postfix = ")") { it.simpleName }}")
+        }
+    }
 
     private fun buildMockScanResults(): List<ScanResult> {
         val wifiData = FakeLoc.wifiData
