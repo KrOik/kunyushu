@@ -42,9 +42,39 @@ class HookLifecycleController(
                     Logger.warn("[HookLifecycle] START blocked: forceDisable is active")
                     false
                 } else {
-                    if (rely.containsKey("lat") && rely.containsKey("lon")) {
-                        store.latitude = rely.getDouble("lat")
-                        store.longitude = rely.getDouble("lon")
+                    val hasLat = rely.containsKey("lat")
+                    val hasLon = rely.containsKey("lon")
+                    if (hasLat != hasLon) {
+                        throw IllegalArgumentException("start requires lat/lon pair; hasLat=$hasLat hasLon=$hasLon")
+                    }
+                    val parsedLat = if (hasLat) {
+                        MockCommandContract.requireLatitude(MockCommandContract.Extract.requireDouble(rely, "lat"), "lat")
+                    } else {
+                        null
+                    }
+                    val parsedLon = if (hasLon) {
+                        MockCommandContract.requireLongitude(MockCommandContract.Extract.requireDouble(rely, "lon"), "lon")
+                    } else {
+                        null
+                    }
+                    val parsedSpeed = if (rely.containsKey("speed")) {
+                        MockCommandContract.requireSpeed(MockCommandContract.Extract.requireDouble(rely, "speed"), "speed")
+                    } else {
+                        null
+                    }
+                    val parsedAltitude = if (rely.containsKey("altitude")) {
+                        MockCommandContract.requireAltitude(MockCommandContract.Extract.requireDouble(rely, "altitude"), "altitude")
+                    } else {
+                        null
+                    }
+                    val parsedAccuracy = if (rely.containsKey("accuracy")) {
+                        MockCommandContract.requireAccuracy(MockCommandContract.Extract.requireFloat(rely, "accuracy"), "accuracy")
+                    } else {
+                        null
+                    }
+                    if (parsedLat != null && parsedLon != null) {
+                        store.latitude = parsedLat
+                        store.longitude = parsedLon
                     }
                     if (rely.containsKey("enable_mock_gnss")) {
                         store.enableMockGnss = rely.getBoolean("enable_mock_gnss")
@@ -54,9 +84,9 @@ class HookLifecycleController(
                         store.enableMockGnss = true
                     }
                     store.enable = true
-                    store.speed = rely.getDouble("speed", store.speed)
-                    store.altitude = rely.getDouble("altitude", store.altitude)
-                    store.accuracy = rely.getFloat("accuracy", store.accuracy)
+                    if (parsedSpeed != null) store.speed = parsedSpeed
+                    if (parsedAltitude != null) store.altitude = parsedAltitude
+                    if (parsedAccuracy != null) store.accuracy = parsedAccuracy
                     onStart()
                     setNativeStatus(true)
                     if (isSystemServerProcess() && store.enableMockGnss) {

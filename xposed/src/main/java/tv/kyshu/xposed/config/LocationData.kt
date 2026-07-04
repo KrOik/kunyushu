@@ -184,14 +184,21 @@ class LocationData {
      * 从配置 map 更新 [LocationData] 专属字段。
      */
     internal fun updateFromMap(map: Map<String, Any?>) {
+        val newLatitude = map.getStrictAnyVal<Double>("latitude", "latitude", "lat")?.also(::requireLatitude)
+        val newLongitude = map.getStrictAnyVal<Double>("longitude", "longitude", "lon")?.also(::requireLongitude)
+        val newAltitude = map.getStrictAnyVal<Double>("altitude", "altitude")?.also(::requireFiniteAltitude)
+        val newAccuracy = map.getStrictAnyVal<Float>("accuracy", "accuracy")?.also(::requireAccuracy)
+        val newSpeed = map.getStrictAnyVal<Double>("speed", "speed")?.also(::requireSpeed)
+        val newBearing = map.getStrictAnyVal<Double>("bearing", "bearing")?.also(::requireBearing)
+
         enableMockGnss = map.getAnyVal(enableMockGnss, "enableMockGnss", "enable_mock_gnss")
         enableNMEA = map.getAnyVal(enableNMEA, "enableNMEA", "enable_nmea")
-        latitude = map.getAnyVal(latitude, "latitude", "lat")
-        longitude = map.getAnyVal(longitude, "longitude", "lon")
-        altitude = map.getAnyVal(altitude, "altitude")
-        accuracy = map.getAnyVal(accuracy, "accuracy")
-        speed = map.getAnyVal(speed, "speed")
-        bearing = map.getAnyVal(bearing, "bearing")
+        if (newLatitude != null) latitude = newLatitude
+        if (newLongitude != null) longitude = newLongitude
+        if (newAltitude != null) altitude = newAltitude
+        if (newAccuracy != null) accuracy = newAccuracy
+        if (newSpeed != null) speed = newSpeed
+        if (newBearing != null) bearing = newBearing
         val rinexPathValue = map.getAnyVal(rinexPath ?: "", "rinexPath", "rinex_path")
         rinexPath = rinexPathValue.takeIf { it.isNotBlank() }
         enableAtmosphereJitter = map.getAnyVal(enableAtmosphereJitter, "enableAtmosphereJitter", "enable_atmosphere_jitter")
@@ -213,6 +220,42 @@ class LocationData {
             value <= 0 -> DEFAULT_MIN_SATELLITES
             value > MAX_MOCK_SATELLITES -> MAX_MOCK_SATELLITES
             else -> value
+        }
+    }
+
+    private fun requireLatitude(value: Double) {
+        if (value !in -90.0..90.0) {
+            throw ConfigParseException("Invalid config field 'latitude': out of range [-90,90], value=$value")
+        }
+    }
+
+    private fun requireLongitude(value: Double) {
+        if (value !in -180.0..180.0) {
+            throw ConfigParseException("Invalid config field 'longitude': out of range [-180,180], value=$value")
+        }
+    }
+
+    private fun requireFiniteAltitude(value: Double) {
+        if (!value.isFinite() || value < -1000.0 || value > 100000.0) {
+            throw ConfigParseException("Invalid config field 'altitude': out of safe range [-1000,100000], value=$value")
+        }
+    }
+
+    private fun requireAccuracy(value: Float) {
+        if (!value.isFinite() || value < 0f || value > 100000f) {
+            throw ConfigParseException("Invalid config field 'accuracy': out of safe range [0,100000], value=$value")
+        }
+    }
+
+    private fun requireSpeed(value: Double) {
+        if (!value.isFinite() || value < 0.0 || value > 1000.0) {
+            throw ConfigParseException("Invalid config field 'speed': out of safe range [0,1000], value=$value")
+        }
+    }
+
+    private fun requireBearing(value: Double) {
+        if (!value.isFinite() || value < 0.0 || value >= 360.0) {
+            throw ConfigParseException("Invalid config field 'bearing': out of range [0,360), value=$value")
         }
     }
 }

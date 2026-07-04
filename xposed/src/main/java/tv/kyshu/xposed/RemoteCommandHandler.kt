@@ -261,7 +261,8 @@ object RemoteCommandHandler {
         val proxyRelay = if (commandId in proxyCommandIds) Bundle(rely) else null
         relayToProxyBinders(commandId, proxyRelay)
         MockProbeLog.ipcReceived(commandId, "processing")
-        val handled = when (commandId) {
+        val handled = try {
+            when (commandId) {
             "set_proxy" -> {
                 val proxy = rely.getBinder("proxy")
                 if (proxy == null) {
@@ -362,28 +363,44 @@ object RemoteCommandHandler {
                 true
             }
             "set_speed_amp" -> {
-                FakeLoc.speedAmplitude = rely.getDouble("speed_amplitude", FakeLoc.speedAmplitude)
+                FakeLoc.speedAmplitude = MockCommandContract.requireSpeed(
+                    MockCommandContract.Extract.requireDouble(rely, "speed_amplitude"),
+                    "speed_amplitude"
+                )
                 true
             }
             "set_altitude" -> {
-                FakeLoc.altitude = rely.getDouble("altitude", FakeLoc.altitude)
+                FakeLoc.altitude = MockCommandContract.requireAltitude(
+                    MockCommandContract.Extract.requireDouble(rely, "altitude"),
+                    "altitude"
+                )
                 true
             }
             "set_speed" -> {
-                FakeLoc.speed = rely.getDouble("speed", FakeLoc.speed)
+                FakeLoc.speed = MockCommandContract.requireSpeed(
+                    MockCommandContract.Extract.requireDouble(rely, "speed"),
+                    "speed"
+                )
                 true
             }
             "set_bearing" -> {
                 synchronized(FakeLoc) {
-                    FakeLoc.bearing = rely.getDouble("bearing", FakeLoc.bearing)
+                    FakeLoc.bearing = MockCommandContract.requireBearing(
+                        MockCommandContract.Extract.requireDouble(rely, "bearing"),
+                        "bearing"
+                    )
                     FakeLoc.hasBearings = true
                 }
                 true
             }
             "move" -> {
-                val distance = rely.getDouble("n", 0.0)
+                val distance = MockCommandContract.Extract.requireDouble(rely, "n")
                 if (distance == 0.0) return@handleAuthenticatedInstruction true
-                val bearing = rely.getDouble("bearing", FakeLoc.bearing)
+                val bearing = if (rely.containsKey("bearing")) {
+                    MockCommandContract.requireBearing(MockCommandContract.Extract.requireDouble(rely, "bearing"), "bearing")
+                } else {
+                    FakeLoc.bearing
+                }
                 val newLoc = FakeLoc.moveLocation(
                     n = distance,
                     angle = bearing
@@ -399,8 +416,17 @@ object RemoteCommandHandler {
             }
             "update_location" -> {
                 val mode = rely.getString("mode")
-                val newLat = rely.getDouble("lat", 0.0)
-                val newLon = rely.getDouble("lon", 0.0)
+                val requiresCoordinates = mode != "random"
+                val newLat = if (requiresCoordinates) {
+                    MockCommandContract.requireLatitude(MockCommandContract.Extract.requireDouble(rely, "lat"), "lat")
+                } else {
+                    0.0
+                }
+                val newLon = if (requiresCoordinates) {
+                    MockCommandContract.requireLongitude(MockCommandContract.Extract.requireDouble(rely, "lon"), "lon")
+                } else {
+                    0.0
+                }
                 var updatedLat: Double
                 var updatedLon: Double
                 when (mode) {
@@ -445,6 +471,10 @@ object RemoteCommandHandler {
                 Logger.warn("[RemoteCommandHandler] unknown command: $commandId")
                 false
             }
+            }
+        } catch (e: IllegalArgumentException) {
+            structuredLog("error", commandId, "invalid command payload: ${e.message}", rely)
+            false
         }
         if (handled) {
             if (!RemoteCommandSecurity.encryptSensitivePayload(rely, sessionKey)) {

@@ -229,14 +229,44 @@ abstract class BaseDivineService {
     private fun syncConfig(locationManager: LocationManager, randomKey: String) {
         val (ok, rely) = sendAuthenticated(locationManager, randomKey, "sync_config")
         if(ok) {
+            val parsed = runCatching {
+                SyncCriticalConfig(
+                    latitude = MockCommandContract.requireLatitude(
+                        MockCommandContract.Extract.requireDouble(rely, "latitude"),
+                        "latitude"
+                    ),
+                    longitude = MockCommandContract.requireLongitude(
+                        MockCommandContract.Extract.requireDouble(rely, "longitude"),
+                        "longitude"
+                    ),
+                    altitude = MockCommandContract.requireAltitude(
+                        MockCommandContract.Extract.requireDouble(rely, "altitude"),
+                        "altitude"
+                    ),
+                    speed = MockCommandContract.requireSpeed(
+                        MockCommandContract.Extract.requireDouble(rely, "speed"),
+                        "speed"
+                    ),
+                    speedAmplitude = MockCommandContract.requireSpeed(
+                        MockCommandContract.Extract.requireDouble(rely, "speed_amplitude"),
+                        "speed_amplitude"
+                    ),
+                    bearing = MockCommandContract.requireBearing(
+                        MockCommandContract.Extract.requireDouble(rely, "bearing"),
+                        "bearing"
+                    ),
+                )
+            }.onFailure {
+                Logger.error("Invalid sync_config critical payload; keeping previous config", it)
+            }.getOrNull() ?: return
             FakeLoc.enable = rely.getBoolean("enable", FakeLoc.enable)
-            FakeLoc.latitude = rely.getDouble("latitude", FakeLoc.latitude)
-            FakeLoc.longitude = rely.getDouble("longitude", FakeLoc.longitude)
-            FakeLoc.altitude = rely.getDouble("altitude", FakeLoc.altitude)
-            FakeLoc.speed = rely.getDouble("speed", FakeLoc.speed)
-            FakeLoc.speedAmplitude = rely.getDouble("speed_amplitude", FakeLoc.speedAmplitude)
+            FakeLoc.latitude = parsed.latitude
+            FakeLoc.longitude = parsed.longitude
+            FakeLoc.altitude = parsed.altitude
+            FakeLoc.speed = parsed.speed
+            FakeLoc.speedAmplitude = parsed.speedAmplitude
             FakeLoc.hasBearings = rely.getBoolean("has_bearings", FakeLoc.hasBearings)
-            FakeLoc.bearing = rely.getDouble("bearing", FakeLoc.bearing)
+            FakeLoc.bearing = parsed.bearing
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 FakeLoc.lastLocation = rely.getParcelable("last_location", Location::class.java)
             } else {
@@ -257,4 +287,13 @@ abstract class BaseDivineService {
             Logger.error("Failed to sync config for DivineService")
         }
     }
+
+    private data class SyncCriticalConfig(
+        val latitude: Double,
+        val longitude: Double,
+        val altitude: Double,
+        val speed: Double,
+        val speedAmplitude: Double,
+        val bearing: Double,
+    )
 }

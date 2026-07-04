@@ -91,10 +91,36 @@ object MockCommandContract {
     }
 
     object Extract {
+        fun requireDouble(b: Bundle, k: String): Double {
+            val value = b.get(k) ?: throw IllegalArgumentException("Missing required numeric command field '$k'")
+            val parsed = when (value) {
+                is Number -> value.toDouble()
+                is String -> value.trim().toDoubleOrNull()
+                else -> null
+            }
+            if (parsed == null || !parsed.isFinite()) {
+                throw IllegalArgumentException("Invalid numeric command field '$k': value=${describe(value)}")
+            }
+            return parsed
+        }
+
+        fun requireFloat(b: Bundle, k: String): Float {
+            val value = b.get(k) ?: throw IllegalArgumentException("Missing required float command field '$k'")
+            val parsed = when (value) {
+                is Number -> value.toFloat()
+                is String -> value.trim().toFloatOrNull()
+                else -> null
+            }
+            if (parsed == null || !parsed.isFinite()) {
+                throw IllegalArgumentException("Invalid float command field '$k': value=${describe(value)}")
+            }
+            return parsed
+        }
+
         fun double(b: Bundle, k: String, d: Double = 0.0): Double =
-            if (b.containsKey(k)) b.getDouble(k) else d
+            if (b.containsKey(k)) requireDouble(b, k) else d
         fun float(b: Bundle, k: String, d: Float = 0f): Float =
-            if (b.containsKey(k)) b.getFloat(k) else d
+            if (b.containsKey(k)) requireFloat(b, k) else d
         fun int(b: Bundle, k: String, d: Int = 0): Int =
             if (b.containsKey(k)) b.getInt(k) else d
         fun long(b: Bundle, k: String, d: Long = 0L): Long =
@@ -105,6 +131,52 @@ object MockCommandContract {
             if (b.containsKey(k)) b.getBoolean(k) else d
         fun string(b: Bundle, k: String, d: String? = null): String? =
             if (b.containsKey(k)) b.getString(k) else d
+
+        private fun describe(value: Any): String {
+            return "raw='${value.toString().take(128)}', type=${value.javaClass.name}"
+        }
+    }
+
+    fun requireLatitude(value: Double, key: String = Keys.LATITUDE): Double {
+        if (value !in -90.0..90.0) {
+            throw IllegalArgumentException("Invalid latitude command field '$key': out of range [-90,90], value=$value")
+        }
+        return value
+    }
+
+    fun requireLongitude(value: Double, key: String = Keys.LONGITUDE): Double {
+        if (value !in -180.0..180.0) {
+            throw IllegalArgumentException("Invalid longitude command field '$key': out of range [-180,180], value=$value")
+        }
+        return value
+    }
+
+    fun requireAltitude(value: Double, key: String = Keys.ALTITUDE): Double {
+        if (!value.isFinite() || value < -1000.0 || value > 100000.0) {
+            throw IllegalArgumentException("Invalid altitude command field '$key': out of safe range [-1000,100000], value=$value")
+        }
+        return value
+    }
+
+    fun requireSpeed(value: Double, key: String = Keys.SPEED): Double {
+        if (!value.isFinite() || value < 0.0 || value > 1000.0) {
+            throw IllegalArgumentException("Invalid speed command field '$key': out of safe range [0,1000], value=$value")
+        }
+        return value
+    }
+
+    fun requireAccuracy(value: Float, key: String = Keys.ACCURACY): Float {
+        if (!value.isFinite() || value < 0f || value > 100000f) {
+            throw IllegalArgumentException("Invalid accuracy command field '$key': out of safe range [0,100000], value=$value")
+        }
+        return value
+    }
+
+    fun requireBearing(value: Double, key: String = Keys.BEARING): Double {
+        if (!value.isFinite() || value < 0.0 || value >= 360.0) {
+            throw IllegalArgumentException("Invalid bearing command field '$key': out of range [0,360), value=$value")
+        }
+        return value
     }
 
     private fun sanitizeMinSatellites(value: Int): Int = when {
@@ -114,12 +186,19 @@ object MockCommandContract {
     }
 
     fun applyPutConfig(rely: Bundle) {
-        synchronized(FakeLoc) {
-            with(Extract) {
+        with(Extract) {
+            val parsedSpeed = if (rely.containsKey(Keys.SPEED)) requireSpeed(double(rely, Keys.SPEED)) else null
+            val parsedAltitude = if (rely.containsKey(Keys.ALTITUDE)) requireAltitude(double(rely, Keys.ALTITUDE)) else null
+            val parsedAccuracy = if (rely.containsKey(Keys.ACCURACY)) requireAccuracy(float(rely, Keys.ACCURACY)) else null
+            val parsedMinSpeed = if (rely.containsKey(Keys.MIN_SPEED)) requireSpeed(double(rely, Keys.MIN_SPEED), Keys.MIN_SPEED) else null
+            val parsedMaxSpeed = if (rely.containsKey(Keys.MAX_SPEED)) requireSpeed(double(rely, Keys.MAX_SPEED), Keys.MAX_SPEED) else null
+            val parsedSpeedAmplitude = if (rely.containsKey(Keys.SPEED_AMPLITUDE)) requireSpeed(double(rely, Keys.SPEED_AMPLITUDE), Keys.SPEED_AMPLITUDE) else null
+
+            synchronized(FakeLoc) {
                 if (rely.containsKey(Keys.ENABLE)) FakeLoc.enable = boolean(rely, Keys.ENABLE)
-                if (rely.containsKey(Keys.SPEED)) FakeLoc.speed = double(rely, Keys.SPEED)
-                if (rely.containsKey(Keys.ALTITUDE)) FakeLoc.altitude = double(rely, Keys.ALTITUDE)
-                if (rely.containsKey(Keys.ACCURACY)) FakeLoc.accuracy = float(rely, Keys.ACCURACY)
+                if (parsedSpeed != null) FakeLoc.speed = parsedSpeed
+                if (parsedAltitude != null) FakeLoc.altitude = parsedAltitude
+                if (parsedAccuracy != null) FakeLoc.accuracy = parsedAccuracy
 
                 if (rely.containsKey(Keys.ENABLE_MOCK_GNSS)) FakeLoc.enableMockGnss = boolean(rely, Keys.ENABLE_MOCK_GNSS)
                 if (rely.containsKey(Keys.ENABLE_NMEA)) FakeLoc.enableNMEA = boolean(rely, Keys.ENABLE_NMEA)
@@ -158,11 +237,11 @@ object MockCommandContract {
                 if (rely.containsKey(Keys.IS_SCREEN_OFF)) FakeLoc.isScreenOff = boolean(rely, Keys.IS_SCREEN_OFF)
                 if (rely.containsKey(Keys.IS_DEVICE_IDLE_MODE)) FakeLoc.isDeviceIdleMode = boolean(rely, Keys.IS_DEVICE_IDLE_MODE)
 
-                if (rely.containsKey(Keys.MIN_SPEED)) FakeLoc.minSpeed = double(rely, Keys.MIN_SPEED)
-                if (rely.containsKey(Keys.MAX_SPEED)) FakeLoc.maxSpeed = double(rely, Keys.MAX_SPEED)
+                if (parsedMinSpeed != null) FakeLoc.minSpeed = parsedMinSpeed
+                if (parsedMaxSpeed != null) FakeLoc.maxSpeed = parsedMaxSpeed
                 if (rely.containsKey(Keys.ENABLE_DEBUG_LOG)) FakeLoc.enableDebugLog = boolean(rely, Keys.ENABLE_DEBUG_LOG)
                 if (rely.containsKey(Keys.HOOK_WIFI)) FakeLoc.wifiData.hookWifi = boolean(rely, Keys.HOOK_WIFI)
-                if (rely.containsKey(Keys.SPEED_AMPLITUDE)) FakeLoc.speedAmplitude = double(rely, Keys.SPEED_AMPLITUDE)
+                if (parsedSpeedAmplitude != null) FakeLoc.speedAmplitude = parsedSpeedAmplitude
                 if (rely.containsKey(Keys.HIDE_MOCK)) FakeLoc.locationData.hideMock = boolean(rely, Keys.HIDE_MOCK)
                 if (rely.containsKey(Keys.DISABLE_NETWORK_LOCATION)) FakeLoc.disableNetworkLocation = boolean(rely, Keys.DISABLE_NETWORK_LOCATION)
 

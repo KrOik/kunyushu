@@ -25,6 +25,7 @@ import tv.kyshu.xposed.config.MockWifiData
 import tv.kyshu.xposed.config.SensorData
 import tv.kyshu.xposed.config.WifiData
 import tv.kyshu.xposed.config.getAnyVal
+import tv.kyshu.xposed.config.getVal
 import tv.kyshu.xposed.utils.config.ConfigLoader
 import tv.kyshu.xposed.utils.config.ContentProviderLoader
 import tv.kyshu.xposed.utils.config.XPrefLoader
@@ -464,9 +465,9 @@ object FakeLoc {
     // ==================== updateFromMap（编排） ====================
 
     internal fun updateFromMap(map: Map<String, Any?>) {
-        // 1) 各子对象更新自身字段
-        mockState.updateFromMap(map)
+        // 1) 位置关键字段先校验并应用；失败时阻断本轮加载，避免 0 坐标等坏值混入其他域。
         locationData.updateFromMap(map)
+        mockState.updateFromMap(map)
         sensorData.updateFromMap(map)
         wifiData.updateFromMap(map)
         gaitData.updateFromMap(map)
@@ -547,6 +548,7 @@ object FakeLoc {
             is Int -> value.toString() to (type ?: "int")
             is Long -> value.toString() to (type ?: "long")
             is Float -> value.toString() to (type ?: "float")
+            is Double -> value.toString() to (type ?: "double")
             else -> value.toString() to (type ?: "string")
         }
         return runCatching {
@@ -580,38 +582,6 @@ object FakeLoc {
 
     private fun isValidProviderKey(key: String): Boolean {
         return key.isNotBlank() && PROVIDER_KEY_PATTERN.matches(key)
-    }
-
-    private inline fun <reified T> Map<String, Any?>.getVal(key: String, default: T): T {
-        val value = this[key] ?: return default
-        return try {
-            when (T::class) {
-                Boolean::class -> {
-                    if (value is Boolean) value as T
-                    else (value.toString() == "true") as T
-                }
-                Int::class -> {
-                    if (value is Number) value.toInt() as T
-                    else value.toString().toIntOrNull() as? T ?: default
-                }
-                Long::class -> {
-                    if (value is Number) value.toLong() as T
-                    else value.toString().toLongOrNull() as? T ?: default
-                }
-            Float::class -> {
-                if (value is Number) value.toFloat() as T
-                else value.toString().toFloatOrNull() as? T ?: default
-            }
-            Double::class -> {
-                if (value is Number) value.toDouble() as T
-                else value.toString().toDoubleOrNull() as? T ?: default
-            }
-            String::class -> value.toString() as T
-            else -> default
-        }
-        } catch (e: Exception) {
-            default
-        }
     }
 
     private fun parseMockWifiList(value: Any?): List<MockWifiData> {

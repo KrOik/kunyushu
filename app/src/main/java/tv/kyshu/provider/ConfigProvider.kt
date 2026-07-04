@@ -176,11 +176,27 @@ class ConfigProvider : ContentProvider() {
             safeRead(key) { addRow(cursor, key, prefs.getFloat(prefKey, default.toFloat()).toDouble().toString(), "double") }
         fun string(key: String, prefKey: String, default: String) =
             safeRead(key) { addRow(cursor, key, prefs.getString(prefKey, default).orEmpty(), "string") }
-        val selectedLocation = runCatching {
-            prefs.getString("selectedLocation", null)?.let { HistoricalLocation.fromString(it) }
-        }.onFailure {
-            android.util.Log.w("ConfigProvider", "Failed to parse selectedLocation: ${it.message}")
-        }.getOrNull()
+        fun criticalRead(key: String, block: () -> Unit) {
+            try {
+                block()
+            } catch (e: Exception) {
+                android.util.Log.e("ConfigProvider", "Invalid critical config key '$key'; aborting config query", e)
+                throw IllegalStateException("Invalid critical config key '$key'", e)
+            }
+        }
+        fun criticalDoubleFromFloat(key: String, prefKey: String, default: Double) =
+            criticalRead(key) { addRow(cursor, key, prefs.getFloat(prefKey, default.toFloat()).toDouble().toString(), "double") }
+        fun criticalFloat(key: String, prefKey: String, default: Float) =
+            criticalRead(key) { addRow(cursor, key, prefs.getFloat(prefKey, default).toString(), "float") }
+        val selectedLocationRaw = prefs.getString("selectedLocation", null)
+        val selectedLocation = selectedLocationRaw?.takeIf { it.isNotBlank() }?.let { raw ->
+            try {
+                HistoricalLocation.fromString(raw)
+            } catch (e: Exception) {
+                android.util.Log.e("ConfigProvider", "Invalid critical config key 'selectedLocation'; aborting config query", e)
+                throw IllegalStateException("Invalid critical config key 'selectedLocation'", e)
+            }
+        }
 
         // Read persisted app settings. The xposed side accepts these snake_case keys.
         bool("enable_log", "enableLog", FakeLoc.enableLog)
@@ -193,11 +209,11 @@ class ConfigProvider : ContentProvider() {
         int("min_satellites", "minSatelliteCount", FakeLoc.minSatellites)
         // Sensitive fields: only if caller is authorized
         if (isSensitiveAllowed) {
-            safeRead("latitude") { addRow(cursor, "latitude", (selectedLocation?.lat ?: FakeLoc.latitude).toString(), "double") }
-            safeRead("longitude") { addRow(cursor, "longitude", (selectedLocation?.lon ?: FakeLoc.longitude).toString(), "double") }
-            doubleFromFloat("altitude", "altitude", FakeLoc.altitude)
-            doubleFromFloat("speed", "speed", FakeLoc.speed)
-            float("accuracy", "accuracy", FakeLoc.accuracy)
+            criticalRead("latitude") { addRow(cursor, "latitude", (selectedLocation?.lat ?: FakeLoc.latitude).toString(), "double") }
+            criticalRead("longitude") { addRow(cursor, "longitude", (selectedLocation?.lon ?: FakeLoc.longitude).toString(), "double") }
+            criticalDoubleFromFloat("altitude", "altitude", FakeLoc.altitude)
+            criticalDoubleFromFloat("speed", "speed", FakeLoc.speed)
+            criticalFloat("accuracy", "accuracy", FakeLoc.accuracy)
             safeRead("bearing") { val v = FakeLoc.bearing; addRow(cursor, "bearing", v.toString(), "double") }
         }
         bool("hook_wifi", "hookWifi", FakeLoc.hookWifi)
