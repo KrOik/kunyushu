@@ -42,10 +42,21 @@ internal inline fun <reified T> Map<String, Any?>.getVal(key: String, default: T
                 if (value is Number) value.toFloat() as T
                 else value.toString().toFloatOrNull() as? T ?: default
             }
+            Double::class -> {
+                if (value is Number) value.toDouble() as T
+                else value.toString().toDoubleOrNull() as? T ?: default
+            }
             String::class -> value.toString() as T
             else -> default
         }
     } catch (_: Exception) {
         default
     }
+}
+
+internal inline fun <reified T> Map<String, Any?>.getAnyVal(default: T, vararg keys: String): T {
+    for (key in keys) {
+        if (containsKey(key)) return getVal(key, default)
+    }
+    return default
 }

@@ -100,9 +100,9 @@ object TelephonyHook: BaseTelephonyHook() {
 
     operator fun invoke(classLoader: ClassLoader) {
         runCatching {
-        if(!initDivineService("TelephonyHook")) {
-            Logger.error("Failed to init mock service in TelephonyHook")
-            return
+        val serviceReady = ensureDivineService("TelephonyHook")
+        if (!serviceReady) {
+            Logger.warn("[TelephonyHook] mock service not ready; installing local telephony hooks and waiting for deferred sync")
         }
 
 //        kotlin.runCatching {
@@ -159,15 +159,22 @@ object TelephonyHook: BaseTelephonyHook() {
 //            XposedBridge.log("[PTL] ITelephony.Stub not found: ${it.stackTraceToString()}")
 //        }
 
-        if (!FakeLoc.needDowngradeToCdma) return
+        if (!FakeLoc.needDowngradeToCdma) {
+            Logger.info("[TelephonyHook] CDMA downgrade disabled; skipping telephony downgrade hooks")
+            return
+        }
 
         val cPhoneInterfaceManager = XposedHelpers.findClassIfExists("com.android.phone.PhoneInterfaceManager", classLoader)
-            ?: return
+            ?: run {
+                Logger.warn("[TelephonyHook] PhoneInterfaceManager not found; package hook skipped")
+                return
+            }
+        Logger.info("[TelephonyHook] installing PhoneInterfaceManager hooks: enable=${FakeLoc.enable}, cdma=${FakeLoc.needDowngradeToCdma}, serviceReady=$serviceReady")
 
         hookServiceState(cPhoneInterfaceManager)
 
         val hookGetPhoneTyp = beforeHook {
-            if (FakeLoc.enable && !BinderUtils.isSystemAppsCall()) {
+            if (FakeLoc.enable && FakeLoc.needDowngradeToCdma) {
                 if (FakeLoc.enableDebugLog) {
                     Logger.debug("getActivePhoneType: injected!")
                 }
@@ -189,7 +196,7 @@ object TelephonyHook: BaseTelephonyHook() {
                     Logger.debug("getAllCellInfo: injected! caller = ${BinderUtils.getCallerUid()}")
                 }
 
-                if (FakeLoc.enable && !BinderUtils.isSystemAppsCall()) {
+                if (FakeLoc.enable) {
                     val cResult = fakeCellInfoList()
                     if (cResult.isNotEmpty()) result = cResult
                 }
@@ -200,7 +207,7 @@ object TelephonyHook: BaseTelephonyHook() {
         }
 
         if(runCatching { XposedBridge.hookAllMethods(cPhoneInterfaceManager, "getCellLocation", afterHook {
-                if (!FakeLoc.enable || BinderUtils.isSystemAppsCall()) {
+                if (!FakeLoc.enable) {
                     return@afterHook
                 }
                 if (FakeLoc.enableDebugLog) {
@@ -219,7 +226,7 @@ object TelephonyHook: BaseTelephonyHook() {
         }
 
         beforeHook {
-            if (FakeLoc.enable && !BinderUtils.isSystemAppsCall()) {
+            if (FakeLoc.enable && FakeLoc.needDowngradeToCdma) {
                 if (FakeLoc.enableDebugLog) {
                     Logger.debug("getDataNetworkType: injected!")
                 }
@@ -234,7 +241,7 @@ object TelephonyHook: BaseTelephonyHook() {
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             if (safeHookAll(cPhoneInterfaceManager, "getNeighboringCellInfo", beforeHook {
-                if (!FakeLoc.enable || BinderUtils.isSystemAppsCall()) {
+                if (!FakeLoc.enable) {
                     return@beforeHook
                 }
 
@@ -277,7 +284,7 @@ object TelephonyHook: BaseTelephonyHook() {
 
     private fun hookServiceState(cPhoneInterfaceManager: Class<*>) {
         val hook = afterHook {
-            if (!FakeLoc.enable || BinderUtils.isSystemAppsCall()) return@afterHook
+            if (!FakeLoc.enable) return@afterHook
             val serviceState = result ?: return@afterHook
 
             runCatching { XposedHelpers.callMethod(serviceState, "setRoaming", false) }
@@ -316,7 +323,7 @@ object TelephonyHook: BaseTelephonyHook() {
             .forEach { method ->
                 runCatching {
                     XposedBridge.hookMethod(method, beforeHook {
-                        if (!FakeLoc.enable || BinderUtils.isSystemAppsCall()) return@beforeHook
+                        if (!FakeLoc.enable) return@beforeHook
                         hookCellInfoCallbacks(args.filterNotNull())
                     })
                 }.onFailure {
@@ -355,7 +362,7 @@ object TelephonyHook: BaseTelephonyHook() {
                     return@forEach
                 }
                 m.hookBefore {
-                    if (!FakeLoc.enable || BinderUtils.isSystemAppsCall()) {
+                    if (!FakeLoc.enable) {
                         return@hookBefore
                     }
 
@@ -384,7 +391,7 @@ object TelephonyHook: BaseTelephonyHook() {
             }
 
         cTelephonyRegistry.hookMethodBefore("notifyCellInfo", List::class.java) {
-            if (!FakeLoc.enable || BinderUtils.isSystemAppsCall()) {
+            if (!FakeLoc.enable) {
                 return@hookMethodBefore
             }
 
@@ -397,7 +404,7 @@ object TelephonyHook: BaseTelephonyHook() {
 	        }
 
         cTelephonyRegistry.hookMethodBefore("notifyCellInfoForSubscriber", Int::class.java, List::class.java) {
-            if (!FakeLoc.enable || BinderUtils.isSystemAppsCall()) {
+            if (!FakeLoc.enable) {
                 return@hookMethodBefore
             }
 
@@ -410,7 +417,7 @@ object TelephonyHook: BaseTelephonyHook() {
 	        }
 
         cTelephonyRegistry.hookMethodBefore("notifyCellLocation", Bundle::class.java) {
-            if (!FakeLoc.enable || BinderUtils.isSystemAppsCall()) {
+            if (!FakeLoc.enable) {
                 return@hookMethodBefore
             }
 
@@ -421,7 +428,7 @@ object TelephonyHook: BaseTelephonyHook() {
 	            args[0] = fakeCellLocationBundle()
 	        }
         cTelephonyRegistry.hookMethodBefore("notifyCellLocationForSubscriber", Int::class.java, Bundle::class.java) {
-            if (!FakeLoc.enable || BinderUtils.isSystemAppsCall()) {
+            if (!FakeLoc.enable) {
                 return@hookMethodBefore
             }
 
@@ -454,7 +461,7 @@ object TelephonyHook: BaseTelephonyHook() {
         val TRANSACTION_getSimStateForSlotIdx = kotlin.runCatching { XposedHelpers.getStaticIntField(cISub, "TRANSACTION_getSimStateForSlotIdx") }.getOrDefault(-1)
 
         val hookOnTransact = beforeHook {
-            if (!FakeLoc.enable || BinderUtils.isSystemAppsCall()) {
+            if (!FakeLoc.enable || !FakeLoc.needDowngradeToCdma) {
                 return@beforeHook
             }
 

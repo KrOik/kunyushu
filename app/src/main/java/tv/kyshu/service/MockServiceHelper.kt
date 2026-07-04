@@ -20,6 +20,7 @@ import tv.kyshu.ext.enableAGPS
 import tv.kyshu.ext.enableGetFromLocation
 import tv.kyshu.ext.enableNMEA
 import tv.kyshu.ext.enableRequestGeofence
+import tv.kyshu.ext.enableMockWifi
 import tv.kyshu.ext.minSatelliteCount
 import tv.kyshu.ext.needDowngradeToCdma
 import tv.kyshu.ext.speed
@@ -403,6 +404,7 @@ object MockServiceHelper {
             putBoolean("enable_nmea", context.enableNMEA)
             putBoolean("disable_request_geofence", !context.enableRequestGeofence)
             putBoolean("disable_get_from_location", !context.enableGetFromLocation)
+            putBoolean("enable_mock_wifi", context.enableMockWifi)
             putBoolean("hook_wifi", context.hookWifi)
             putString("mock_ssid", context.mockSSID)
             putString("mock_bssid", context.mockBSSID)

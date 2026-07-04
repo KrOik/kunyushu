@@ -41,6 +41,7 @@ class ContentProviderLoader(private val context: Context?) : ConfigLoader {
                             "boolean" -> valueStr.toBoolean()
                             "int" -> valueStr.toIntOrNull()
                             "float" -> valueStr.toFloatOrNull()
+                            "double" -> valueStr.toDoubleOrNull()
                             "long" -> valueStr.toLongOrNull()
                             else -> valueStr
                         }

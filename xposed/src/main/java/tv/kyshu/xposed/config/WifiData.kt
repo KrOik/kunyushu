@@ -151,13 +151,13 @@ class WifiData {
      * mockWifiList 由 FakeLoc.updateFromMap 通过 parseMockWifiList 设置。
      */
     internal fun updateFromMap(map: Map<String, Any?>) {
-        enableMockWifi = map.getVal("enableMockWifi", enableMockWifi)
-        disableWifiScan = map.getVal("disableWifiScan", disableWifiScan)
-        mockSSID = map.getVal("mockSSID", mockSSID)
-        mockBSSID = map.getVal("mockBSSID", mockBSSID)
-        mockMac = map.getVal("mockMac", mockMac)
-        mockIp = map.getVal("mockIp", mockIp)
-        mockWifiScanCount = map.getVal("mockWifiScanCount", mockWifiScanCount)
-        hookWifi = map.getVal("hookWifi", hookWifi)
+        enableMockWifi = map.getAnyVal(enableMockWifi, "enableMockWifi", "enable_mock_wifi")
+        disableWifiScan = map.getAnyVal(disableWifiScan, "disableWifiScan", "disable_wifi_scan")
+        mockSSID = map.getAnyVal(mockSSID, "mockSSID", "mock_ssid")
+        mockBSSID = map.getAnyVal(mockBSSID, "mockBSSID", "mock_bssid")
+        mockMac = map.getAnyVal(mockMac, "mockMac", "mock_mac")
+        mockIp = map.getAnyVal(mockIp, "mockIp", "mock_ip")
+        mockWifiScanCount = map.getAnyVal(mockWifiScanCount, "mockWifiScanCount", "mock_wifi_scan_count")
+        hookWifi = map.getAnyVal(hookWifi, "hookWifi", "hook_wifi")
     }
 }

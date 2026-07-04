@@ -76,36 +76,43 @@ class HookLifecycleController(
 
             "is_start" -> {
                 rely.putBoolean("is_start", store.enable)
+                Logger.info("[HookLifecycle] is_start=${store.enable}")
                 true
             }
 
             "start_gnss_mock" -> {
                 store.enableMockGnss = true
+                Logger.info("[HookLifecycle] start_gnss_mock enableMockGnss=${store.enableMockGnss}")
                 true
             }
 
             "stop_gnss_mock" -> {
                 store.enableMockGnss = false
+                Logger.info("[HookLifecycle] stop_gnss_mock enableMockGnss=${store.enableMockGnss}")
                 true
             }
 
             "is_gnss_start" -> {
                 rely.putBoolean("is_gnss_start", store.enableMockGnss)
+                Logger.info("[HookLifecycle] is_gnss_start=${store.enableMockGnss}")
                 true
             }
 
             "start_wifi_mock" -> {
                 store.enableMockWifi = true
+                Logger.info("[HookLifecycle] start_wifi_mock enableMockWifi=${store.enableMockWifi}")
                 true
             }
 
             "stop_wifi_mock" -> {
                 store.enableMockWifi = false
+                Logger.info("[HookLifecycle] stop_wifi_mock enableMockWifi=${store.enableMockWifi}")
                 true
             }
 
             "is_wifi_mock_start" -> {
                 rely.putBoolean("is_wifi_mock_start", store.enableMockWifi)
+                Logger.info("[HookLifecycle] is_wifi_mock_start=${store.enableMockWifi}")
                 true
             }
 

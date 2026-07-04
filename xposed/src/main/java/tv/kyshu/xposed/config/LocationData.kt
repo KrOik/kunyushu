@@ -184,21 +184,21 @@ class LocationData {
      * 从配置 map 更新 [LocationData] 专属字段。
      */
     internal fun updateFromMap(map: Map<String, Any?>) {
-        enableMockGnss = map.getVal("enableMockGnss", enableMockGnss)
-        enableNMEA = map.getVal("enableNMEA", enableNMEA)
-        latitude = map.getVal("latitude", latitude)
-        longitude = map.getVal("longitude", longitude)
-        altitude = map.getVal("altitude", altitude)
-        accuracy = map.getVal("accuracy", accuracy)
-        speed = map.getVal("speed", speed)
-        bearing = map.getVal("bearing", bearing)
-        val rinexPathValue = map.getVal("rinexPath", rinexPath ?: "")
+        enableMockGnss = map.getAnyVal(enableMockGnss, "enableMockGnss", "enable_mock_gnss")
+        enableNMEA = map.getAnyVal(enableNMEA, "enableNMEA", "enable_nmea")
+        latitude = map.getAnyVal(latitude, "latitude", "lat")
+        longitude = map.getAnyVal(longitude, "longitude", "lon")
+        altitude = map.getAnyVal(altitude, "altitude")
+        accuracy = map.getAnyVal(accuracy, "accuracy")
+        speed = map.getAnyVal(speed, "speed")
+        bearing = map.getAnyVal(bearing, "bearing")
+        val rinexPathValue = map.getAnyVal(rinexPath ?: "", "rinexPath", "rinex_path")
         rinexPath = rinexPathValue.takeIf { it.isNotBlank() }
-        enableAtmosphereJitter = map.getVal("enableAtmosphereJitter", enableAtmosphereJitter)
-        atmosphereJitterIntensity = map.getVal("atmosphereJitterIntensity", atmosphereJitterIntensity)
-        enableAltitudeJitter = map.getVal("enableAltitudeJitter", enableAltitudeJitter)
-        altitudeJitter = map.getVal("altitudeJitter", altitudeJitter)
-        hideMock = map.getVal("hideMock", hideMock)
+        enableAtmosphereJitter = map.getAnyVal(enableAtmosphereJitter, "enableAtmosphereJitter", "enable_atmosphere_jitter")
+        atmosphereJitterIntensity = map.getAnyVal(atmosphereJitterIntensity, "atmosphereJitterIntensity", "atmosphere_jitter_intensity")
+        enableAltitudeJitter = map.getAnyVal(enableAltitudeJitter, "enableAltitudeJitter", "enable_altitude_jitter")
+        altitudeJitter = map.getAnyVal(altitudeJitter, "altitudeJitter", "altitude_jitter")
+        hideMock = map.getAnyVal(hideMock, "hideMock", "hide_mock")
         minSatellites = sanitizeMinSatellites(
             when {
                 map.containsKey("minSatelliteCount") -> map.getVal("minSatelliteCount", minSatellites)

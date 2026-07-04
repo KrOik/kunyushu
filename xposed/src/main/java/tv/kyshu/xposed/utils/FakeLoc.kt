@@ -24,6 +24,7 @@ import tv.kyshu.xposed.config.MockState
 import tv.kyshu.xposed.config.MockWifiData
 import tv.kyshu.xposed.config.SensorData
 import tv.kyshu.xposed.config.WifiData
+import tv.kyshu.xposed.config.getAnyVal
 import tv.kyshu.xposed.utils.config.ConfigLoader
 import tv.kyshu.xposed.utils.config.ContentProviderLoader
 import tv.kyshu.xposed.utils.config.XPrefLoader
@@ -471,24 +472,31 @@ object FakeLoc {
         gaitData.updateFromMap(map)
 
         // 2) 保留字段（未迁移到子对象）
-        isAppInBackground = map.getVal("isAppInBackground", isAppInBackground)
-        isScreenOff = map.getVal("isScreenOff", isScreenOff)
-        isDeviceIdleMode = map.getVal("isDeviceIdleMode", isDeviceIdleMode)
+        isAppInBackground = map.getAnyVal(isAppInBackground, "isAppInBackground", "is_app_in_background")
+        isScreenOff = map.getAnyVal(isScreenOff, "isScreenOff", "is_screen_off")
+        isDeviceIdleMode = map.getAnyVal(isDeviceIdleMode, "isDeviceIdleMode", "is_device_idle_mode")
 
-        disableGetCurrentLocation = map.getVal("disableGetCurrentLocation", disableGetCurrentLocation)
-        disableRegisterLocationListener = map.getVal("disableRegisterLocationListener", disableRegisterLocationListener)
-        disableFusedLocation = map.getVal("disableFusedProvider", disableFusedLocation)
-        disableRequestGeofence = !map.getVal("enableRequestGeofence", !disableRequestGeofence)
-        disableGetFromLocation = !map.getVal("enableGetFromLocation", !disableGetFromLocation)
+        disableGetCurrentLocation = map.getAnyVal(disableGetCurrentLocation, "disableGetCurrentLocation", "disable_get_current_location")
+        disableRegisterLocationListener = map.getAnyVal(disableRegisterLocationListener, "disableRegisterLocationListener", "disable_register_location_listener", "disable_regitser_location_listener")
+        disableFusedLocation = map.getAnyVal(disableFusedLocation, "disableFusedProvider", "disable_fused_location")
+        disableRequestGeofence = map.getAnyVal(disableRequestGeofence, "disableRequestGeofence", "disable_request_geofence")
+        if (map.containsKey("enableRequestGeofence")) {
+            disableRequestGeofence = !map.getVal("enableRequestGeofence", !disableRequestGeofence)
+        }
+        disableGetFromLocation = map.getAnyVal(disableGetFromLocation, "disableGetFromLocation", "disable_get_from_location")
+        if (map.containsKey("enableGetFromLocation")) {
+            disableGetFromLocation = !map.getVal("enableGetFromLocation", !disableGetFromLocation)
+        }
 
-        enableAGPS = map.getVal("enableAGPS", enableAGPS)
-        loopBroadcastLocation = map.getVal("loopBroadcastLocation", loopBroadcastLocation)
-        needDowngradeToCdma = map.getVal("needDowngradeToCdma", needDowngradeToCdma)
-        hideBaseStation = map.getVal("hideBaseStation", hideBaseStation)
+        enableAGPS = map.getAnyVal(enableAGPS, "enableAGPS", "enable_agps")
+        loopBroadcastLocation = map.getAnyVal(loopBroadcastLocation, "loopBroadcastLocation", "loop_broadcast_location", "loop_broadcastlocation")
+        needDowngradeToCdma = map.getAnyVal(needDowngradeToCdma, "needDowngradeToCdma", "need_downgrade_to_2g")
+        hideBaseStation = map.getAnyVal(hideBaseStation, "hideBaseStation", "hide_base_station")
 
         // 3) Mock WiFi 列表（需 parse，由本层处理）
-        if (map.containsKey("mockWifiList")) {
-            wifiData.mockWifiList = parseMockWifiList(map["mockWifiList"])
+        when {
+            map.containsKey("mockWifiList") -> wifiData.mockWifiList = parseMockWifiList(map["mockWifiList"])
+            map.containsKey("mock_wifi_list") -> wifiData.mockWifiList = parseMockWifiList(map["mock_wifi_list"])
         }
 
         // 4) 交叉后处理
@@ -590,13 +598,17 @@ object FakeLoc {
                     if (value is Number) value.toLong() as T
                     else value.toString().toLongOrNull() as? T ?: default
                 }
-                Float::class -> {
-                    if (value is Number) value.toFloat() as T
-                    else value.toString().toFloatOrNull() as? T ?: default
-                }
-                String::class -> value.toString() as T
-                else -> default
+            Float::class -> {
+                if (value is Number) value.toFloat() as T
+                else value.toString().toFloatOrNull() as? T ?: default
             }
+            Double::class -> {
+                if (value is Number) value.toDouble() as T
+                else value.toString().toDoubleOrNull() as? T ?: default
+            }
+            String::class -> value.toString() as T
+            else -> default
+        }
         } catch (e: Exception) {
             default
         }

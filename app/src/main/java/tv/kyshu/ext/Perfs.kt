@@ -224,6 +224,13 @@ var Context.disableWifiScan: Boolean
     get() = sharedPrefs.getBoolean("disableWifiScan", FakeLoc.wifiData.disableWifiScan)
     set(value) = sharedPrefs.edit {
         putBoolean("disableWifiScan", value)
+        FakeLoc.wifiData.disableWifiScan = value
+    }
+
+var Context.enableMockWifi: Boolean
+    get() = sharedPrefs.getBoolean("enableMockWifi", disableWifiScan || FakeLoc.enableMockWifi)
+    set(value) = sharedPrefs.edit {
+        putBoolean("enableMockWifi", value)
         FakeLoc.enableMockWifi = value
     }
 

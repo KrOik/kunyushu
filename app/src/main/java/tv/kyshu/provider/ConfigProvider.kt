@@ -10,6 +10,8 @@ import android.net.Uri
 import android.os.Binder
 import android.os.Bundle
 import com.alibaba.fastjson2.JSONObject
+import tv.kyshu.service.MockServiceHelper
+import tv.kyshu.ui.mock.HistoricalLocation
 import tv.kyshu.xposed.utils.FakeLoc
 import tv.kyshu.xposed.utils.PortalIdentity
 import java.util.concurrent.ConcurrentLinkedQueue
@@ -155,37 +157,81 @@ class ConfigProvider : ContentProvider() {
     private fun queryConfig(): Cursor {
         val cursor = MatrixCursor(arrayOf("key", "value", "type"))
         val ctx = context ?: return cursor
+        val prefs = ctx.getSharedPreferences(MockServiceHelper.PROVIDER_NAME, Context.MODE_PRIVATE)
 
         fun safeRead(key: String, block: () -> Unit) {
             try { block() } catch (e: Exception) {
                 android.util.Log.w("ConfigProvider", "Failed to read config key '$key': ${e.message}")
             }
         }
+        fun bool(key: String, prefKey: String, default: Boolean) =
+            safeRead(key) { addRow(cursor, key, prefs.getBoolean(prefKey, default).toString(), "boolean") }
+        fun int(key: String, prefKey: String, default: Int) =
+            safeRead(key) { addRow(cursor, key, prefs.getInt(prefKey, default).toString(), "int") }
+        fun long(key: String, prefKey: String, default: Long) =
+            safeRead(key) { addRow(cursor, key, prefs.getLong(prefKey, default).toString(), "long") }
+        fun float(key: String, prefKey: String, default: Float) =
+            safeRead(key) { addRow(cursor, key, prefs.getFloat(prefKey, default).toString(), "float") }
+        fun doubleFromFloat(key: String, prefKey: String, default: Double) =
+            safeRead(key) { addRow(cursor, key, prefs.getFloat(prefKey, default.toFloat()).toDouble().toString(), "double") }
+        fun string(key: String, prefKey: String, default: String) =
+            safeRead(key) { addRow(cursor, key, prefs.getString(prefKey, default).orEmpty(), "string") }
+        val selectedLocation = runCatching {
+            prefs.getString("selectedLocation", null)?.let { HistoricalLocation.fromString(it) }
+        }.onFailure {
+            android.util.Log.w("ConfigProvider", "Failed to parse selectedLocation: ${it.message}")
+        }.getOrNull()
 
-        // Read config values from FakeLoc (static cached state synced from xposed module)
-        safeRead("enable_log") { val v = FakeLoc.enableLog; addRow(cursor, "enable_log", v.toString(), "boolean") }
-        safeRead("enable_debug_log") { val v = FakeLoc.enableDebugLog; addRow(cursor, "enable_debug_log", v.toString(), "boolean") }
-        safeRead("enable") { val v = FakeLoc.enable; addRow(cursor, "enable", v.toString(), "boolean") }
-        safeRead("enable_mock_gnss") { val v = FakeLoc.enableMockGnss; addRow(cursor, "enable_mock_gnss", v.toString(), "boolean") }
-        safeRead("enable_mock_wifi") { val v = FakeLoc.enableMockWifi; addRow(cursor, "enable_mock_wifi", v.toString(), "boolean") }
+        // Read persisted app settings. The xposed side accepts these snake_case keys.
+        bool("enable_log", "enableLog", FakeLoc.enableLog)
+        bool("enable_debug_log", "debug", FakeLoc.enableDebugLog)
+        bool("enable", "enable", false)
+        bool("enable_mock_gnss", "enableMockGnss", FakeLoc.enableMockGnss)
+        bool("enable_mock_wifi", "enableMockWifi", FakeLoc.enableMockWifi)
+        bool("enable_nmea", "enableNMEA", FakeLoc.enableNMEA)
+        bool("enable_agps", "enableAGPS", FakeLoc.enableAGPS)
+        int("min_satellites", "minSatelliteCount", FakeLoc.minSatellites)
         // Sensitive fields: only if caller is authorized
         if (isSensitiveAllowed) {
-            safeRead("latitude") { val v = FakeLoc.latitude; addRow(cursor, "latitude", v.toString(), "double") }
-            safeRead("longitude") { val v = FakeLoc.longitude; addRow(cursor, "longitude", v.toString(), "double") }
-            safeRead("altitude") { val v = FakeLoc.altitude; addRow(cursor, "altitude", v.toString(), "double") }
-            safeRead("speed") { val v = FakeLoc.speed; addRow(cursor, "speed", v.toString(), "double") }
-            safeRead("accuracy") { val v = FakeLoc.accuracy; addRow(cursor, "accuracy", v.toString(), "float") }
+            safeRead("latitude") { addRow(cursor, "latitude", (selectedLocation?.lat ?: FakeLoc.latitude).toString(), "double") }
+            safeRead("longitude") { addRow(cursor, "longitude", (selectedLocation?.lon ?: FakeLoc.longitude).toString(), "double") }
+            doubleFromFloat("altitude", "altitude", FakeLoc.altitude)
+            doubleFromFloat("speed", "speed", FakeLoc.speed)
+            float("accuracy", "accuracy", FakeLoc.accuracy)
             safeRead("bearing") { val v = FakeLoc.bearing; addRow(cursor, "bearing", v.toString(), "double") }
         }
-        safeRead("hook_sensor") { val v = FakeLoc.hookSensor; addRow(cursor, "hook_sensor", v.toString(), "boolean") }
-        safeRead("is_app_in_background") { val v = FakeLoc.isAppInBackground; addRow(cursor, "is_app_in_background", v.toString(), "boolean") }
-        safeRead("is_screen_off") { val v = FakeLoc.isScreenOff; addRow(cursor, "is_screen_off", v.toString(), "boolean") }
-        safeRead("is_device_idle_mode") { val v = FakeLoc.isDeviceIdleMode; addRow(cursor, "is_device_idle_mode", v.toString(), "boolean") }
-        safeRead("disable_fused_location") { val v = FakeLoc.disableFusedLocation; addRow(cursor, "disable_fused_location", v.toString(), "boolean") }
-        safeRead("hide_mock") { val v = FakeLoc.locationData.hideMock; addRow(cursor, "hide_mock", v.toString(), "boolean") }
-        safeRead("disable_network_location") { val v = FakeLoc.disableNetworkLocation; addRow(cursor, "disable_network_location", v.toString(), "boolean") }
-        safeRead("speed_amplitude") { val v = FakeLoc.speedAmplitude; addRow(cursor, "speed_amplitude", v.toString(), "double") }
-        safeRead("min_speed") { val v = FakeLoc.minSpeed; addRow(cursor, "min_speed", v.toString(), "double") }
+        bool("hook_wifi", "hookWifi", FakeLoc.hookWifi)
+        bool("disable_wifi_scan", "disableWifiScan", FakeLoc.disableWifiScan)
+        string("mock_ssid", "mockSSID", FakeLoc.mockSSID)
+        string("mock_bssid", "mockBSSID", FakeLoc.mockBSSID)
+        string("mock_mac", "mockMac", FakeLoc.mockMac)
+        string("mock_ip", "mockIp", FakeLoc.mockIp)
+        int("mock_wifi_scan_count", "mockWifiScanCount", FakeLoc.mockWifiScanCount)
+        bool("hook_sensor", "hookSensor", false)
+        bool("enable_step_count_mock", "enableStepCountMock", FakeLoc.enableStepCountMock)
+        int("step_count", "stepCount", FakeLoc.stepCount)
+        bool("enable_shake_mock", "enableShakeMock", FakeLoc.enableShakeMock)
+        bool("enable_motion_mock", "enableMotionMock", FakeLoc.sensorData.enableMotionMock)
+        bool("keep_walking_waveform", "keepWalkingWaveform", FakeLoc.keepWalkingWaveform)
+        long("doze_sensor_interval_ms", "dozeSensorIntervalMs", FakeLoc.dozeSensorIntervalMs)
+        float("gait_freq", "gaitFreq", FakeLoc.gaitFreq)
+        float("gait_amp_scale", "gaitAmpScale", FakeLoc.gaitAmpScale)
+        bool("is_app_in_background", "isAppInBackground", FakeLoc.isAppInBackground)
+        bool("is_screen_off", "isScreenOff", FakeLoc.isScreenOff)
+        bool("is_device_idle_mode", "isDeviceIdleMode", FakeLoc.isDeviceIdleMode)
+        bool("disable_get_current_location", "disableGetCurrentLocation", FakeLoc.disableGetCurrentLocation)
+        bool("disable_register_location_listener", "disableRegisterLocationListener", FakeLoc.disableRegisterLocationListener)
+        bool("disable_fused_location", "disableFusedProvider", FakeLoc.disableFusedLocation)
+        bool("disable_request_geofence", "disableRequestGeofence", FakeLoc.disableRequestGeofence)
+        bool("disable_get_from_location", "disableGetFromLocation", FakeLoc.disableGetFromLocation)
+        bool("hide_base_station", "hideBaseStation", FakeLoc.hideBaseStation)
+        bool("need_downgrade_to_2g", "needDowngradeToCdma", FakeLoc.needDowngradeToCdma)
+        bool("loop_broadcast_location", "loopBroadcastLocation", FakeLoc.loopBroadcastLocation)
+        bool("hide_mock", "hideMock", FakeLoc.locationData.hideMock)
+        bool("disable_network_location", "disableNetworkLocation", FakeLoc.disableNetworkLocation)
+        doubleFromFloat("speed_amplitude", "speedAmplitude", FakeLoc.speedAmplitude)
+        doubleFromFloat("min_speed", "minSpeed", FakeLoc.minSpeed)
+        doubleFromFloat("max_speed", "maxSpeed", FakeLoc.maxSpeed)
 
         return cursor
     }

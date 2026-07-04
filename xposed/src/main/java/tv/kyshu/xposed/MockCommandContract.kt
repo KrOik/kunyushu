@@ -42,6 +42,7 @@ object MockCommandContract {
         const val SPEED_AMPLITUDE = "speed_amplitude"
         const val LAST_LOCATION = "last_location"
         const val LOOP_BROADCAST_LOCATION = "loop_broadcast_location"
+        const val ENABLE_MOCK_GNSS = "enable_mock_gnss"
         const val ENABLE_NMEA = "enable_nmea"
         const val ENABLE_AGPS = "enable_agps"
         const val MIN_SATELLITES = "min_satellites"
@@ -59,6 +60,7 @@ object MockCommandContract {
         const val ENABLE_STEP_COUNT_MOCK = "enable_step_count_mock"
         const val STEP_COUNT = "step_count"
         const val ENABLE_SHAKE_MOCK = "enable_shake_mock"
+        const val ENABLE_MOTION_MOCK = "enable_motion_mock"
         const val KEEP_WALKING_WAVEFORM = "keep_walking_waveform"
         const val DOZE_SENSOR_INTERVAL_MS = "doze_sensor_interval_ms"
         const val GAIT_FREQ = "gait_freq"
@@ -119,6 +121,9 @@ object MockCommandContract {
                 if (rely.containsKey(Keys.ALTITUDE)) FakeLoc.altitude = double(rely, Keys.ALTITUDE)
                 if (rely.containsKey(Keys.ACCURACY)) FakeLoc.accuracy = float(rely, Keys.ACCURACY)
 
+                if (rely.containsKey(Keys.ENABLE_MOCK_GNSS)) FakeLoc.enableMockGnss = boolean(rely, Keys.ENABLE_MOCK_GNSS)
+                if (rely.containsKey(Keys.ENABLE_NMEA)) FakeLoc.enableNMEA = boolean(rely, Keys.ENABLE_NMEA)
+                if (rely.containsKey(Keys.ENABLE_AGPS)) FakeLoc.enableAGPS = boolean(rely, Keys.ENABLE_AGPS)
                 if (rely.containsKey(Keys.ENABLE_MOCK_WIFI)) FakeLoc.enableMockWifi = boolean(rely, Keys.ENABLE_MOCK_WIFI)
                 if (rely.containsKey(Keys.DISABLE_WIFI_SCAN)) FakeLoc.disableWifiScan = boolean(rely, Keys.DISABLE_WIFI_SCAN)
                 if (rely.containsKey(Keys.MOCK_SSID)) FakeLoc.mockSSID = string(rely, Keys.MOCK_SSID) ?: ""
@@ -128,12 +133,14 @@ object MockCommandContract {
                 if (rely.containsKey(Keys.MOCK_WIFI_SCAN_COUNT)) FakeLoc.mockWifiScanCount = int(rely, Keys.MOCK_WIFI_SCAN_COUNT)
 
                 if (rely.containsKey(Keys.HIDE_BASE_STATION)) FakeLoc.hideBaseStation = boolean(rely, Keys.HIDE_BASE_STATION)
+                if (rely.containsKey(Keys.NEED_DOWNGRADE_TO_2G)) FakeLoc.needDowngradeToCdma = boolean(rely, Keys.NEED_DOWNGRADE_TO_2G)
                 if (rely.containsKey(Keys.MIN_SATELLITES)) FakeLoc.minSatellites = sanitizeMinSatellites(int(rely, Keys.MIN_SATELLITES))
 
                 if (rely.containsKey(Keys.HOOK_SENSOR)) FakeLoc.hookSensor = boolean(rely, Keys.HOOK_SENSOR)
                 if (rely.containsKey(Keys.ENABLE_STEP_COUNT_MOCK)) FakeLoc.enableStepCountMock = boolean(rely, Keys.ENABLE_STEP_COUNT_MOCK)
                 if (rely.containsKey(Keys.STEP_COUNT)) FakeLoc.stepCount = int(rely, Keys.STEP_COUNT)
                 if (rely.containsKey(Keys.ENABLE_SHAKE_MOCK)) FakeLoc.enableShakeMock = boolean(rely, Keys.ENABLE_SHAKE_MOCK)
+                if (rely.containsKey(Keys.ENABLE_MOTION_MOCK)) FakeLoc.sensorData.enableMotionMock = boolean(rely, Keys.ENABLE_MOTION_MOCK)
                 if (rely.containsKey(Keys.KEEP_WALKING_WAVEFORM)) FakeLoc.keepWalkingWaveform = boolean(rely, Keys.KEEP_WALKING_WAVEFORM)
                 if (rely.containsKey(Keys.DOZE_SENSOR_INTERVAL_MS)) FakeLoc.dozeSensorIntervalMs = numberLong(rely, Keys.DOZE_SENSOR_INTERVAL_MS)
                 if (rely.containsKey(Keys.GAIT_FREQ)) FakeLoc.gaitFreq = float(rely, Keys.GAIT_FREQ)
@@ -179,6 +186,7 @@ object MockCommandContract {
             rely.putDouble(Keys.SPEED_AMPLITUDE, 0.0)
             rely.putString(Keys.LAST_LOCATION, null)
             rely.putBoolean(Keys.HAS_BEARINGS, hasBearings)
+            rely.putBoolean(Keys.ENABLE_MOCK_GNSS, enableMockGnss)
             rely.putBoolean(Keys.ENABLE_AGPS, enableAGPS)
             rely.putBoolean(Keys.ENABLE_NMEA, enableNMEA)
             rely.putInt(Keys.MIN_SATELLITES, minSatellites)
@@ -197,6 +205,7 @@ object MockCommandContract {
             rely.putInt(Keys.STEP_COUNT, stepCount)
             rely.putLong("current_step_count", tv.kyshu.xposed.hooks.sensor.SystemSensorManagerHook.getCurrentStepCount())
             rely.putBoolean(Keys.ENABLE_SHAKE_MOCK, enableShakeMock)
+            rely.putBoolean(Keys.ENABLE_MOTION_MOCK, sensorData.enableMotionMock)
             rely.putBoolean(Keys.KEEP_WALKING_WAVEFORM, keepWalkingWaveform)
             rely.putInt(Keys.DOZE_SENSOR_INTERVAL_MS, dozeSensorIntervalMs.toInt())
             rely.putFloat(Keys.GAIT_FREQ, gaitFreq)

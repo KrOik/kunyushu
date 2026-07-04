@@ -308,20 +308,9 @@ class GaitSimulator(private val params: GaitModelParams) {
             val json = try {
                 context.assets.open(ASSET_NAME).bufferedReader().use { it.readText() }
             } catch (e1: Throwable) {
-                // 后备1: 从模块自身 APK 的 assets/ 读取（system_server 环境下可用）
-                try {
-                    val codeSource = GaitSimulator::class.java.protectionDomain.codeSource
-                    val jarPath = URI(codeSource.location.toExternalForm()).path
-                    ZipFile(jarPath).use { zip ->
-                        val entry = zip.getEntry("assets/$ASSET_NAME")
-                            ?: zip.getEntry(ASSET_NAME)
-                            ?: return@use null
-                        zip.getInputStream(entry).bufferedReader().use { it.readText() }
-                    }
-                } catch (e2: Throwable) {
-                    Logger.error("GaitSimulator: Failed to load $ASSET_NAME via APK zip", e2)
-                    null
-                }
+                Logger.warn("GaitSimulator: context asset unavailable for ${context.packageName}", e1)
+                loadDefaultFromClassLoader()
+                    ?: loadDefaultFromApkZip()
             } ?: return null
             val params = try {
                 parseJson(JSONObject(json))
@@ -330,6 +319,46 @@ class GaitSimulator(private val params: GaitModelParams) {
                 return null
             }
             return GaitSimulator(params)
+        }
+
+        private fun loadDefaultFromClassLoader(): String? {
+            val loaders = listOfNotNull(
+                GaitSimulator::class.java.classLoader,
+                Thread.currentThread().contextClassLoader,
+                ClassLoader.getSystemClassLoader(),
+            )
+            val names = listOf("assets/$ASSET_NAME", ASSET_NAME)
+            for (loader in loaders) {
+                for (name in names) {
+                    val text = runCatching {
+                        loader.getResourceAsStream(name)?.bufferedReader()?.use { it.readText() }
+                    }.getOrNull()
+                    if (!text.isNullOrBlank()) {
+                        Logger.info("GaitSimulator: loaded $ASSET_NAME via classloader resource=$name loader=$loader")
+                        return text
+                    }
+                }
+            }
+            return null
+        }
+
+        private fun loadDefaultFromApkZip(): String? {
+            return try {
+                val codeSource = GaitSimulator::class.java.protectionDomain?.codeSource ?: run {
+                    Logger.warn("GaitSimulator: codeSource unavailable; APK zip fallback skipped")
+                    return null
+                }
+                val jarPath = URI(codeSource.location.toExternalForm()).path
+                ZipFile(jarPath).use { zip ->
+                    val entry = zip.getEntry("assets/$ASSET_NAME")
+                        ?: zip.getEntry(ASSET_NAME)
+                        ?: return@use null
+                    zip.getInputStream(entry).bufferedReader().use { it.readText() }
+                }
+            } catch (e: Throwable) {
+                Logger.warn("GaitSimulator: Failed to load $ASSET_NAME via APK zip", e)
+                null
+            }
         }
 
         /**

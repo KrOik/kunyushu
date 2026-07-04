@@ -70,11 +70,11 @@ class MockState {
     internal fun updateFromMap(map: Map<String, Any?>) {
         // forceDisable 保护：崩溃静默模式激活时，reload 不得重新启用 mock
         if (!forceDisable) {
-            enable = map.getVal("enable", enable)
+            enable = map.getAnyVal(enable, "enable")
         }
-        enableDebugLog = map.getVal("enableDebugLog", enableDebugLog)
-        enableLog = map.getVal("enableLog", enableLog)
-        rootAvailable = map.getVal("rootAvailable", rootAvailable)
-        rootMode = map.getVal("rootMode", rootMode)
+        enableDebugLog = map.getAnyVal(enableDebugLog, "enableDebugLog", "enable_debug_log", "debug")
+        enableLog = map.getAnyVal(enableLog, "enableLog", "enable_log")
+        rootAvailable = map.getAnyVal(rootAvailable, "rootAvailable", "root_available")
+        rootMode = map.getAnyVal(rootMode, "rootMode", "root_mode")
     }
 }

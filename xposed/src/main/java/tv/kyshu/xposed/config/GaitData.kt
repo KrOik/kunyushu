@@ -45,9 +45,9 @@ class GaitData {
      * 从配置 map 更新 [GaitData] 专属字段。
      */
     internal fun updateFromMap(map: Map<String, Any?>) {
-        gaitFreq = map.getVal("gaitFreq", gaitFreq)
-        gaitAmpScale = map.getVal("gaitAmpScale", gaitAmpScale)
-        gaitParamsJson = map.getVal("gaitParamsJson", gaitParamsJson)
+        gaitFreq = map.getAnyVal(gaitFreq, "gaitFreq", "gait_freq")
+        gaitAmpScale = map.getAnyVal(gaitAmpScale, "gaitAmpScale", "gait_amp_scale")
+        gaitParamsJson = map.getAnyVal(gaitParamsJson, "gaitParamsJson", "gait_params_json")
 
         if (gaitFreq <= 0f) gaitFreq = 2.8f
         if (gaitAmpScale <= 0f) gaitAmpScale = 1.0f

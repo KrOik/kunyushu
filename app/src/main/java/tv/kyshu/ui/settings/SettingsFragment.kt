@@ -29,6 +29,7 @@ import tv.kyshu.ext.disableFusedProvider
 import tv.kyshu.ext.disableGetCurrentLocation
 import tv.kyshu.ext.disableRegisterLocationListener
 import tv.kyshu.ext.disableWifiScan
+import tv.kyshu.ext.enableMockWifi
 import tv.kyshu.ext.hookSensor
 import tv.kyshu.ext.minSatelliteCount
 import tv.kyshu.ext.needDowngradeToCdma
@@ -267,6 +268,7 @@ class SettingsFragment : Fragment() {
         binding.disableWlanScanSwitch.isChecked = requireContext().disableWifiScan
         binding.disableWlanScanSwitch.setOnCheckedChangeListener { _, isChecked ->
             requireContext().disableWifiScan = isChecked
+            requireContext().enableMockWifi = isChecked
             Log.switchOp("Settings", "WLAN扫描", isChecked)
             with(mockServiceViewModel) {
                 if (isChecked) {

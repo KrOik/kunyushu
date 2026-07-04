@@ -117,6 +117,8 @@ internal object LocationServiceHook: BaseLocationHook() {
     private var lastMockGnssData: MockGnssData? = null
     private var lastMockGnssDataTime = 0L
     private var lastSatelliteCalcTime = 0L
+    private var lastSatelliteDiagTime = 0L
+    private val loggedSatelliteCalcErrors = ConcurrentHashMap.newKeySet<String>()
 
     internal fun findGnssStatusCallback(args: Array<Any?>): Any? {
         return args.filterNotNull().firstOrNull {
@@ -226,9 +228,19 @@ internal object LocationServiceHook: BaseLocationHook() {
     }
 
     private fun ensureEphemerisLoaded() {
-        val path = FakeLoc.rinexPath ?: return
+        val path = FakeLoc.rinexPath ?: run {
+            if (loggedSatelliteCalcErrors.add("rinex.missing")) {
+                Logger.info("[LocationServiceHook] RINEX path empty; GNSS star map uses deterministic fallback satellites")
+            }
+            return
+        }
         val file = File(path)
-        if (!file.exists()) return
+        if (!file.exists()) {
+            if (loggedSatelliteCalcErrors.add("rinex.notfound.$path")) {
+                Logger.warn("[LocationServiceHook] RINEX file not found: $path; using fallback satellites")
+            }
+            return
+        }
 
         if (ephemerisMap.isEmpty() || file.lastModified() > lastRinexLoadTime) {
             lastRinexLoadTime = System.currentTimeMillis()
@@ -374,6 +386,10 @@ internal object LocationServiceHook: BaseLocationHook() {
                     state.hasEphemeris = false
                     state.hasAlmanac = true
                     state.usedInFix = false
+                    val key = "calc.${sat.constellation}.${sat.prn}"
+                    if (loggedSatelliteCalcErrors.add(key)) {
+                        Logger.warn("[LocationServiceHook] Satellite position calc failed: constellation=${sat.constellation} prn=${sat.prn}", e)
+                    }
                 }
             } else {
                 // Legacy random drift (无星历时使用)
@@ -413,6 +429,16 @@ internal object LocationServiceHook: BaseLocationHook() {
 
         if (usedSatellites.size > 24) {
             usedSatellites.drop(24).forEach { it.usedInFix = false }
+        }
+        val diagNow = SystemClock.elapsedRealtime()
+        if (force || diagNow - lastSatelliteDiagTime > 5_000L) {
+            lastSatelliteDiagTime = diagNow
+            val usedAfterCap = multiConstellationSatellites.map { getOrCreateState(it) }.count { it.usedInFix }
+            Logger.info(
+                "[LocationServiceHook] GNSS calc summary: enableMockGnss=${FakeLoc.enableMockGnss}, " +
+                    "rinex=${FakeLoc.rinexPath ?: "(none)"}, ephemeris=${ephemerisMap.size}, " +
+                    "satellites=${satelliteStates.size}, used=$usedAfterCap, min=${normalizedMinSatellites()}"
+            )
         }
     }
 

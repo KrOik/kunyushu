@@ -57,18 +57,26 @@ class SensorData {
     @Volatile
     var keepWalkingWaveform = false
 
+    /**
+     * 是否模拟运动传感器（加速度计/陀螺仪/重力等）。
+     * 与enableStepCountMock分离，允许只模拟步数而不篡改IMU。
+     */
+    @Volatile
+    var enableMotionMock: Boolean = true
+
     // ==================== 子对象专属更新 ====================
 
     /**
      * 从配置 map 更新 [SensorData] 专属字段。
      */
     internal fun updateFromMap(map: Map<String, Any?>) {
-        hookSensor = map.getVal("hookSensor", hookSensor)
-        enableStepCountMock = map.getVal("enableStepCountMock", enableStepCountMock)
-        stepCount = map.getVal("stepCount", stepCount)
-        enableShakeMock = map.getVal("enableShakeMock", enableShakeMock)
-        keepWalkingWaveform = map.getVal("keepWalkingWaveform", keepWalkingWaveform)
-        dozeSensorIntervalMs = map.getVal("dozeSensorIntervalMs", dozeSensorIntervalMs)
+        hookSensor = map.getAnyVal(hookSensor, "hookSensor", "hook_sensor")
+        enableStepCountMock = map.getAnyVal(enableStepCountMock, "enableStepCountMock", "enable_step_count_mock")
+        stepCount = map.getAnyVal(stepCount, "stepCount", "step_count")
+        enableShakeMock = map.getAnyVal(enableShakeMock, "enableShakeMock", "enable_shake_mock")
+        enableMotionMock = map.getAnyVal(enableMotionMock, "enableMotionMock", "enable_motion_mock")
+        keepWalkingWaveform = map.getAnyVal(keepWalkingWaveform, "keepWalkingWaveform", "keep_walking_waveform")
+        dozeSensorIntervalMs = map.getAnyVal(dozeSensorIntervalMs, "dozeSensorIntervalMs", "doze_sensor_interval_ms")
 
         if (stepCount < 0) stepCount = 0
         if (dozeSensorIntervalMs < 20L) dozeSensorIntervalMs = 20L
