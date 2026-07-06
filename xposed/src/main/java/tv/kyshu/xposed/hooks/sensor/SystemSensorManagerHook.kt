@@ -30,10 +30,12 @@ import tv.kyshu.xposed.utils.safeCacheDir
 import java.io.File
 import java.lang.reflect.Field
 import java.lang.reflect.Method
+import java.util.Locale
+import kotlin.math.roundToLong
 
 // https://github.com/Frazew/VirtualSensor/blob/master/app/src/main/java/fr/frazew/virtualgyroscope/XposedMod.java#L298
 object SystemSensorManagerHook {
-    private const val STEP_PUSH_INTERVAL_MS = 500L
+    private const val DEFAULT_SENSOR_PUSH_INTERVAL_MS = 500L
     private const val STEP_PUSH_IDLE_LIMIT = 20
     private const val STEP_PUSH_ERROR_LIMIT = 3
     private const val SENSOR_SHAPE_FIELD_LIMIT = 32
@@ -80,6 +82,7 @@ object SystemSensorManagerHook {
     private val magBase = floatArrayOf(25.0f, 2.0f, -42.0f)
     private var lastMagUpdateMs: Long = 0L
     private var lastStepAdvanceMs: Long = 0L
+    private var stepAdvanceCarryMs: Double = 0.0
     // 步数主动事件推送线程
     @Volatile
     private var stepEventThread: Thread? = null
@@ -359,6 +362,18 @@ object SystemSensorManagerHook {
 
     private fun isEffectiveMotionMockEnabled(): Boolean {
         return FakeLoc.sensorData.enableMotionMock || FakeLoc.sensorData.enableStepCountMock
+    }
+
+    internal fun stepPushIntervalMsForFrequency(freqHz: Float): Long {
+        return (1000.0 / freqHz.coerceIn(0.6f, 4.0f)).roundToLong().coerceAtLeast(1L)
+    }
+
+    private fun currentStepPushIntervalMs(): Long {
+        return if (FakeLoc.sensorData.enableStepCountMock) {
+            stepPushIntervalMsForFrequency(FakeLoc.gaitData.gaitFreq)
+        } else {
+            DEFAULT_SENSOR_PUSH_INTERVAL_MS
+        }
     }
 
     // ==================== SensorEventQueue 层注入（核心） ====================
@@ -986,7 +1001,11 @@ object SystemSensorManagerHook {
         if (FakeLoc.sensorData.enableStepCountMock) {
             updateStepGoal()
             val now = SystemClock.elapsedRealtime()
-            val deltaMs = if (lastStepAdvanceMs == 0L) 500L else (now - lastStepAdvanceMs).coerceAtMost(2000L)
+            val deltaMs = if (lastStepAdvanceMs == 0L) {
+                currentStepPushIntervalMs()
+            } else {
+                (now - lastStepAdvanceMs).coerceAtMost(2000L)
+            }
             advanceStepCounter(deltaMs)
             lastStepAdvanceMs = now
             ensureStepEventPusher()
@@ -1175,6 +1194,7 @@ object SystemSensorManagerHook {
         val stepCountChanged = FakeLoc.sensorData.stepCount != mLastConfiguredStepCount
 
         if (!enableStep) {
+            stepAdvanceCarryMs = 0.0
             logOnce("stepGoal.disabled") {
                 "[SensorHook][StepPusher] updateStepGoal skipped: ${stepPusherState()}"
             }
@@ -1187,6 +1207,7 @@ object SystemSensorManagerHook {
         if (enableStep && (stepMockJustEnabled || stepCountChanged)) {
             mStepGoalEnd = mCurrentStepCount + userStepCount
             mLastConfiguredStepCount = FakeLoc.sensorData.stepCount
+            stepAdvanceCarryMs = 0.0
             Logger.info("[SensorHook][StepPusher] step goal updated: justEnabled=$stepMockJustEnabled changed=$stepCountChanged current=$mCurrentStepCount add=$userStepCount end=$mStepGoalEnd ${listenerMapSummary()}")
         } else {
             logOnce("stepGoal.unchanged.${FakeLoc.sensorData.stepCount}") {
@@ -1202,32 +1223,41 @@ object SystemSensorManagerHook {
      */
     fun advanceStepCounter(deltaMs: Long): Long {
         if (!FakeLoc.sensorData.enableStepCountMock) {
+            stepAdvanceCarryMs = 0.0
             logOnce("stepAdvance.disabled") {
                 "[SensorHook][StepPusher] advanceStepCounter skipped: enableStepCountMock=false deltaMs=$deltaMs"
             }
             return 0L
         }
         if (mCurrentStepCount >= mStepGoalEnd) {
+            stepAdvanceCarryMs = 0.0
             logOnce("stepAdvance.goalReached.$mStepGoalEnd") {
                 "[SensorHook][StepPusher] advanceStepCounter goal reached: ${stepPusherState()} deltaMs=$deltaMs"
             }
             return 0L
         }
         val freqHz = FakeLoc.gaitData.gaitFreq.coerceIn(0.6f, 4.0f).toDouble()
-        val stepIntervalMs = 1000.0 / freqHz
-        val add = (deltaMs / stepIntervalMs).toLong()
+        val stepIntervalMs = stepPushIntervalMsForFrequency(FakeLoc.gaitData.gaitFreq).toDouble()
+        val availableMs = deltaMs.coerceAtLeast(0L).toDouble() + stepAdvanceCarryMs
+        val add = (availableMs / stepIntervalMs).toLong()
         if (add <= 0L) {
+            stepAdvanceCarryMs = availableMs.coerceAtMost(stepIntervalMs)
             logOnce("stepAdvance.noAdd") {
-                "[SensorHook][StepPusher] advanceStepCounter no increment: deltaMs=$deltaMs freqHz=$freqHz intervalMs=$stepIntervalMs ${stepPusherState()}"
+                "[SensorHook][StepPusher] advanceStepCounter no increment: deltaMs=$deltaMs carry=${String.format(Locale.US, "%.1f", stepAdvanceCarryMs)} freqHz=$freqHz intervalMs=$stepIntervalMs ${stepPusherState()}"
             }
             return 0L
         }
         val newCount = (mCurrentStepCount + add).coerceAtMost(mStepGoalEnd)
         val stepsAdded = newCount - mCurrentStepCount
         mCurrentStepCount = newCount
+        stepAdvanceCarryMs = if (mCurrentStepCount >= mStepGoalEnd) {
+            0.0
+        } else {
+            (availableMs - stepsAdded * stepIntervalMs).coerceIn(0.0, stepIntervalMs)
+        }
         saveStepCount()
         logOnce("stepAdvance.first") {
-            "[SensorHook][StepPusher] advanceStepCounter advanced: added=$stepsAdded deltaMs=$deltaMs ${stepPusherState()}"
+            "[SensorHook][StepPusher] advanceStepCounter advanced: added=$stepsAdded deltaMs=$deltaMs carry=${String.format(Locale.US, "%.1f", stepAdvanceCarryMs)} ${stepPusherState()}"
         }
         return stepsAdded
     }
@@ -1258,24 +1288,29 @@ object SystemSensorManagerHook {
                 Logger.info("[SensorHook][StepPusher] active StepEventPusher loop started: ${stepPusherState()}")
                 var idlePolls = 0
                 var consecutiveErrors = 0
+                var lastLoopAtMs = SystemClock.elapsedRealtime()
                 while (!Thread.currentThread().isInterrupted && isActiveSensorPusherEnabled()) {
                     if (DomainGuard.isDomainDisabled(DomainGuard.Domain.SENSOR)) {
                         Logger.warn("[SensorHook][StepPusher] active StepEventPusher stopped: SENSOR domain disabled")
                         break
                     }
                     try {
-                        Thread.sleep(STEP_PUSH_INTERVAL_MS)
+                        val pushIntervalMs = currentStepPushIntervalMs()
+                        Thread.sleep(pushIntervalMs)
+                        val loopNowMs = SystemClock.elapsedRealtime()
+                        val elapsedMs = (loopNowMs - lastLoopAtMs).coerceIn(1L, 2_000L)
+                        lastLoopAtMs = loopNowMs
 
                         if (FakeLoc.sensorData.enableStepCountMock) {
                             updateStepGoal()
                         }
                         val stepsAdded = if (FakeLoc.sensorData.enableStepCountMock) {
-                            advanceStepCounter(STEP_PUSH_INTERVAL_MS)
+                            advanceStepCounter(elapsedMs)
                         } else {
                             0L
                         }
                         val currentCount = mCurrentStepCount
-                        val nowMs = SystemClock.elapsedRealtime()
+                        val nowMs = loopNowMs
 
                         var delivered = 0
                         var stepListeners = 0
@@ -1345,7 +1380,7 @@ object SystemSensorManagerHook {
                         } else if (stepListeners == 0 && motionListeners == 0) {
                             idlePolls += 1
                             if (idlePolls >= STEP_PUSH_IDLE_LIMIT) {
-                                Logger.info("[SensorHook][StepPusher] active StepEventPusher stopped: no active sensor listeners after ${idlePolls * STEP_PUSH_INTERVAL_MS}ms; ${stepPusherState()}")
+                                Logger.info("[SensorHook][StepPusher] active StepEventPusher stopped: no active sensor listeners after ${idlePolls * pushIntervalMs}ms; ${stepPusherState()}")
                                 break
                             }
                             logOnce("stepPusher.noListener", "[SensorHook][StepPusher] active StepEventPusher found no active sensor listeners; ${stepPusherState()}")
