@@ -3,7 +3,7 @@
  *
  * GaitSimulator — 基于 mockWalk 录制数据解算的步态仿真器。
  * 从 gait_analysis.json 读取 Fourier 谐波 + 高斯脉冲参数，
- * 重构三轴 accel/gyro/gravity/linear 信号，并叠加 humanization：
+ * 重构三轴 accel/gyro/gravity/linear 信号，并叠加受限 humanization：
  *   - 随机游走偏置 (bias drift)
  *   - 相位抖动 (phase jitter)
  *   - 增益抖动 (gain jitter)
@@ -103,7 +103,7 @@ class GaitSimulator(private val params: GaitModelParams) {
      * @return [accel[3], gyro[3], gravity[3], linear[3]]
      */
     fun getMotionValues(tSec: Float): Array<FloatArray> {
-        val intensity = if (params.humanizeIntensity < 0f) 0f else params.humanizeIntensity
+        val intensity = boundedHumanizeIntensity()
 
         if (!params.humanize || intensity <= 0f) {
             return computePure(tSec)
@@ -113,19 +113,22 @@ class GaitSimulator(private val params: GaitModelParams) {
             return arrayOf(FloatArray(3), FloatArray(3), FloatArray(3), FloatArray(3))
         }
 
+        val pure = computePure(tSec)
+
         // === Humanization: 抖动 + jerk + drift + tremor ===
 
         // 1. 随机游走偏置 (2% 概率更新)
         if (Random.nextInt(50) == 0) {
+            val biasLimit = 0.5f * intensity
             for (i in 0 until 6) {
                 bias[i] += (Random.nextFloat() - 0.5f) * 0.02f * intensity
-                bias[i] = bias[i].coerceIn(-0.5f, 0.5f)
+                bias[i] = bias[i].coerceIn(-biasLimit, biasLimit)
             }
         }
 
         // 2. 频率漂移 (0.8% 概率更新目标)
         if (Random.nextInt(125) == 0) {
-            freqDriftTarget = (Random.nextFloat() - 0.5f) * 0.16f * params.frequency * intensity
+            freqDriftTarget = (Random.nextFloat() - 0.5f) * 0.02f * params.frequency * intensity
         }
         freqDrift += (freqDriftTarget - freqDrift) * 0.02f
         val effectiveFreq = params.frequency + freqDrift
@@ -234,7 +237,22 @@ class GaitSimulator(private val params: GaitModelParams) {
             outAccel[i] = outLinear[i] + outGravity[i]
         }
 
+        clampToPureReplay(outAccel, pure[0], intensity, floor = 1.0f)
+        clampToPureReplay(outGyro, pure[1], intensity, floor = 0.1f)
+        clampToPureReplay(outGravity, pure[2], intensity, floor = 1.0f)
+        clampToPureReplay(outLinear, pure[3], intensity, floor = 1.0f)
+
         return arrayOf(outAccel, outGyro, outGravity, outLinear)
+    }
+
+    private fun boundedHumanizeIntensity(): Float =
+        params.humanizeIntensity.coerceIn(0f, MAX_REPLAY_HUMANIZE_INTENSITY)
+
+    private fun clampToPureReplay(values: FloatArray, pure: FloatArray, ratio: Float, floor: Float) {
+        for (i in 0 until minOf(values.size, pure.size)) {
+            val limit = maxOf(kotlin.math.abs(pure[i]), floor) * ratio
+            values[i] = values[i].coerceIn(pure[i] - limit, pure[i] + limit)
+        }
     }
 
     private fun computePure(tSec: Float): Array<FloatArray> {
@@ -297,21 +315,19 @@ class GaitSimulator(private val params: GaitModelParams) {
     }
 
     companion object {
+        internal const val MAX_REPLAY_HUMANIZE_INTENSITY = 0.05f
         private const val ASSET_NAME = "gait_default.json"
 
         /**
          * 从 assets/gait_default.json 加载默认步态参数。
-         * 优先用 Context 的 AssetManager，后备用模块 APK ZipFile 读取。
+         * 优先用模块 ClassLoader，后备用 Context AssetManager 和 APK ZipFile 读取。
          */
         fun loadDefault(context: Context?): GaitSimulator? {
             if (context == null) return null
-            val json = try {
-                context.assets.open(ASSET_NAME).bufferedReader().use { it.readText() }
-            } catch (e1: Throwable) {
-                Logger.warn("GaitSimulator: context asset unavailable for ${context.packageName}", e1)
-                loadDefaultFromClassLoader()
-                    ?: loadDefaultFromApkZip()
-            } ?: return null
+            val json = loadDefaultFromClassLoader()
+                ?: loadDefaultFromContextAssets(context)
+                ?: loadDefaultFromApkZip()
+                ?: return null
             val params = try {
                 parseJson(JSONObject(json))
             } catch (e: Throwable) {
@@ -319,6 +335,14 @@ class GaitSimulator(private val params: GaitModelParams) {
                 return null
             }
             return GaitSimulator(params)
+        }
+
+        private fun loadDefaultFromContextAssets(context: Context): String? {
+            return try {
+                context.assets.open(ASSET_NAME).bufferedReader().use { it.readText() }
+            } catch (_: Throwable) {
+                null
+            }
         }
 
         private fun loadDefaultFromClassLoader(): String? {

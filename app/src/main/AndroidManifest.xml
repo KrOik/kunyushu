@@ -36,9 +36,8 @@
 
 
 
-    <!-- ConfigProvider 安全权限: signature 级别保护 -->
-    <permission android:name="tv.kyshu.xposed.permission.CONFIG"
-        android:protectionLevel="signature" />
+    <!-- ConfigProvider uses path-aware checks internally. A manifest-level
+         signature permission would block Xposed code running under target app UIDs. -->
     <application
         android:name=".Portal"
         android:allowBackup="false"
@@ -96,8 +95,7 @@
             android:name="tv.kyshu.provider.ConfigProvider"
             android:authorities="tv.kyshu.xposed.config"
             android:exported="true"
-            android:grantUriPermissions="false"
-            android:permission="tv.kyshu.xposed.permission.CONFIG" />
+            android:grantUriPermissions="false" />
         <receiver
             android:name="tv.kyshu.receiver.StartupDiagnosticsReceiver"
             android:enabled="true"

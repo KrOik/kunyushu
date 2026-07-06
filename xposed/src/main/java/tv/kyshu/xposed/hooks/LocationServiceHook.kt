@@ -4,6 +4,7 @@
 package tv.kyshu.xposed.hooks
 
 import android.location.Location
+import android.net.Uri
 import android.os.Binder
 import android.os.Build
 import android.os.Bundle
@@ -48,10 +49,18 @@ import tv.kyshu.xposed.gnss.Ephemeris
 import tv.kyshu.xposed.gnss.GnssMath
 import tv.kyshu.xposed.gnss.GnssType
 import tv.kyshu.xposed.gnss.RinexNavigationParser
+import tv.kyshu.xposed.utils.safeCacheDir
+import tv.kyshu.xposed.utils.safeFilesDir
 import java.io.File
 import android.os.SystemClock
 
 private const val MAX_SATELLITES = 56 // BDS 35 + GPS 32 + GLONASS 24 + others
+private const val RINEX_PROVIDER_URI = "content://tv.kyshu.xposed.config/rinex"
+private const val RINEX_CACHE_FILE = "portal_rinex_cache.rnx"
+private const val RINEX_SYSTEM_CACHE_DIR = "/data/system/portal-rinex-cache"
+private const val MIN_RINEX_FILE_BYTES = 1024L
+private const val MAX_RINEX_FILE_BYTES = 64L * 1024L * 1024L
+private const val RINEX_HEADER_SCAN_BYTES = 8192
 
 // GPS frequencies
 private const val GPS_L1_FREQ = 1575.420f // MHz
@@ -95,6 +104,7 @@ internal object LocationServiceHook: BaseLocationHook() {
         "onGnssStatusChanged",
     )
     private val loggedGnssStatusCallbackMisses = ConcurrentHashMap.newKeySet<String>()
+    private val loggedLocationListenerSkips = ConcurrentHashMap.newKeySet<String>()
 
     // ==================== 卫星星图状态 ====================
 
@@ -111,7 +121,13 @@ internal object LocationServiceHook: BaseLocationHook() {
 
     val satelliteStates = ConcurrentHashMap<String, SatelliteState>()
     private var ephemerisMap = ConcurrentHashMap<String, Ephemeris>()
-    private var lastRinexLoadTime = 0L
+    private val rinexLoadLock = Any()
+    private var lastRinexLoadKey: RinexLoadKey? = null
+    private var lastFailedRinexLoadKey: RinexLoadKey? = null
+    @Volatile private var cachedProviderRinexSourcePath: String? = null
+    @Volatile private var cachedProviderRinexFile: File? = null
+    @Volatile private var providerRinexCacheInvalidated = false
+    @Volatile private var lastProviderCacheFallbackAt = 0L
     private var lastGnssUpdateElapsed = 0L
     private var lastCalcLocation: Pair<Double, Double>? = null
     private var lastMockGnssData: MockGnssData? = null
@@ -119,6 +135,16 @@ internal object LocationServiceHook: BaseLocationHook() {
     private var lastSatelliteCalcTime = 0L
     private var lastSatelliteDiagTime = 0L
     private val loggedSatelliteCalcErrors = ConcurrentHashMap.newKeySet<String>()
+
+    private data class RinexLoadKey(
+        val sourcePath: String,
+        val resolvedPath: String,
+        val lastModified: Long,
+        val length: Long,
+    ) {
+        val fingerprint: String
+            get() = "source=$sourcePath resolved=$resolvedPath modified=$lastModified length=$length"
+    }
 
     internal fun findGnssStatusCallback(args: Array<Any?>): Any? {
         return args.filterNotNull().firstOrNull {
@@ -130,6 +156,11 @@ internal object LocationServiceHook: BaseLocationHook() {
         return type.concreteClassHierarchy().any { clazz ->
             clazz.declaredMethods.any(::isHookableGnssStatusMethod)
         }
+    }
+
+    internal fun shouldSkipSystemLocationListener(className: String): Boolean {
+        return className.contains("com.android.server.display.ambience.") ||
+            className.contains("DeepThinkerDelegate")
     }
 
     private fun isHookableGnssStatusMethod(method: Method): Boolean {
@@ -234,18 +265,27 @@ internal object LocationServiceHook: BaseLocationHook() {
             }
             return
         }
-        val file = File(path)
-        if (!file.exists()) {
-            if (loggedSatelliteCalcErrors.add("rinex.notfound.$path")) {
-                Logger.warn("[LocationServiceHook] RINEX file not found: $path; using fallback satellites")
+        val file = resolveReadableRinexFile(path) ?: run {
+            if (loggedSatelliteCalcErrors.add("rinex.unreadable.$path")) {
+                val direct = File(path)
+                Logger.warn(
+                    "[LocationServiceHook] RINEX file unavailable: path=$path, " +
+                        "exists=${direct.exists()}, canRead=${direct.canRead()}, length=${direct.length()}; using fallback satellites"
+                )
             }
             return
         }
 
-        if (ephemerisMap.isEmpty() || file.lastModified() > lastRinexLoadTime) {
-            lastRinexLoadTime = System.currentTimeMillis()
+        val loadKey = rinexLoadKey(path, file)
+        synchronized(rinexLoadLock) {
+            if (ephemerisMap.isNotEmpty() && loadKey == lastRinexLoadKey) {
+                return
+            }
+            if (loadKey == lastFailedRinexLoadKey) {
+                return
+            }
             try {
-                Logger.info("[LocationServiceHook] Loading RINEX file from $path")
+                Logger.info("[LocationServiceHook] Loading RINEX file: ${loadKey.fingerprint}")
                 val list = RinexNavigationParser().parse(file)
                 ephemerisMap.clear()
                 list.forEach { eph ->
@@ -262,6 +302,8 @@ internal object LocationServiceHook: BaseLocationHook() {
                     }
                 }
                 val maxToeWeek = list.maxOfOrNull { it.week } ?: -1
+                lastRinexLoadKey = loadKey
+                lastFailedRinexLoadKey = null
                 Logger.info("[LocationServiceHook] Loaded ${ephemerisMap.size} ephemeris records, max GPS week=$maxToeWeek")
 
                 val gpsEpochMs = 315964800000L
@@ -272,15 +314,202 @@ internal object LocationServiceHook: BaseLocationHook() {
                     Logger.warn("[LocationServiceHook] Ephemeris data is $weekDiff week(s) old -- satellite positions may be inaccurate")
                 }
             } catch (e: Exception) {
-                Logger.error("[LocationServiceHook] Failed to load RINEX file", e)
+                lastFailedRinexLoadKey = loadKey
+                Logger.error("[LocationServiceHook] Failed to load RINEX file: ${loadKey.fingerprint}", e)
             }
         }
+    }
+
+    private fun resolveReadableRinexFile(path: String): File? {
+        val direct = File(path)
+        if (direct.isFile && direct.canRead()) {
+            val length = direct.length()
+            if (length in MIN_RINEX_FILE_BYTES..MAX_RINEX_FILE_BYTES && hasRinexHeader(direct)) {
+                return direct
+            }
+            if (loggedSatelliteCalcErrors.add("rinex.direct.invalid.$path")) {
+                Logger.warn(
+                    "[LocationServiceHook] RINEX direct path rejected: path=$path, " +
+                        "length=$length, header=${hasRinexHeader(direct)}; trying provider"
+                )
+            }
+        }
+        if (loggedSatelliteCalcErrors.add("rinex.direct.unreadable.$path")) {
+            Logger.warn(
+                "[LocationServiceHook] RINEX direct path not readable: path=$path, " +
+                    "exists=${direct.exists()}, canRead=${direct.canRead()}, length=${direct.length()}; trying provider"
+            )
+        }
+        val cached = cachedProviderRinex(path)
+        if (cached != null && !providerRinexCacheInvalidated) {
+            return cached
+        }
+        val fetched = fetchRinexFromProvider(path)
+        if (fetched != null) {
+            return fetched
+        }
+        if (cached != null) {
+            providerRinexCacheInvalidated = false
+            val now = SystemClock.elapsedRealtime()
+            if (now - lastProviderCacheFallbackAt > 60_000L) {
+                lastProviderCacheFallbackAt = now
+                Logger.warn(
+                    "[LocationServiceHook] RINEX provider unavailable; using last valid cached provider file: " +
+                        "source=$path, cache=${cached.absolutePath}, length=${cached.length()}"
+                )
+            }
+            return cached
+        }
+        return null
+    }
+
+    private fun fetchRinexFromProvider(sourcePath: String): File? {
+        val context = FakeLoc.getContext() ?: run {
+            if (loggedSatelliteCalcErrors.add("rinex.provider.contextNull")) {
+                Logger.warn("[LocationServiceHook] RINEX provider fetch skipped: context=null")
+            }
+            return null
+        }
+        val cacheDir = resolveRinexCacheDir(context) ?: run {
+            if (loggedSatelliteCalcErrors.add("rinex.provider.cacheNull")) {
+                Logger.warn("[LocationServiceHook] RINEX provider fetch skipped: cacheDir unavailable")
+            }
+            return null
+        }
+        val outFile = File(cacheDir, RINEX_CACHE_FILE)
+        val tempFile = File(cacheDir, "$RINEX_CACHE_FILE.tmp")
+        return runCatching {
+            if (tempFile.exists()) tempFile.delete()
+            context.contentResolver.openInputStream(Uri.parse(RINEX_PROVIDER_URI))?.use { input ->
+                if (!copyRinexBounded(input, tempFile)) {
+                    Logger.warn(
+                        "[LocationServiceHook] RINEX provider fetch exceeded size limit: " +
+                            "cache=${tempFile.absolutePath}, limit=$MAX_RINEX_FILE_BYTES"
+                    )
+                    tempFile.delete()
+                    return@runCatching null
+                }
+            } ?: return@runCatching null
+            if (!tempFile.isFile ||
+                !tempFile.canRead() ||
+                tempFile.length() !in MIN_RINEX_FILE_BYTES..MAX_RINEX_FILE_BYTES ||
+                !hasRinexHeader(tempFile)
+            ) {
+                Logger.warn(
+                    "[LocationServiceHook] RINEX provider fetch produced invalid file: " +
+                        "cache=${tempFile.absolutePath}, exists=${tempFile.exists()}, canRead=${tempFile.canRead()}, length=${tempFile.length()}"
+                )
+                tempFile.delete()
+                return@runCatching null
+            }
+            if (outFile.exists() && !outFile.delete()) {
+                Logger.warn("[LocationServiceHook] RINEX provider cache replace could not delete old file: ${outFile.absolutePath}")
+            }
+            if (!tempFile.renameTo(outFile)) {
+                tempFile.copyTo(outFile, overwrite = true)
+                tempFile.delete()
+            }
+            cachedProviderRinexSourcePath = sourcePath
+            cachedProviderRinexFile = outFile
+            providerRinexCacheInvalidated = false
+            Logger.info(
+                "[LocationServiceHook] RINEX copied from provider: source=$sourcePath, " +
+                    "cache=${outFile.absolutePath}, length=${outFile.length()}"
+            )
+            outFile
+        }.onFailure {
+            tempFile.delete()
+            if (loggedSatelliteCalcErrors.add("rinex.provider.failed.${it.javaClass.simpleName}")) {
+                Logger.warn("[LocationServiceHook] RINEX provider fetch failed: ${it.javaClass.simpleName}: ${it.message ?: ""}", it)
+            }
+        }.getOrNull()
+    }
+
+    internal fun resolveRinexCacheDir(
+        context: android.content.Context,
+        systemFallbackDir: File = File(RINEX_SYSTEM_CACHE_DIR),
+    ): File? {
+        val candidates = listOfNotNull(
+            context.safeCacheDir(),
+            context.safeFilesDir()?.resolve("cache"),
+            systemFallbackDir,
+        )
+        for (dir in candidates) {
+            val usable = runCatching {
+                if (!dir.exists()) dir.mkdirs()
+                dir.isDirectory && dir.canWrite()
+            }.getOrDefault(false)
+            if (usable) return dir
+            if (loggedSatelliteCalcErrors.add("rinex.provider.cacheRejected.${dir.absolutePath}")) {
+                Logger.warn("[LocationServiceHook] RINEX cache dir rejected: ${dir.absolutePath}")
+            }
+        }
+        return null
+    }
+
+    private fun cachedProviderRinex(sourcePath: String): File? {
+        if (cachedProviderRinexSourcePath != sourcePath) return null
+        val cached = cachedProviderRinexFile ?: return null
+        return cached.takeIf { isValidRinexFile(it) }
+    }
+
+    private fun copyRinexBounded(input: java.io.InputStream, outFile: File): Boolean {
+        var total = 0L
+        var exceeded = false
+        val buffer = ByteArray(8192)
+        outFile.outputStream().use { output ->
+            while (true) {
+                val read = input.read(buffer)
+                if (read < 0) break
+                total += read.toLong()
+                if (total > MAX_RINEX_FILE_BYTES) {
+                    exceeded = true
+                    break
+                }
+                output.write(buffer, 0, read)
+            }
+        }
+        return !exceeded
+    }
+
+    private fun hasRinexHeader(file: File): Boolean {
+        return runCatching {
+            file.inputStream().buffered().use { input ->
+                val buffer = ByteArray(RINEX_HEADER_SCAN_BYTES)
+                val read = input.read(buffer)
+                if (read <= 0) return@use false
+                String(buffer, 0, read, Charsets.US_ASCII).contains("RINEX VERSION / TYPE")
+            }
+        }.getOrDefault(false)
+    }
+
+    private fun isValidRinexFile(file: File): Boolean {
+        return file.isFile &&
+            file.canRead() &&
+            file.length() in MIN_RINEX_FILE_BYTES..MAX_RINEX_FILE_BYTES &&
+            hasRinexHeader(file)
+    }
+
+    private fun rinexLoadKey(sourcePath: String, file: File): RinexLoadKey {
+        val resolvedPath = runCatching { file.canonicalPath }.getOrDefault(file.absolutePath)
+        return RinexLoadKey(
+            sourcePath = sourcePath,
+            resolvedPath = resolvedPath,
+            lastModified = file.lastModified(),
+            length = file.length(),
+        )
+    }
+
+    internal fun rinexFileFingerprint(sourcePath: String, file: File): String {
+        return rinexLoadKey(sourcePath, file).fingerprint
     }
 
     fun clearSatelliteStates() {
         satelliteStates.clear()
         ephemerisMap.clear()
-        lastRinexLoadTime = 0L
+        lastRinexLoadKey = null
+        lastFailedRinexLoadKey = null
+        providerRinexCacheInvalidated = true
         lastCalcLocation = null
         lastMockGnssData = null
         lastMockGnssDataTime = 0L
@@ -308,6 +537,10 @@ internal object LocationServiceHook: BaseLocationHook() {
     fun forceUpdateSatelliteStates() {
         lastSatelliteCalcTime = 0L
         updateSatelliteStates(1000f, force = true)
+    }
+
+    internal fun isFallbackSatelliteUsedInFix(elevation: Float, cn0: Float): Boolean {
+        return elevation >= 15f && cn0 >= 30f
     }
 
     private fun updateSatelliteStates(deltaSeconds: Float, force: Boolean = false) {
@@ -409,8 +642,8 @@ internal object LocationServiceHook: BaseLocationHook() {
 
                 state.cn0 = clamp(driftCn0, sat.type.minCn0, sat.type.maxCn0)
                 state.hasEphemeris = false
-                state.hasAlmanac = false
-                state.usedInFix = state.hasEphemeris && state.elevation >= 15f && state.cn0 >= 30f
+                state.hasAlmanac = true
+                state.usedInFix = isFallbackSatelliteUsedInFix(state.elevation, state.cn0)
             }
         }
 
@@ -431,7 +664,7 @@ internal object LocationServiceHook: BaseLocationHook() {
             usedSatellites.drop(24).forEach { it.usedInFix = false }
         }
         val diagNow = SystemClock.elapsedRealtime()
-        if (force || diagNow - lastSatelliteDiagTime > 5_000L) {
+        if (lastSatelliteDiagTime == 0L || diagNow - lastSatelliteDiagTime > 5_000L) {
             lastSatelliteDiagTime = diagNow
             val usedAfterCap = multiConstellationSatellites.map { getOrCreateState(it) }.count { it.usedInFix }
             Logger.info(
@@ -584,9 +817,9 @@ internal object LocationServiceHook: BaseLocationHook() {
                 Logger.debug("requestLocationUpdates: injected! $listener")
             }
 
-            addLocationListenerInner(provider, listener)
+            val listenerAdded = addLocationListenerInner(provider, listener)
 
-            if (FakeLoc.disableRegisterLocationListener || FakeLoc.enable) {
+            if (FakeLoc.disableRegisterLocationListener || (FakeLoc.enable && listenerAdded)) {
                 result = null
                 return@beforeHook
             }
@@ -762,10 +995,6 @@ internal object LocationServiceHook: BaseLocationHook() {
                     if(FakeLoc.enableDebugLog) {
                         Logger.debug("registerGnssStatusCallback: injected!")
                     }
-                    if (!FakeLoc.enableMockGnss) {
-                        return
-                    }
-
                     val gnssStatusHook = beforeHook {
                         // https://www.csno-tarc.cn/system/constellation
 
@@ -1116,6 +1345,12 @@ internal object LocationServiceHook: BaseLocationHook() {
 
     fun hookILocationListener(listener: Any) {
         val classListener = listener.javaClass
+        if (shouldSkipSystemLocationListener(classListener.name)) {
+            if (loggedLocationListenerSkips.add(classListener.name)) {
+                Logger.warn("[LocationServiceHook] skip framework location listener hook: ${classListener.name}")
+            }
+            return
+        }
         if (FakeLoc.enableDebugLog)
             Logger.debug("will hook ILocationListener: ${classListener.name}")
 
@@ -1179,7 +1414,13 @@ internal object LocationServiceHook: BaseLocationHook() {
 //        }
 //    }
 
-    fun addLocationListenerInner(provider: String, listener: IInterface) {
+    fun addLocationListenerInner(provider: String, listener: IInterface): Boolean {
+        if (shouldSkipSystemLocationListener(listener.javaClass.name)) {
+            if (loggedLocationListenerSkips.add(listener.javaClass.name)) {
+                Logger.warn("[LocationServiceHook] skip framework location listener registration: ${listener.javaClass.name}")
+            }
+            return false
+        }
         val binder = listener.asBinder()
         val mDeathRecipient = object: IBinder.DeathRecipient {
             override fun binderDied() { binderDied(binder) }
@@ -1191,6 +1432,7 @@ internal object LocationServiceHook: BaseLocationHook() {
         binder.linkToDeath(mDeathRecipient, 0)
         locationListeners.add(Triple(provider, listener, mDeathRecipient))
         hookILocationListener(listener)
+        return true
     }
 
     fun removeLocationListenerInner(listener: IInterface) {

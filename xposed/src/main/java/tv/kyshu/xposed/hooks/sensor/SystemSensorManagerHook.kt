@@ -28,17 +28,27 @@ import kotlin.math.sin
 import kotlin.random.Random
 import tv.kyshu.xposed.utils.safeCacheDir
 import java.io.File
+import java.lang.reflect.Field
+import java.lang.reflect.Method
 
 // https://github.com/Frazew/VirtualSensor/blob/master/app/src/main/java/fr/frazew/virtualgyroscope/XposedMod.java#L298
 object SystemSensorManagerHook {
     private const val STEP_PUSH_INTERVAL_MS = 500L
     private const val STEP_PUSH_IDLE_LIMIT = 20
     private const val STEP_PUSH_ERROR_LIMIT = 3
+    private const val SENSOR_SHAPE_FIELD_LIMIT = 32
+    private const val SENSOR_SHAPE_METHOD_LIMIT = 24
+    private const val SENSOR_SHAPE_VALUE_LIMIT = 12
 
     private val diagnosticKeys = ConcurrentHashMap.newKeySet<String>()
     private fun logOnce(key: String, message: String) {
         if (diagnosticKeys.add(key)) {
             Logger.info(message)
+        }
+    }
+    private fun logOnce(key: String, message: () -> String) {
+        if (diagnosticKeys.add(key)) {
+            Logger.info(message())
         }
     }
 
@@ -104,21 +114,26 @@ object SystemSensorManagerHook {
      */
     private fun ensureGaitSimulator() {
         val now = System.currentTimeMillis()
-        // 至少 5 秒间隔，避免频繁加载
-        if (gaitSimulator != null && now - lastGaitLoadAt < 5000L) return
-
         val userJson = FakeLoc.gaitData.gaitParamsJson.trim()
-        if (userJson.isNotEmpty() && userJson != lastGaitJson) {
+        val jsonChanged = userJson != lastGaitJson
+        // 至少 5 秒间隔，避免频繁加载；配置变化不受节流影响。
+        if (!jsonChanged && gaitSimulator != null && now - lastGaitLoadAt < 5000L) return
+
+        if (userJson.isNotEmpty() && (jsonChanged || gaitSimulator == null)) {
             // 用户自定义 JSON
-            gaitSimulator = GaitSimulator.loadFromJson(userJson)
-            lastGaitJson = userJson
+            val next = GaitSimulator.loadFromJson(userJson)
             lastGaitLoadAt = now
-            if (gaitSimulator != null) {
+            if (next != null) {
+                gaitSimulator = next
+                lastGaitJson = userJson
                 Logger.info("GaitSimulator: loaded user-defined gait params")
+            } else {
+                Logger.warn("GaitSimulator: user-defined gait params invalid, keeping previous simulator")
             }
-        } else if (gaitSimulator == null) {
+        } else if (gaitSimulator == null || jsonChanged) {
             // 默认从 assets 加载录制数据解算的步态
             gaitSimulator = GaitSimulator.loadDefault(FakeLoc.getContext())
+            lastGaitJson = ""
             lastGaitLoadAt = now
             if (gaitSimulator != null) {
                 Logger.info("GaitSimulator: loaded default recorded gait from assets")
@@ -126,6 +141,224 @@ object SystemSensorManagerHook {
                 Logger.warn("GaitSimulator: default asset load failed, will retry")
             }
         }
+    }
+
+    private fun recordClassShape(label: String, clazz: Class<*>, reason: String) {
+        logOnce("shape.class.$label.${clazz.name}.$reason") {
+            "[SensorHook][Shape] $label reason=$reason class=${clazz.name} hierarchy=${describeClassHierarchy(clazz)}"
+        }
+    }
+
+    private fun recordQueueShape(eventQueue: Any, reason: String, handle: Int) {
+        val clazz = eventQueue.javaClass
+        logOnce("shape.queue.${clazz.name}.$reason.$handle") {
+            "[SensorHook][Shape] queue reason=$reason handle=$handle class=${clazz.name} " +
+                "runtimeFields=${describeRuntimeFields(eventQueue, handle)} " +
+                "hierarchy=${describeClassHierarchy(clazz)} knownHandles=${describeKnownHandleMap()}"
+        }
+    }
+
+    private fun describeClassHierarchy(clazz: Class<*>): String {
+        val parts = ArrayList<String>()
+        var current: Class<*>? = clazz
+        var depth = 0
+        while (current != null && current != Any::class.java && depth < 6) {
+            val fields = current.declaredFields
+                .sortedBy { it.name }
+                .joinToString(limit = SENSOR_SHAPE_FIELD_LIMIT, truncated = "...") {
+                    "${it.name}:${shortClassName(it.type)}"
+                }
+            val methods = current.declaredMethods
+                .filter { isInterestingSensorMethod(it.name) }
+                .sortedWith(compareBy<Method> { it.name }.thenBy { it.parameterTypes.size })
+                .joinToString(limit = SENSOR_SHAPE_METHOD_LIMIT, truncated = "...") { methodSignature(it) }
+            parts += "${current.name}{fields=[$fields], methods=[$methods]}"
+            current = current.superclass
+            depth += 1
+        }
+        return parts.joinToString(" <- ")
+    }
+
+    private fun describeRuntimeFields(owner: Any, handle: Int? = null): String {
+        val fields = allFieldsInHierarchy(owner.javaClass)
+            .filter {
+                it.name.contains("sensor", ignoreCase = true) ||
+                    it.name.contains("listener", ignoreCase = true) ||
+                    it.name == "mManager" ||
+                    it.name == "this\$0" ||
+                    SparseArray::class.java.isAssignableFrom(it.type)
+            }
+            .distinctBy { "${it.declaringClass.name}#${it.name}" }
+            .take(SENSOR_SHAPE_FIELD_LIMIT)
+
+        if (fields.isEmpty()) return "(no sensor/listener/sparse fields)"
+        return fields.joinToString("; ") { field ->
+            runCatching {
+                field.isAccessible = true
+                val value = field.get(owner)
+                "${field.declaringClass.simpleName}.${field.name}:${describeFieldValue(value, handle)}"
+            }.getOrElse {
+                "${field.declaringClass.simpleName}.${field.name}:<${it.javaClass.simpleName}:${it.message ?: ""}>"
+            }
+        }
+    }
+
+    private fun describeFieldValue(value: Any?, handle: Int? = null): String {
+        return when (value) {
+            null -> "null"
+            is SparseArray<*> -> sparseArraySummary(value, handle)
+            is Sensor -> "Sensor(${sensorSummary(value)})"
+            is Collection<*> -> {
+                val sample = value.take(SENSOR_SHAPE_VALUE_LIMIT).joinToString { objectSummary(it) }
+                "${value.javaClass.name}(size=${value.size}, sample=[$sample])"
+            }
+            is Array<*> -> {
+                val sample = value.take(SENSOR_SHAPE_VALUE_LIMIT).joinToString { objectSummary(it) }
+                "${value.javaClass.name}(size=${value.size}, sample=[$sample])"
+            }
+            else -> value.javaClass.name
+        }
+    }
+
+    private fun sparseArraySummary(array: SparseArray<*>, handle: Int? = null): String {
+        val size = array.size()
+        val keys = (0 until minOf(size, SENSOR_SHAPE_VALUE_LIMIT)).joinToString(prefix = "[", postfix = "]") {
+            array.keyAt(it).toString()
+        }
+        val valueTypes = (0 until minOf(size, SENSOR_SHAPE_VALUE_LIMIT)).joinToString(prefix = "[", postfix = "]") {
+            objectSummary(array.valueAt(it))
+        }
+        val hit = handle?.let { runCatching { array.get(it) }.getOrNull() }
+        return "${array.javaClass.name}(size=$size, keys=$keys, valueTypes=$valueTypes, hit=${objectSummary(hit)})"
+    }
+
+    private fun objectSummary(value: Any?): String {
+        return when (value) {
+            null -> "null"
+            is Sensor -> "Sensor(type=${value.type}, handle=${readSensorHandle(value) ?: "?"}, name=${value.name})"
+            else -> value.javaClass.name
+        }
+    }
+
+    private fun allFieldsInHierarchy(clazz: Class<*>): List<Field> {
+        val fields = ArrayList<Field>()
+        var current: Class<*>? = clazz
+        var depth = 0
+        while (current != null && current != Any::class.java && depth < 8) {
+            fields += current.declaredFields
+            current = current.superclass
+            depth += 1
+        }
+        return fields
+    }
+
+    private fun findFieldInHierarchy(clazz: Class<*>, fieldName: String): Field? {
+        var current: Class<*>? = clazz
+        var depth = 0
+        while (current != null && current != Any::class.java && depth < 8) {
+            try {
+                return current.getDeclaredField(fieldName)
+            } catch (_: NoSuchFieldException) {
+                current = current.superclass
+                depth += 1
+            }
+        }
+        return null
+    }
+
+    private fun isInterestingSensorMethod(name: String): Boolean {
+        return name == "dispatchSensorEvent" ||
+            name == "registerListenerImpl" ||
+            name == "unregisterListenerImpl" ||
+            name == "getSensorList" ||
+            name == "getFullSensorList" ||
+            name == "getFullSensorsList" ||
+            name == "getDefaultSensor" ||
+            name.contains("Sensor", ignoreCase = true) ||
+            name.contains("Listener", ignoreCase = true)
+    }
+
+    private fun methodSignature(method: Method): String {
+        val params = method.parameterTypes.joinToString(",") { shortClassName(it) }
+        return "${method.name}($params):${shortClassName(method.returnType)}"
+    }
+
+    private fun shortClassName(clazz: Class<*>): String {
+        return clazz.simpleName.ifEmpty { clazz.name }
+    }
+
+    private fun readSensorHandle(sensor: Sensor): Int? {
+        return runCatching { XposedHelpers.getIntField(sensor, "mHandle") }.getOrNull()
+    }
+
+    private fun sensorSummary(sensor: Sensor): String {
+        val stringType = runCatching { sensor.stringType }.getOrNull()
+        val reportingMode = runCatching { sensor.reportingMode }.getOrNull()
+        val wakeUp = runCatching { sensor.isWakeUpSensor }.getOrNull()
+        val maxDelay = runCatching { sensor.maxDelay }.getOrNull()
+        return "type=${sensor.type}, handle=${readSensorHandle(sensor) ?: "?"}, name=${sensor.name}, " +
+            "vendor=${sensor.vendor}, stringType=${stringType ?: ""}, reportingMode=${reportingMode ?: "?"}, " +
+            "wakeUp=${wakeUp ?: "?"}, minDelay=${sensor.minDelay}, maxDelay=${maxDelay ?: "?"}"
+    }
+
+    private fun summarizeSensorList(sensors: List<*>): String {
+        val sensorObjects = sensors.filterIsInstance<Sensor>()
+        val typeCounts = sensorObjects.groupingBy { it.type }.eachCount()
+            .entries
+            .sortedBy { it.key }
+            .joinToString(limit = SENSOR_SHAPE_VALUE_LIMIT, truncated = "...") { "${it.key}:${it.value}" }
+        val targets = sensorObjects
+            .filter { isMotionSensor(it.type) || it.type == Sensor.TYPE_STEP_COUNTER || it.type == Sensor.TYPE_STEP_DETECTOR }
+            .take(SENSOR_SHAPE_VALUE_LIMIT)
+            .joinToString(" | ") { sensorSummary(it) }
+        return "size=${sensors.size}, sensorObjects=${sensorObjects.size}, typeCounts=[$typeCounts], targets=[$targets]"
+    }
+
+    private fun describeKnownHandleMap(): String {
+        return sensorHandleMap.entries
+            .sortedBy { it.key }
+            .take(SENSOR_SHAPE_VALUE_LIMIT)
+            .joinToString(prefix = "[", postfix = "]") { "${it.key}->${it.value}" }
+    }
+
+    private fun listenerMapSummary(): String {
+        val entries = listenerMap.entries.toList()
+        var stepCounterListeners = 0
+        var stepDetectorListeners = 0
+        var motionListeners = 0
+        val typeCounts = HashMap<Int, Int>()
+        entries.forEach { entry ->
+            val types = entry.value.map { it.type }
+            if (types.contains(Sensor.TYPE_STEP_COUNTER)) stepCounterListeners += 1
+            if (types.contains(Sensor.TYPE_STEP_DETECTOR)) stepDetectorListeners += 1
+            if (types.any { isMotionSensor(it) }) motionListeners += 1
+            types.forEach { typeCounts[it] = (typeCounts[it] ?: 0) + 1 }
+        }
+        val counts = typeCounts.entries.sortedBy { it.key }
+            .joinToString(limit = SENSOR_SHAPE_VALUE_LIMIT, truncated = "...") { "${it.key}:${it.value}" }
+        val samples = entries.take(5).joinToString(" | ") { entry ->
+            val types = entry.value.map { it.type }.distinct().joinToString(",")
+            "${entry.key.javaClass.name}[$types]"
+        }
+        return "listeners=${entries.size}, stepCounter=$stepCounterListeners, stepDetector=$stepDetectorListeners, " +
+            "motion=$motionListeners, typeCounts=[$counts], samples=[$samples]"
+    }
+
+    private fun stepPusherState(): String {
+        return "hookSensor=${FakeLoc.sensorData.hookSensor}, enableMotion=${FakeLoc.sensorData.enableMotionMock}, " +
+            "enableStep=${FakeLoc.sensorData.enableStepCountMock}, effectiveMotion=${isEffectiveMotionMockEnabled()}, current=$mCurrentStepCount, " +
+            "goal=$mStepGoalEnd, configured=${FakeLoc.sensorData.stepCount}, threadAlive=${stepEventThread?.isAlive == true}, " +
+            listenerMapSummary()
+    }
+
+    private fun isActiveSensorPusherEnabled(): Boolean {
+        return FakeLoc.sensorData.enableStepCountMock ||
+            FakeLoc.sensorData.enableMotionMock ||
+            FakeLoc.sensorData.enableShakeMock
+    }
+
+    private fun isEffectiveMotionMockEnabled(): Boolean {
+        return FakeLoc.sensorData.enableMotionMock || FakeLoc.sensorData.enableStepCountMock
     }
 
     // ==================== SensorEventQueue 层注入（核心） ====================
@@ -170,6 +403,10 @@ object SystemSensorManagerHook {
             return
         }
 
+        candidates.distinct().forEach { clazz ->
+            recordClassShape("queueCandidate", clazz, "install")
+        }
+
         // Hook 所有候选类
         for (clazz in candidates) {
             try {
@@ -192,6 +429,7 @@ object SystemSensorManagerHook {
                     })
                 Logger.info("[SensorHook] passive dispatch hook installed: ${clazz.name}#dispatchSensorEvent(int,float[],int,long)")
             } catch (e: Throwable) {
+                recordClassShape("queueCandidate", clazz, "direct-hook-failed-${e.javaClass.simpleName}")
                 // 部分 ROM 签名不同，尝试动态查找
                 try {
                     val method = clazz.declaredMethods.firstOrNull { it.name == "dispatchSensorEvent" }
@@ -210,9 +448,11 @@ object SystemSensorManagerHook {
                         })
                         Logger.info("[SensorHook] passive dispatch hook installed dynamically: ${clazz.name}#${method.name}${method.parameterTypes.joinToString(prefix = "(", postfix = ")") { it.simpleName }}")
                     } else {
+                        recordClassShape("queueCandidate", clazz, "dispatch-method-missing")
                         Logger.warn("[SensorHook] dispatchSensorEvent not found in candidate ${clazz.name}")
                     }
                 } catch (e2: Throwable) {
+                    recordClassShape("queueCandidate", clazz, "dynamic-hook-failed-${e2.javaClass.simpleName}")
                     Logger.error("[SensorHook] Failed to hook dispatchSensorEvent in ${clazz.name}", e2)
                 }
             }
@@ -251,45 +491,22 @@ object SystemSensorManagerHook {
 
         // handle -> type 映射
         if (!sensorHandleMap.containsKey(handle)) {
-            try {
-                var sensor: Sensor? = null
-                // 方法1: mActiveSensors (SparseArray<Sensor>)
-                val activeSensors = XposedHelpers.getObjectField(eventQueue, "mActiveSensors") as? SparseArray<*>
-                if (activeSensors != null) {
-                    sensor = activeSensors.get(handle) as? Sensor
+            val sensor = findSensorForHandle(eventQueue, handle)
+            if (sensor != null) {
+                sensorHandleMap[handle] = sensor.type
+                logOnce("dispatch.map.$handle", "[SensorHook] passive handle mapped: handle=$handle ${sensorSummary(sensor)}")
+            } else {
+                logOnce("dispatch.map.miss.$handle") {
+                    "[SensorHook][MapMiss] passive handle map miss: handle=$handle queue=${eventQueue.javaClass.name} " +
+                        "knownHandles=${describeKnownHandleMap()} ${listenerMapSummary()}"
                 }
-                // 方法2: mSensors (SparseArray<Sensor>)
-                if (sensor == null) {
-                    val mSensors = XposedHelpers.getObjectField(eventQueue, "mSensors") as? SparseArray<*>
-                    if (mSensors != null) {
-                        sensor = mSensors.get(handle) as? Sensor
-                    }
-                }
-                // 方法3: 回退到 mManager
-                if (sensor == null) {
-                    val manager = XposedHelpers.getObjectField(eventQueue, "mManager")
-                    if (manager != null) {
-                        val sensors = XposedHelpers.callMethod(manager, "getSensorList", Sensor.TYPE_ALL) as List<*>
-                        for (s in sensors) {
-                            val h = XposedHelpers.getIntField(s, "mHandle")
-                            if (h == handle) {
-                                sensor = s as Sensor
-                                break
-                            }
-                        }
-                    }
-                }
-                if (sensor != null) {
-                    sensorHandleMap[handle] = sensor.type
-                    logOnce("dispatch.map.$handle", "[SensorHook] passive handle mapped: handle=$handle type=${sensor.type} name=${sensor.name}")
-                }
-            } catch (e: Throwable) {
-                Logger.error("[SensorHook] Error identifying sensor handle $handle", e)
             }
         }
 
         val type = sensorHandleMap[handle] ?: run {
-            logOnce("dispatch.unmapped.$handle", "[SensorHook] passive dispatch skipped: unknown sensor handle=$handle")
+            logOnce("dispatch.unmapped.$handle") {
+                "[SensorHook][MapMiss] passive dispatch skipped: unknown sensor handle=$handle queue=${eventQueue.javaClass.name}"
+            }
             return
         }
 
@@ -315,10 +532,10 @@ object SystemSensorManagerHook {
             if (FakeLoc.sensorData.enableShakeMock && type == Sensor.TYPE_ACCELEROMETER) {
                 getMockShakeAccelValues(nowMs, values)
                 logOnce("dispatch.shake.$type", "[SensorHook] passive IMU replaced by shake waveform: type=$type")
-            } else if (FakeLoc.sensorData.enableMotionMock) {
-                if (FakeLoc.sensorData.keepWalkingWaveform) {
+            } else if (shouldMockMotionSensor(type)) {
+                if (FakeLoc.sensorData.keepWalkingWaveform || FakeLoc.sensorData.enableStepCountMock) {
                     getMockMotionValues(type, nowMs, values)
-                    logOnce("dispatch.motion.walk.$type", "[SensorHook] passive IMU replaced by walking waveform: type=$type")
+                    logOnce("dispatch.motion.walk.$type", "[SensorHook] passive IMU replaced by walking waveform: type=$type step=${FakeLoc.sensorData.enableStepCountMock} motion=${FakeLoc.sensorData.enableMotionMock}")
                 } else {
                     getMockStaticValues(type, nowMs, values)
                     logOnce("dispatch.motion.static.$type", "[SensorHook] passive IMU replaced by static waveform: type=$type")
@@ -349,6 +566,121 @@ object SystemSensorManagerHook {
         }
     }
 
+    private fun findSensorForHandle(eventQueue: Any, handle: Int): Sensor? {
+        sensorFromSparseArrayField(eventQueue, "mActiveSensors", handle)?.let { return it }
+        sensorFromSparseArrayField(eventQueue, "mSensors", handle)?.let { return it }
+
+        val managerAttempts = ArrayList<String>()
+        for (managerField in arrayOf("mManager", "this\$0")) {
+            val manager = getObjectFieldOrNull(eventQueue, managerField)
+            if (manager == null) {
+                managerAttempts += "$managerField=null"
+                continue
+            }
+            managerAttempts += "$managerField=${manager.javaClass.name}"
+            sensorFromManager(manager, handle)?.let {
+                logOnce("dispatch.map.manager.$handle.$managerField") {
+                    "[SensorHook] passive handle mapped from manager field=$managerField handle=$handle ${sensorSummary(it)}"
+                }
+                return it
+            }
+        }
+        recordQueueShape(eventQueue, "handle-map-miss managers=${managerAttempts.joinToString("|")}", handle)
+        return null
+    }
+
+    private fun sensorFromSparseArrayField(owner: Any, fieldName: String, handle: Int): Sensor? {
+        return runCatching {
+            val value = XposedHelpers.getObjectField(owner, fieldName)
+            val sparseArray = value as? SparseArray<*>
+            if (sparseArray == null) {
+                logOnce("dispatch.field.nonSparse.${owner.javaClass.name}.$fieldName") {
+                    "[SensorHook][Shape] sensor queue field is not SparseArray: field=$fieldName " +
+                        "owner=${owner.javaClass.name} value=${describeFieldValue(value, handle)}"
+                }
+                return@runCatching null
+            }
+            val sensor = sparseArray.get(handle) as? Sensor
+            if (sensor == null) {
+                logOnce("dispatch.field.noHit.${owner.javaClass.name}.$fieldName.$handle") {
+                    "[SensorHook][MapMiss] sensor queue field no hit: field=$fieldName handle=$handle " +
+                        sparseArraySummary(sparseArray, handle)
+                }
+            }
+            sensor
+        }.onFailure {
+            logOnce("dispatch.field.${owner.javaClass.name}.$fieldName") {
+                "[SensorHook][Shape] sensor queue field unavailable: field=$fieldName owner=${owner.javaClass.name} " +
+                    "error=${it.javaClass.simpleName}:${it.message ?: ""}"
+            }
+        }.getOrNull()
+    }
+
+    private fun getObjectFieldOrNull(owner: Any, fieldName: String): Any? {
+        return runCatching {
+            XposedHelpers.getObjectField(owner, fieldName)
+        }.onFailure {
+            val declared = findFieldInHierarchy(owner.javaClass, fieldName)
+            logOnce("dispatch.field.${owner.javaClass.name}.$fieldName") {
+                "[SensorHook][Shape] sensor queue field unavailable: field=$fieldName owner=${owner.javaClass.name} " +
+                    "declared=${declared != null} error=${it.javaClass.simpleName}:${it.message ?: ""}"
+            }
+        }.getOrNull()
+    }
+
+    private fun sensorFromManager(manager: Any, handle: Int): Sensor? {
+        val attempts = ArrayList<String>()
+        var source = ""
+        var sensors: List<*>? = null
+        for (methodName in arrayOf("getSensorList", "getFullSensorList", "getFullSensorsList")) {
+            val attempt = runCatching {
+                val result = if (methodName == "getSensorList") {
+                    XposedHelpers.callMethod(manager, methodName, Sensor.TYPE_ALL)
+                } else {
+                    XposedHelpers.callMethod(manager, methodName)
+                }
+                result as? List<*>
+            }
+            val value = attempt.getOrNull()
+            if (value != null) {
+                source = methodName
+                sensors = value
+                break
+            }
+            val error = attempt.exceptionOrNull()
+            attempts += "$methodName:${error?.javaClass?.simpleName ?: "null"}"
+        }
+
+        val sensorList = sensors
+        if (sensorList == null) {
+            logOnce("manager.list.miss.${manager.javaClass.name}") {
+                "[SensorHook][Shape] manager sensor list unavailable: manager=${manager.javaClass.name} " +
+                    "attempts=${attempts.joinToString(",")} hierarchy=${describeClassHierarchy(manager.javaClass)}"
+            }
+            return null
+        }
+
+        logOnce("manager.list.${manager.javaClass.name}.$source") {
+            "[SensorHook][Shape] manager sensor list loaded: manager=${manager.javaClass.name} source=$source " +
+                summarizeSensorList(sensorList)
+        }
+
+        val sensor = sensorList.firstNotNullOfOrNull { candidate ->
+            val sensor = candidate as? Sensor ?: return@firstNotNullOfOrNull null
+            val candidateHandle = runCatching {
+                XposedHelpers.getIntField(sensor, "mHandle")
+            }.getOrNull()
+            if (candidateHandle == handle) sensor else null
+        }
+        if (sensor == null) {
+            logOnce("manager.handle.miss.${manager.javaClass.name}.$handle") {
+                "[SensorHook][MapMiss] manager sensor list has no handle=$handle source=$source " +
+                    summarizeSensorList(sensorList)
+            }
+        }
+        return sensor
+    }
+
     // ==================== SystemSensorManager 层 hook ====================
 
     private fun hookSystemSensorManager(classLoader: ClassLoader) {
@@ -358,6 +690,7 @@ object SystemSensorManagerHook {
             return
         }
         Logger.info("[SensorHook] SystemSensorManager found: ${cSystemSensorManager.name}, methods=${cSystemSensorManager.declaredMethods.size}")
+        recordClassShape("SystemSensorManager", cSystemSensorManager, "install")
 
         val hookRegisterListenerImpl = beforeHook {
             val listener = args.getOrNull(0) as? SensorEventListener ?: run {
@@ -374,22 +707,43 @@ object SystemSensorManagerHook {
                 Logger.debug("RegisterListenerImpl: $listener, sensor: ${args[1]}")
             }
 
-            val sensor = args[1] as? Sensor ?: return@beforeHook
-            logOnce("register.${listener.javaClass.name}.${sensor.type}", "[SensorHook] registerListenerImpl hit: listener=${listener.javaClass.name}, sensorType=${sensor.type}, sensor=${sensor.name}, delay=${args.getOrNull(2)}")
+            val sensor = args[1] as? Sensor ?: run {
+                logOnce("register.sensor.invalid.${listener.javaClass.name}") {
+                    "[SensorHook][Register] registerListenerImpl skipped: sensor arg invalid " +
+                        "listener=${listener.javaClass.name}, arg=${objectSummary(args.getOrNull(1))}, argc=${args.size}"
+                }
+                return@beforeHook
+            }
+            logOnce("register.${listener.javaClass.name}.${sensor.type}") {
+                "[SensorHook][Register] registerListenerImpl hit: listener=${listener.javaClass.name}, " +
+                    "sensor=${sensorSummary(sensor)}, delay=${args.getOrNull(2)}, handler=${objectSummary(args.getOrNull(3))}, " +
+                    "maxBatchLatency=${args.getOrNull(4)}, reservedFlags=${args.getOrNull(5)}"
+            }
 
             // 缓存 handle -> type
             try {
                 val handle = XposedHelpers.getIntField(sensor, "mHandle")
                 sensorHandleMap[handle] = sensor.type
-                logOnce("register.handle.$handle", "[SensorHook] register mapped handle=$handle type=${sensor.type} name=${sensor.name}")
+                logOnce("register.handle.$handle", "[SensorHook] register mapped handle=$handle ${sensorSummary(sensor)}")
             } catch (e: Throwable) {
-                Logger.warn("[SensorHook] register failed to read sensor handle for type=${sensor.type}", e)
+                Logger.warn("[SensorHook][Shape] register failed to read sensor handle: ${sensorSummary(sensor)}", e)
             }
 
             // listenerMap 支持多传感器
             val sensors = listenerMap.getOrPut(listener) { CopyOnWriteArrayList() }
             if (sensors.none { it.type == sensor.type }) {
                 sensors.add(sensor)
+                logOnce("register.listenerMap.${listener.javaClass.name}.${sensor.type}") {
+                    "[SensorHook][StepPusher] listenerMap updated after register: listener=${listener.javaClass.name}, " +
+                        "sensorType=${sensor.type}, ${listenerMapSummary()}"
+                }
+            }
+            if ((FakeLoc.sensorData.enableStepCountMock &&
+                    (sensor.type == Sensor.TYPE_STEP_COUNTER || sensor.type == Sensor.TYPE_STEP_DETECTOR)) ||
+                (FakeLoc.sensorData.enableMotionMock && isMotionSensor(sensor.type)) ||
+                (FakeLoc.sensorData.enableShakeMock && sensor.type == Sensor.TYPE_ACCELEROMETER)
+            ) {
+                ensureStepEventPusher()
             }
 
             // onSensorChanged hook：用 event.sensor.type 定位类型（而非 listenerMap 查找）
@@ -411,10 +765,10 @@ object SystemSensorManagerHook {
                     if (FakeLoc.sensorData.enableShakeMock && sensorType == Sensor.TYPE_ACCELEROMETER) {
                         getMockShakeAccelValues(nowMs, event.values)
                         logOnce("listener.shake.$sensorType", "[SensorHook] listener IMU replaced by shake waveform: type=$sensorType")
-                    } else if (FakeLoc.sensorData.enableMotionMock) {
-                        if (FakeLoc.sensorData.keepWalkingWaveform) {
+                    } else if (shouldMockMotionSensor(sensorType)) {
+                        if (FakeLoc.sensorData.keepWalkingWaveform || FakeLoc.sensorData.enableStepCountMock) {
                             getMockMotionValues(sensorType, nowMs, event.values)
-                            logOnce("listener.motion.walk.$sensorType", "[SensorHook] listener IMU replaced by walking waveform: type=$sensorType")
+                            logOnce("listener.motion.walk.$sensorType", "[SensorHook] listener IMU replaced by walking waveform: type=$sensorType step=${FakeLoc.sensorData.enableStepCountMock} motion=${FakeLoc.sensorData.enableMotionMock}")
                         } else {
                             getMockStaticValues(sensorType, nowMs, event.values)
                             logOnce("listener.motion.static.$sensorType", "[SensorHook] listener IMU replaced by static waveform: type=$sensorType")
@@ -455,13 +809,19 @@ object SystemSensorManagerHook {
             val sensor = if (args.size > 1) args[1] as? Sensor else null
             if (sensor == null) {
                 listenerMap.remove(listener)
-                logOnce("unregister.all.${listener.javaClass.name}", "[SensorHook] unregisterListenerImpl removed listener=${listener.javaClass.name}")
+                logOnce("unregister.all.${listener.javaClass.name}") {
+                    "[SensorHook][StepPusher] unregisterListenerImpl removed listener=${listener.javaClass.name}; " +
+                        listenerMapSummary()
+                }
             } else {
                 listenerMap[listener]?.removeIf { it.type == sensor.type }
                 if (listenerMap[listener]?.isEmpty() == true) {
                     listenerMap.remove(listener)
                 }
-                logOnce("unregister.${listener.javaClass.name}.${sensor.type}", "[SensorHook] unregisterListenerImpl removed sensorType=${sensor.type} listener=${listener.javaClass.name}")
+                logOnce("unregister.${listener.javaClass.name}.${sensor.type}") {
+                    "[SensorHook][StepPusher] unregisterListenerImpl removed sensor=${sensorSummary(sensor)} " +
+                        "listener=${listener.javaClass.name}; ${listenerMapSummary()}"
+                }
             }
         }
         val unregisterMethods = cSystemSensorManager.declaredMethods.filter {
@@ -477,16 +837,36 @@ object SystemSensorManagerHook {
         }
 
         val getSensorListHooks = cSystemSensorManager.hookAllMethods("getSensorList", afterHook {
+            (result as? List<*>)?.let { sensors ->
+                logOnce("sensorList.getSensorList.${args.getOrNull(0)}") {
+                    "[SensorHook][Shape] getSensorList result: type=${args.getOrNull(0)} ${summarizeSensorList(sensors)}"
+                }
+            }
             if (FakeLoc.enableDebugLog) {
                 Logger.debug("getSensorList: type: ${args[0]} -> $result")
             }
         })
+        val getFullSensorListHooks = cSystemSensorManager.hookAllMethods("getFullSensorList", afterHook {
+            (result as? List<*>)?.let { sensors ->
+                logOnce("sensorList.getFullSensorList") {
+                    "[SensorHook][Shape] getFullSensorList result: ${summarizeSensorList(sensors)}"
+                }
+            }
+            if (FakeLoc.enableDebugLog) {
+                Logger.debug("getFullSensorList-> $result")
+            }
+        })
         val getFullSensorsListHooks = cSystemSensorManager.hookAllMethods("getFullSensorsList", afterHook {
+            (result as? List<*>)?.let { sensors ->
+                logOnce("sensorList.getFullSensorsList") {
+                    "[SensorHook][Shape] getFullSensorsList result: ${summarizeSensorList(sensors)}"
+                }
+            }
             if (FakeLoc.enableDebugLog) {
                 Logger.debug("getFullSensorsList-> $result")
             }
         })
-        Logger.info("[SensorHook] hooked sensor list methods: getSensorList=${getSensorListHooks.size}, getFullSensorsList=${getFullSensorsListHooks.size}")
+        Logger.info("[SensorHook] hooked sensor list methods: getSensorList=${getSensorListHooks.size}, getFullSensorList=${getFullSensorListHooks.size}, getFullSensorsList=${getFullSensorsListHooks.size}")
     }
 
     // ==================== Mock 值生成 ====================
@@ -501,6 +881,12 @@ object SystemSensorManagerHook {
             type == Sensor.TYPE_ROTATION_VECTOR ||
             type == Sensor.TYPE_GAME_ROTATION_VECTOR ||
             type == Sensor.TYPE_GEOMAGNETIC_ROTATION_VECTOR
+    }
+
+    internal fun shouldMockMotionSensor(type: Int): Boolean {
+        if (!isMotionSensor(type)) return false
+        if (FakeLoc.sensorData.enableShakeMock && type == Sensor.TYPE_ACCELEROMETER) return true
+        return isEffectiveMotionMockEnabled()
     }
 
     private fun getMockMotionValues(sensorType: Int, timeMs: Long, outValues: FloatArray) {
@@ -709,23 +1095,37 @@ object SystemSensorManagerHook {
     // ==================== 步数持久化 ====================
 
     private fun loadStepCount() {
-        val file = stepCountFile ?: return
+        val file = stepCountFile ?: run {
+            logOnce("stepPersist.fileNull") {
+                "[SensorHook][StepPusher] persisted step count unavailable: context=${objectSummary(FakeLoc.getContext())}"
+            }
+            return
+        }
         try {
             if (file.exists() && file.canRead()) {
                 val text = file.readText().trim()
                 val count = text.toLongOrNull()
                 if (count != null && count >= 0L) {
                     mCurrentStepCount = count
-                    Logger.info("SystemSensorManagerHook: Loaded persisted step count: $count")
+                    Logger.info("[SensorHook][StepPusher] loaded persisted step count: count=$count file=${file.absolutePath}")
+                }
+            } else {
+                logOnce("stepPersist.empty") {
+                    "[SensorHook][StepPusher] persisted step count file not readable yet: file=${file.absolutePath}, exists=${file.exists()}, canRead=${file.canRead()}"
                 }
             }
         } catch (e: Exception) {
-            Logger.warn("SystemSensorManagerHook: Failed to load step count", e)
+            Logger.warn("[SensorHook][StepPusher] failed to load step count", e)
         }
     }
 
     private fun saveStepCount() {
-        val file = stepCountFile ?: return
+        val file = stepCountFile ?: run {
+            logOnce("stepPersist.saveFileNull") {
+                "[SensorHook][StepPusher] persisted step count save skipped: context=${objectSummary(FakeLoc.getContext())}"
+            }
+            return
+        }
         // 节流：最多每 5 秒写一次，或每 100 步写一次
         val now = System.currentTimeMillis()
         stepSaveCounter++
@@ -735,7 +1135,7 @@ object SystemSensorManagerHook {
         try {
             file.writeText(mCurrentStepCount.toString())
         } catch (e: Exception) {
-            Logger.warn("SystemSensorManagerHook: Failed to save step count", e)
+            Logger.warn("[SensorHook][StepPusher] failed to save step count", e)
         }
     }
 
@@ -774,11 +1174,26 @@ object SystemSensorManagerHook {
         mWasStepMockEnabled = enableStep
         val stepCountChanged = FakeLoc.sensorData.stepCount != mLastConfiguredStepCount
 
+        if (!enableStep) {
+            logOnce("stepGoal.disabled") {
+                "[SensorHook][StepPusher] updateStepGoal skipped: ${stepPusherState()}"
+            }
+            if (isActiveSensorPusherEnabled()) {
+                ensureStepEventPusher()
+            }
+            return
+        }
+
         if (enableStep && (stepMockJustEnabled || stepCountChanged)) {
             mStepGoalEnd = mCurrentStepCount + userStepCount
             mLastConfiguredStepCount = FakeLoc.sensorData.stepCount
-            Logger.info("SystemSensorManagerHook: Step goal: current=$mCurrentStepCount + add=$userStepCount => end=$mStepGoalEnd")
+            Logger.info("[SensorHook][StepPusher] step goal updated: justEnabled=$stepMockJustEnabled changed=$stepCountChanged current=$mCurrentStepCount add=$userStepCount end=$mStepGoalEnd ${listenerMapSummary()}")
+        } else {
+            logOnce("stepGoal.unchanged.${FakeLoc.sensorData.stepCount}") {
+                "[SensorHook][StepPusher] step goal unchanged: ${stepPusherState()}"
+            }
         }
+        ensureStepEventPusher()
     }
 
     /**
@@ -786,17 +1201,34 @@ object SystemSensorManagerHook {
      * 返回新增步数（用于 step detector 分发）。
      */
     fun advanceStepCounter(deltaMs: Long): Long {
-        if (!FakeLoc.sensorData.enableStepCountMock || mCurrentStepCount >= mStepGoalEnd) {
+        if (!FakeLoc.sensorData.enableStepCountMock) {
+            logOnce("stepAdvance.disabled") {
+                "[SensorHook][StepPusher] advanceStepCounter skipped: enableStepCountMock=false deltaMs=$deltaMs"
+            }
+            return 0L
+        }
+        if (mCurrentStepCount >= mStepGoalEnd) {
+            logOnce("stepAdvance.goalReached.$mStepGoalEnd") {
+                "[SensorHook][StepPusher] advanceStepCounter goal reached: ${stepPusherState()} deltaMs=$deltaMs"
+            }
             return 0L
         }
         val freqHz = FakeLoc.gaitData.gaitFreq.coerceIn(0.6f, 4.0f).toDouble()
         val stepIntervalMs = 1000.0 / freqHz
         val add = (deltaMs / stepIntervalMs).toLong()
-        if (add <= 0L) return 0L
+        if (add <= 0L) {
+            logOnce("stepAdvance.noAdd") {
+                "[SensorHook][StepPusher] advanceStepCounter no increment: deltaMs=$deltaMs freqHz=$freqHz intervalMs=$stepIntervalMs ${stepPusherState()}"
+            }
+            return 0L
+        }
         val newCount = (mCurrentStepCount + add).coerceAtMost(mStepGoalEnd)
         val stepsAdded = newCount - mCurrentStepCount
         mCurrentStepCount = newCount
         saveStepCount()
+        logOnce("stepAdvance.first") {
+            "[SensorHook][StepPusher] advanceStepCounter advanced: added=$stepsAdded deltaMs=$deltaMs ${stepPusherState()}"
+        }
         return stepsAdded
     }
 
@@ -810,39 +1242,77 @@ object SystemSensorManagerHook {
      */
     private fun ensureStepEventPusher() {
         synchronized(stepEventLock) {
+            logOnce("stepPusher.ensure.${FakeLoc.sensorData.enableStepCountMock}.${stepEventThread?.isAlive == true}") {
+                "[SensorHook][StepPusher] ensure requested: ${stepPusherState()}"
+            }
             if (stepEventThread?.isAlive == true) {
-                logOnce("stepPusher.already", "[SensorHook] active StepEventPusher already running")
+                logOnce("stepPusher.already", "[SensorHook][StepPusher] active StepEventPusher already running: ${stepPusherState()}")
                 return
             }
-            if (!FakeLoc.sensorData.enableStepCountMock) {
-                logOnce("stepPusher.disabled", "[SensorHook] active StepEventPusher skipped: enableStepCountMock=false")
+            if (!isActiveSensorPusherEnabled()) {
+                logOnce("stepPusher.disabled", "[SensorHook][StepPusher] active StepEventPusher skipped: ${stepPusherState()}")
                 return
             }
 
             stepEventThread = Thread({
-                Logger.info("[SensorHook] active StepEventPusher loop started")
+                Logger.info("[SensorHook][StepPusher] active StepEventPusher loop started: ${stepPusherState()}")
                 var idlePolls = 0
                 var consecutiveErrors = 0
-                while (!Thread.currentThread().isInterrupted && FakeLoc.sensorData.enableStepCountMock) {
+                while (!Thread.currentThread().isInterrupted && isActiveSensorPusherEnabled()) {
                     if (DomainGuard.isDomainDisabled(DomainGuard.Domain.SENSOR)) {
-                        Logger.warn("[SensorHook] active StepEventPusher stopped: SENSOR domain disabled")
+                        Logger.warn("[SensorHook][StepPusher] active StepEventPusher stopped: SENSOR domain disabled")
                         break
                     }
                     try {
                         Thread.sleep(STEP_PUSH_INTERVAL_MS)
 
-                        val currentCount = mCurrentStepCount
-                        if (currentCount <= 0) {
-                            logOnce("stepPusher.noCount", "[SensorHook] active StepEventPusher waiting: current step count is 0")
-                            continue
+                        if (FakeLoc.sensorData.enableStepCountMock) {
+                            updateStepGoal()
                         }
+                        val stepsAdded = if (FakeLoc.sensorData.enableStepCountMock) {
+                            advanceStepCounter(STEP_PUSH_INTERVAL_MS)
+                        } else {
+                            0L
+                        }
+                        val currentCount = mCurrentStepCount
+                        val nowMs = SystemClock.elapsedRealtime()
 
                         var delivered = 0
                         var stepListeners = 0
+                        var motionListeners = 0
                         for ((listener, sensors) in listenerMap.entries) {
-                            if (sensors.any { it.type == Sensor.TYPE_STEP_COUNTER }) {
-                                stepListeners += 1
-                                val event = createStepCounterEvent(currentCount.toFloat())
+                            for (sensor in sensors) {
+                                val values = when {
+                                    sensor.type == Sensor.TYPE_STEP_COUNTER && FakeLoc.sensorData.enableStepCountMock -> {
+                                        stepListeners += 1
+                                        if (currentCount > 0L) floatArrayOf(currentCount.toFloat()) else null
+                                    }
+                                    sensor.type == Sensor.TYPE_STEP_DETECTOR && FakeLoc.sensorData.enableStepCountMock -> {
+                                        stepListeners += 1
+                                        if (stepsAdded > 0L) floatArrayOf(1.0f) else null
+                                    }
+                                    shouldMockMotionSensor(sensor.type) -> {
+                                        motionListeners += 1
+                                        val out = FloatArray(sensorValueSize(sensor.type))
+                                        if (FakeLoc.sensorData.enableShakeMock && sensor.type == Sensor.TYPE_ACCELEROMETER) {
+                                            getMockShakeAccelValues(nowMs, out)
+                                        } else if (FakeLoc.sensorData.keepWalkingWaveform || FakeLoc.sensorData.enableStepCountMock) {
+                                            getMockMotionValues(sensor.type, nowMs, out)
+                                        } else {
+                                            getMockStaticValues(sensor.type, nowMs, out)
+                                        }
+                                        out
+                                    }
+                                    else -> {
+                                        logOnce("stepPusher.ineligible.${sensor.type}") {
+                                            "[SensorHook][StepPusher][Shape] active listener sensor not eligible: " +
+                                                "sensor=${sensorSummary(sensor)}, step=${FakeLoc.sensorData.enableStepCountMock}, " +
+                                                "motion=${FakeLoc.sensorData.enableMotionMock}, shake=${FakeLoc.sensorData.enableShakeMock}"
+                                        }
+                                        null
+                                    }
+                                } ?: continue
+                                val event = createSensorEvent(sensor, values)
                                 if (event != null) {
                                     try {
                                         listener.onSensorChanged(event)
@@ -850,7 +1320,7 @@ object SystemSensorManagerHook {
                                     } catch (t: Throwable) {
                                         listenerMap.remove(listener)
                                         consecutiveErrors += 1
-                                        Logger.warn("[SensorHook] active StepEventPusher listener failed and was removed: ${listener.javaClass.name}", t)
+                                        Logger.warn("[SensorHook][StepPusher] active StepEventPusher listener failed and was removed: ${listener.javaClass.name}", t)
                                         DomainGuard.reportCrash(DomainGuard.Domain.SENSOR, t)
                                         if (consecutiveErrors >= STEP_PUSH_ERROR_LIMIT) {
                                             DomainGuard.disableDomain(
@@ -861,7 +1331,7 @@ object SystemSensorManagerHook {
                                         }
                                     }
                                 } else {
-                                    logOnce("stepPusher.eventNull", "[SensorHook] active StepEventPusher could not create SensorEvent")
+                                    logOnce("stepPusher.eventNull", "[SensorHook][StepPusher] active StepEventPusher could not create SensorEvent; ${stepPusherState()}")
                                 }
                             }
                         }
@@ -871,23 +1341,27 @@ object SystemSensorManagerHook {
                         if (delivered > 0) {
                             consecutiveErrors = 0
                             idlePolls = 0
-                            logOnce("stepPusher.delivered", "[SensorHook] active StepEventPusher delivered first event: listeners=$delivered step=$currentCount")
-                        } else if (stepListeners == 0) {
+                            logOnce("stepPusher.delivered", "[SensorHook][StepPusher] active StepEventPusher delivered first event: listeners=$delivered step=$currentCount ${stepPusherState()}")
+                        } else if (stepListeners == 0 && motionListeners == 0) {
                             idlePolls += 1
                             if (idlePolls >= STEP_PUSH_IDLE_LIMIT) {
-                                Logger.info("[SensorHook] active StepEventPusher stopped: no STEP_COUNTER listeners after ${idlePolls * STEP_PUSH_INTERVAL_MS}ms")
+                                Logger.info("[SensorHook][StepPusher] active StepEventPusher stopped: no active sensor listeners after ${idlePolls * STEP_PUSH_INTERVAL_MS}ms; ${stepPusherState()}")
                                 break
                             }
-                            logOnce("stepPusher.noListener", "[SensorHook] active StepEventPusher found no STEP_COUNTER listeners; registered=${listenerMap.size}")
+                            logOnce("stepPusher.noListener", "[SensorHook][StepPusher] active StepEventPusher found no active sensor listeners; ${stepPusherState()}")
                         } else {
                             idlePolls = 0
+                            logOnce("stepPusher.noDelivery.$stepListeners.$motionListeners") {
+                                "[SensorHook][StepPusher][Shape] active StepEventPusher had eligible listeners but delivered no event: " +
+                                    "stepListeners=$stepListeners, motionListeners=$motionListeners, stepsAdded=$stepsAdded, current=$currentCount, ${stepPusherState()}"
+                            }
                         }
                     } catch (e: InterruptedException) {
                         Thread.currentThread().interrupt()
                         break
                     } catch (e: Throwable) {
                         consecutiveErrors += 1
-                        Logger.warn("[SensorHook] active StepEventPusher error", e)
+                        Logger.warn("[SensorHook][StepPusher] active StepEventPusher error", e)
                         DomainGuard.reportCrash(DomainGuard.Domain.SENSOR, e)
                         if (consecutiveErrors >= STEP_PUSH_ERROR_LIMIT) {
                             DomainGuard.disableDomain(
@@ -898,7 +1372,7 @@ object SystemSensorManagerHook {
                         }
                     }
                 }
-                Logger.info("[SensorHook] active StepEventPusher loop stopped: enableStepCountMock=${FakeLoc.sensorData.enableStepCountMock}")
+                Logger.info("[SensorHook][StepPusher] active StepEventPusher loop stopped: ${stepPusherState()}")
                 synchronized(stepEventLock) {
                     if (stepEventThread === Thread.currentThread()) {
                         stepEventThread = null
@@ -907,27 +1381,52 @@ object SystemSensorManagerHook {
             }, "StepEventPusher")
             stepEventThread?.isDaemon = true
             stepEventThread?.start()
-            Logger.info("[SensorHook] active StepEventPusher thread started")
+            Logger.info("[SensorHook][StepPusher] active StepEventPusher thread started: ${stepPusherState()}")
         }
     }
 
-    private fun createStepCounterEvent(stepCount: Float): SensorEvent? {
-        return runCatching {
-            val sensorManager = XposedHelpers.callStaticMethod(
-                XposedHelpers.findClass("android.hardware.SystemSensorManager", null),
-                "getInstance",
-                FakeLoc.getContext()
-            )
-            val defaultSensor = XposedHelpers.callMethod(sensorManager, "getDefaultSensor", Sensor.TYPE_STEP_COUNTER) as? Sensor
-                ?: return@runCatching null
+    private fun sensorValueSize(sensorType: Int): Int {
+        return when (sensorType) {
+            Sensor.TYPE_ROTATION_VECTOR,
+            Sensor.TYPE_GAME_ROTATION_VECTOR,
+            Sensor.TYPE_GEOMAGNETIC_ROTATION_VECTOR -> 4
+            else -> 3
+        }
+    }
 
-            val ctor = SensorEvent::class.java.getDeclaredConstructors().firstOrNull()
-                ?: return@runCatching null
+    private fun createSensorEvent(sensor: Sensor, values: FloatArray): SensorEvent? {
+        return runCatching {
+            val context = FakeLoc.getContext()
+            logOnce("stepEvent.context.${context?.javaClass?.name ?: "null"}") {
+                "[SensorHook][StepPusher][Shape] createSensorEvent context=${objectSummary(context)}"
+            }
+
+            val ctor = SensorEvent::class.java.getDeclaredConstructors().firstOrNull {
+                it.parameterTypes.size == 1 && it.parameterTypes[0] == Int::class.javaPrimitiveType
+            }
+                ?: run {
+                    logOnce("stepEvent.constructorNull") {
+                        "[SensorHook][StepPusher][Shape] createSensorEvent int constructor unavailable"
+                    }
+                    return@runCatching null
+                }
+            logOnce("stepEvent.constructors") {
+                val constructors = SensorEvent::class.java.declaredConstructors.joinToString(limit = SENSOR_SHAPE_METHOD_LIMIT, truncated = "...") {
+                    it.parameterTypes.joinToString(prefix = "(", postfix = ")") { type -> shortClassName(type) }
+                }
+                "[SensorHook][StepPusher][Shape] SensorEvent constructors=$constructors"
+            }
             ctor.isAccessible = true
-            val event = ctor.newInstance(defaultSensor, 0, floatArrayOf(stepCount), SystemClock.elapsedRealtimeNanos(), 3) as SensorEvent
+            val event = ctor.newInstance(values.size) as SensorEvent
+            event.sensor = sensor
+            values.copyInto(event.values, endIndex = minOf(values.size, event.values.size))
+            event.timestamp = SystemClock.elapsedRealtimeNanos()
+            event.accuracy = 3
             event
         }.onFailure {
-            Logger.warn("[SensorHook] createStepCounterEvent failed", it)
+            logOnce("stepEvent.create.failed.${it.javaClass.simpleName}") {
+                "[SensorHook][StepPusher][Shape] createSensorEvent failed: ${it.javaClass.simpleName}:${it.message ?: ""}, sensor=${sensorSummary(sensor)}"
+            }
         }.getOrNull()
     }
 

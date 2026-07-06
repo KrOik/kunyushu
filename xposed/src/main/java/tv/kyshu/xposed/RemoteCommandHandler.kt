@@ -20,8 +20,10 @@ import android.annotation.SuppressLint
 import android.os.Bundle
 import android.os.IBinder
 import android.os.Parcel
+import android.os.SystemClock
 import tv.kyshu.dobby.Dobby
 import tv.kyshu.xposed.hooks.LocationServiceHook
+import tv.kyshu.xposed.hooks.sensor.SystemSensorManagerHook
 import tv.kyshu.xposed.security.RemoteCommandSecurity
 import tv.kyshu.xposed.utils.LogRouter
 import java.io.File
@@ -35,9 +37,27 @@ import tv.kyshu.xposed.utils.MockAuditTrail
 import tv.kyshu.xposed.config.MockWifiData
 import tv.kyshu.xposed.utils.MockProbeLog
 import java.util.Collections
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 import kotlin.random.Random
 
 object RemoteCommandHandler {
+    private const val MAX_PROXY_BINDERS = 8
+    private const val MAX_PROXY_RELAY_QUEUE = 64
+    private const val SLOW_PROXY_RELAY_MS = 50L
+    private const val FIELD_REQUESTED_SCOPE = "requested_scope"
+    private const val FIELD_FROM_PACKAGE = "from_package"
+    private const val FIELD_FROM_PROCESS = "from_process"
+    const val SCOPE_SENSOR_APP = "sensor_app"
+
+    enum class SessionScope {
+        CONTROL,
+        SYNC_ONLY,
+    }
+
     private data class ProxyBinderSession(
         val binder: IBinder,
         val sessionKey: String,
@@ -48,7 +68,20 @@ object RemoteCommandHandler {
     internal val randomKey: String
         get() = activeSessionKey
     private val replayGuard = RemoteCommandSecurity.ReplayGuard()
+    private val sessionScopes = ConcurrentHashMap<String, SessionScope>()
     private val proxyBinders by lazy { Collections.synchronizedList(arrayListOf<ProxyBinderSession>()) }
+    private val proxyRelayDropCount = java.util.concurrent.atomic.AtomicLong()
+    private val proxyRelayExecutor by lazy {
+        ThreadPoolExecutor(
+            1,
+            1,
+            0L,
+            TimeUnit.MILLISECONDS,
+            ArrayBlockingQueue(MAX_PROXY_RELAY_QUEUE),
+            { runnable -> Thread(runnable, "Portal-ProxyRelay").apply { isDaemon = true } },
+            ThreadPoolExecutor.AbortPolicy(),
+        )
+    }
     private val proxyCommandIds = setOf(
         MockCommandContract.Commands.PUT_CONFIG,
         MockCommandContract.Commands.UPDATE_WIFI,
@@ -64,6 +97,10 @@ object RemoteCommandHandler {
         "set_bearing",
         "move",
         "update_location",
+    )
+    private val syncOnlyCommandIds = setOf(
+        MockCommandContract.Commands.SYNC_CONFIG,
+        "set_proxy",
     )
 
     private object LiveHookRuntimeState : HookRuntimeStateStore {
@@ -155,12 +192,24 @@ object RemoteCommandHandler {
             kotlin.runCatching {
                 if (command == "exchange_key") {
                     val userId = BinderUtils.getCallerUid()
-                    if (BinderUtils.isLocationProviderEnabled(userId)) {
-                        val rawKey = rotateSessionKey()
-                        RemoteCommandSecurity.putEncryptedSessionKey(rely, rawKey)
-                    } else {
+                    val scope = when {
+                        BinderUtils.isLocationProviderEnabled(userId) -> SessionScope.CONTROL
+                        isSensorAppSyncExchangeAllowed(userId, rely) -> SessionScope.SYNC_ONLY
+                        else -> null
+                    }
+                    if (scope == null) {
                         Logger.warn("exchange_key: Permission denied for UID $userId")
                         false
+                    } else {
+                        val rawKey = rotateSessionKey(scope)
+                        if (scope == SessionScope.SYNC_ONLY) {
+                            Logger.info(
+                                "[RemoteCommandHandler] issued restricted sync session: " +
+                                    "uid=$userId package=${rely.getString(FIELD_FROM_PACKAGE) ?: ""} " +
+                                    "process=${rely.getString(FIELD_FROM_PROCESS) ?: ""}"
+                            )
+                        }
+                        RemoteCommandSecurity.putEncryptedSessionKey(rely, rawKey)
                     }
                 } else {
                     val commandId = rely.getString("command_id") ?: return@runCatching false
@@ -174,15 +223,20 @@ object RemoteCommandHandler {
     }
 
     @Synchronized
-    internal fun rotateSessionKey(): String {
+    internal fun rotateSessionKey(scope: SessionScope = SessionScope.CONTROL): String {
         activeSessionKey = RemoteCommandSecurity.newSessionKey()
         replayGuard.registerSession(activeSessionKey)
+        sessionScopes[activeSessionKey] = scope
         FlightRecorder.state("IPC", "SESSION_ROTATED")
         return activeSessionKey
     }
 
-    internal fun registerSessionKey(sessionKey: String): Boolean {
-        return replayGuard.registerSession(sessionKey)
+    internal fun registerSessionKey(sessionKey: String, scope: SessionScope = SessionScope.CONTROL): Boolean {
+        val registered = replayGuard.registerSession(sessionKey)
+        if (registered) {
+            sessionScopes[sessionKey] = scope
+        }
+        return registered
     }
 
     internal fun handleSessionInstruction(
@@ -254,6 +308,11 @@ object RemoteCommandHandler {
             Logger.warn("[RemoteCommandHandler] rejected unauthenticated or replayed command: $commandId")
             return false
         }
+        val scope = sessionScopes[sessionKey] ?: SessionScope.CONTROL
+        if (!isCommandAllowedForScope(scope, commandId)) {
+            Logger.warn("[RemoteCommandHandler] rejected command outside session scope: scope=$scope command=$commandId")
+            return false
+        }
         if (!RemoteCommandSecurity.decryptSensitivePayload(rely, sessionKey)) {
             Logger.warn("[RemoteCommandHandler] rejected command with invalid encrypted payload: $commandId")
             return false
@@ -269,13 +328,31 @@ object RemoteCommandHandler {
                     Logger.warn("[RemoteCommandHandler] set_proxy missing binder")
                     false
                 } else {
-                    proxyBinders.add(ProxyBinderSession(proxy, sessionKey))
-                    Logger.info("[RemoteCommandHandler] set_proxy registered, count=${proxyBinders.size}")
+                    val count = registerProxyBinder(proxy, sessionKey)
+                    Logger.info("[RemoteCommandHandler] set_proxy registered, count=$count")
                     true
                 }
             }
             MockCommandContract.Commands.PUT_CONFIG -> {
+                val previousRinexPath = FakeLoc.rinexPath
                 MockCommandContract.applyPutConfig(rely)
+                SystemSensorManagerHook.updateStepGoal()
+                if (previousRinexPath != FakeLoc.rinexPath) {
+                    LocationServiceHook.clearSatelliteStates()
+                    Logger.info("[RemoteCommandHandler] put_config refreshed RINEX path: ${FakeLoc.rinexPath ?: "(none)"}")
+                }
+                FakeLoc.rinexPath?.let { path ->
+                    val file = File(path)
+                    Logger.info(
+                        "[RemoteCommandHandler] put_config RINEX file state: path=$path, " +
+                            "exists=${file.exists()}, canRead=${file.canRead()}, length=${file.length()}"
+                    )
+                }
+                Logger.info(
+                    "[RemoteCommandHandler] put_config sensor state: hookSensor=${FakeLoc.hookSensor}, " +
+                        "motion=${FakeLoc.sensorData.enableMotionMock}, step=${FakeLoc.enableStepCountMock}, " +
+                        "stepCount=${FakeLoc.stepCount}, shake=${FakeLoc.enableShakeMock}, keepWalking=${FakeLoc.keepWalkingWaveform}"
+                )
                 Logger.info("[RemoteCommandHandler] put_config applied")
                 MockProbeLog.configSync("put_config: enable=${FakeLoc.enable} stepMock=${FakeLoc.enableStepCountMock}")
                 true
@@ -485,6 +562,42 @@ object RemoteCommandHandler {
         return handled
     }
 
+    private fun isCommandAllowedForScope(scope: SessionScope, commandId: String): Boolean {
+        return scope == SessionScope.CONTROL || commandId in syncOnlyCommandIds
+    }
+
+    private fun isSensorAppSyncExchangeAllowed(uid: Int, rely: Bundle): Boolean {
+        if (uid < 10_000) return false
+        if (rely.getString(FIELD_REQUESTED_SCOPE) != SCOPE_SENSOR_APP) return false
+        val packageName = rely.getString(FIELD_FROM_PACKAGE)
+            ?.takeIf { it.length in 1..128 && it.all(::isSafePackageChar) }
+            ?: return false
+        val processName = rely.getString(FIELD_FROM_PROCESS)
+            ?.takeIf { it.length in 1..160 && it.all(::isSafeProcessChar) }
+            ?: return false
+        val uidPackages = BinderUtils.getUidPackageNames(uid = uid) ?: return false
+        val allowed = uidPackages.contains(packageName)
+        if (!allowed) {
+            Logger.warn(
+                "[RemoteCommandHandler] restricted sync exchange denied: " +
+                    "uid=$uid package=$packageName process=$processName uidPackages=${uidPackages.joinToString()}"
+            )
+        }
+        return allowed
+    }
+
+    private fun isSafePackageChar(char: Char): Boolean {
+        return char in 'a'..'z' ||
+            char in 'A'..'Z' ||
+            char in '0'..'9' ||
+            char == '_' ||
+            char == '.'
+    }
+
+    private fun isSafeProcessChar(char: Char): Boolean {
+        return isSafePackageChar(char) || char == ':'
+    }
+
     private fun handleLoadLibrary(rely: Bundle): Boolean {
         val path = rely.getString("path") ?: run {
             rely.putString("result", "missing_path")
@@ -517,36 +630,89 @@ object RemoteCommandHandler {
 
     private fun relayToProxyBinders(commandId: String, relay: Bundle?) {
         if (relay == null || proxyBinders.isEmpty()) return
+        val sessions = snapshotLiveProxyBinders()
+        sessions.forEach { proxy ->
+            val proxyRelay = Bundle(relay)
+            try {
+                proxyRelayExecutor.execute {
+                    relayToProxyBinder(commandId, proxy, proxyRelay)
+                }
+            } catch (_: RejectedExecutionException) {
+                logProxyRelayDropped(commandId)
+            }
+        }
+    }
+
+    private fun registerProxyBinder(binder: IBinder, sessionKey: String): Int {
         synchronized(proxyBinders) {
             proxyBinders.removeIf { proxy ->
-                val binder = proxy.binder
-                if (!binder.isBinderAlive || !binder.pingBinder()) {
-                    true
-                } else {
-                    val proxyRelay = Bundle(relay)
-                    if (!RemoteCommandSecurity.attachEnvelope(
-                            bundle = proxyRelay,
-                            sessionKey = proxy.sessionKey,
-                            sequence = requestSeq.incrementAndGet(),
-                        )
-                    ) {
-                        Logger.error("[RemoteCommandHandler] failed to sign relay $commandId for proxy binder")
-                        return@removeIf true
-                    }
-                    val data = Parcel.obtain()
-                    try {
-                        data.writeString(proxy.sessionKey)
-                        data.writeBundle(proxyRelay)
-                        binder.transact(1, data, null, 0)
-                        false
-                    } catch (t: Throwable) {
-                        Logger.error("[RemoteCommandHandler] failed to relay $commandId to proxy binder", t)
-                        true
-                    } finally {
-                        data.recycle()
-                    }
-                }
+                proxy.binder == binder || !proxy.binder.isBinderAlive || !proxy.binder.pingBinder()
             }
+            while (proxyBinders.size >= MAX_PROXY_BINDERS) {
+                proxyBinders.removeAt(0)
+            }
+            proxyBinders.add(ProxyBinderSession(binder, sessionKey))
+            return proxyBinders.size
+        }
+    }
+
+    private fun snapshotLiveProxyBinders(): List<ProxyBinderSession> {
+        synchronized(proxyBinders) {
+            proxyBinders.removeIf { proxy -> !proxy.binder.isBinderAlive || !proxy.binder.pingBinder() }
+            return proxyBinders.toList()
+        }
+    }
+
+    private fun relayToProxyBinder(commandId: String, proxy: ProxyBinderSession, proxyRelay: Bundle) {
+        val binder = proxy.binder
+        if (!binder.isBinderAlive || !binder.pingBinder()) {
+            removeProxyBinder(proxy)
+            return
+        }
+        if (!RemoteCommandSecurity.attachEnvelope(
+                bundle = proxyRelay,
+                sessionKey = proxy.sessionKey,
+                sequence = requestSeq.incrementAndGet(),
+            )
+        ) {
+            Logger.error("[RemoteCommandHandler] failed to sign relay $commandId for proxy binder")
+            removeProxyBinder(proxy)
+            return
+        }
+        val data = Parcel.obtain()
+        val startedAt = SystemClock.elapsedRealtime()
+        try {
+            data.writeString(proxy.sessionKey)
+            data.writeBundle(proxyRelay)
+            binder.transact(1, data, null, IBinder.FLAG_ONEWAY)
+            val costMs = SystemClock.elapsedRealtime() - startedAt
+            if (costMs > SLOW_PROXY_RELAY_MS) {
+                Logger.warn("[RemoteCommandHandler] slow proxy relay command=$commandId cost=${costMs}ms")
+            }
+        } catch (t: Throwable) {
+            Logger.error("[RemoteCommandHandler] failed to relay $commandId to proxy binder", t)
+            removeProxyBinder(proxy)
+        } finally {
+            data.recycle()
+        }
+    }
+
+    private fun removeProxyBinder(proxy: ProxyBinderSession) {
+        synchronized(proxyBinders) {
+            proxyBinders.remove(proxy)
+        }
+    }
+
+    private fun logProxyRelayDropped(commandId: String) {
+        val dropped = proxyRelayDropCount.incrementAndGet()
+        if (dropped == 1L || dropped % 64L == 0L) {
+            Logger.warn("[RemoteCommandHandler] proxy relay queue full; dropped=$dropped command=$commandId")
+        }
+    }
+
+    internal fun clearProxyBindersForTest() {
+        synchronized(proxyBinders) {
+            proxyBinders.clear()
         }
     }
 

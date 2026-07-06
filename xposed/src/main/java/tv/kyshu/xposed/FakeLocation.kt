@@ -48,11 +48,10 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
 
     companion object {
         /**
-         * 系统启动后延迟时间（毫秒），在此期间hook不会生效，
-         * 确保用户有充足的操作时间。
+         * Hook 安装延迟。默认即时安装，避免启动后一段时间内不同域分阶段生效。
          */
-        const val BOOT_DELAY_MS = 80_000L
-        private const val PHONE_BOOT_DELAY_MS = 15_000L
+        const val BOOT_DELAY_MS = 0L
+        private const val PHONE_BOOT_DELAY_MS = 0L
 
         private const val DELAY_MARKER_PREFIX = "svc.delay."
 
@@ -104,6 +103,14 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
             @Volatile
             private var pollerThread: Thread? = null
 
+            private fun isProviderBootstrapFailure(e: Throwable): Boolean {
+                return e is NullPointerException &&
+                    (e.message?.contains("IActivityManager.getContentProvider") == true ||
+                        e.stackTrace.any { frame ->
+                            frame.className == "android.app.ActivityThread" &&
+                                frame.methodName == "acquireProvider"
+                        })
+            }
 
             fun start() {
                 if (FakeLoc.getContext() == null) {
@@ -181,7 +188,11 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                                     consecutiveFailures++
                                     nextDelayMs = minOf(MAX_BACKOFF_MS, periodMs * (1L shl minOf(consecutiveFailures, 4)))
                                     if (consecutiveFailures == 1 || consecutiveFailures % 6 == 0) {
-                                        Logger.warn("[DelayedCommandPoller] poll failed count=$consecutiveFailures nextDelayMs=$nextDelayMs", e)
+                                        if (isProviderBootstrapFailure(e)) {
+                                            Logger.warn("[DelayedCommandPoller] provider not ready count=$consecutiveFailures nextDelayMs=$nextDelayMs")
+                                        } else {
+                                            Logger.warn("[DelayedCommandPoller] poll failed count=$consecutiveFailures nextDelayMs=$nextDelayMs", e)
+                                        }
                                     }
                                     if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
                                         Logger.error("[DelayedCommandPoller] stopping after $consecutiveFailures consecutive failures")
@@ -304,7 +315,7 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
     override fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam?) {
         val pkgName = lpparam?.packageName ?: return
         if (pkgName !in TARGET_PACKAGES) {
-            return
+            Logger.info("[FakeLocation] Scoped app package: $pkgName, installing app-process hooks")
         }
 
         // Hardened two-phase re-entry guard:
@@ -322,7 +333,9 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
         System.setProperty(guardKey, "true")
         markPackageInjected(pkgName)
 
-
+        if (pkgName != "android" && pkgName !in PortalIdentity.CONTROL_PACKAGES) {
+            installApplicationSensorHooks(lpparam)
+        }
 
         when (lpparam.packageName) {
             "com.android.phone" -> {
@@ -428,7 +441,7 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                         Log.init(systemContext)
                     }
                     runBootInitStep("FakeLoc context") {
-                        FakeLoc.setContext(systemContext)
+                        FakeLoc.setContext(systemContext, authoritative = true)
                     }
                     runBootInitStep("LogRouter") {
                         LogRouter.setContext(systemContext)
@@ -523,7 +536,7 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
 
                 // Watchdog：如果启动线程超过预期时间仍未完成，记录告警
                 val watchdogStartedAt = System.currentTimeMillis()
-                val watchdogTimeout = BOOT_DELAY_MS + 60_000L // 80s 延迟 + 60s 安装窗口
+                val watchdogTimeout = BOOT_DELAY_MS + 60_000L // 安装延迟 + 60s 安装窗口
                 Thread({
                     try {
                         Thread.sleep(watchdogTimeout)
@@ -836,6 +849,104 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                         mapOf("error" to e.javaClass.simpleName))
                 }
             }
+        }
+    }
+
+    private fun installApplicationSensorHooks(lpparam: XC_LoadPackage.LoadPackageParam) {
+        val packageName = lpparam.packageName
+        val processName = lpparam.processName ?: packageName
+        if (packageName == "android" || packageName in PortalIdentity.CONTROL_PACKAGES) {
+            Logger.info("[FakeLocation][SensorApp] app sensor hook skipped for control/system package $packageName/$processName")
+            return
+        }
+        val attachGuardKey = "app.sensor.attach.${packageName}.${processName}"
+        if (System.getProperty(attachGuardKey) == "true") return
+        System.setProperty(attachGuardKey, "true")
+
+        runCatching {
+            val applicationClass = XposedHelpers.findClassIfExists("android.app.Application", lpparam.classLoader)
+                ?: run {
+                    Logger.warn("[FakeLocation][SensorApp] Application class not found for $packageName/$processName")
+                    return
+                }
+            XposedHelpers.findAndHookMethod(
+                applicationClass,
+                "attach",
+                android.content.Context::class.java,
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        val context = param.args.getOrNull(0) as? android.content.Context ?: run {
+                            Logger.warn("[FakeLocation][SensorApp] attach without Context for $packageName/$processName")
+                            return
+                        }
+                        val appContext = context.applicationContext ?: context
+                        runCatching { Log.init(appContext) }
+                        val contextAccepted = runCatching {
+                            FakeLoc.setContext(appContext, authoritative = false)
+                        }.onFailure {
+                            Logger.warn("[FakeLocation][SensorApp] failed to retain app context for $packageName/$processName", it)
+                        }.getOrDefault(false)
+                        runCatching { LogRouter.setContext(appContext) }
+                        runCatching { FlightRecorder.setContext(appContext) }
+                        runCatching { CrashForensics.setContext(appContext) }
+                        val synced = if (contextAccepted) {
+                            SensorAppConfigBridge.ensure(packageName, processName)
+                        } else {
+                            false
+                        }
+                        if (contextAccepted && !synced) {
+                            FakeLoc.reload()
+                        }
+                        Logger.info(
+                            "[FakeLocation][SensorApp] Application.attach captured: package=$packageName, " +
+                                "process=$processName, hookSensor=${FakeLoc.hookSensor}, " +
+                                "motion=${FakeLoc.sensorData.enableMotionMock}, step=${FakeLoc.enableStepCountMock}, " +
+                                "shake=${FakeLoc.enableShakeMock}, context=${appContext.javaClass.name}, " +
+                                "contextAccepted=$contextAccepted, configSynced=$synced"
+                        )
+                        if (DomainGuard.isDomainDisabled(Domain.SENSOR)) {
+                            Logger.warn("[FakeLocation][SensorApp] SENSOR domain disabled, skipping app sensor hook for $packageName/$processName")
+                            return
+                        }
+                        val installGuardKey = "app.sensor.installed.${packageName}.${processName}"
+                        if (System.getProperty(installGuardKey) == "true") return
+                        System.setProperty(installGuardKey, "true")
+                        runCatching {
+                            SystemSensorManagerHook(lpparam.classLoader)
+                            FlightRecorder.hookInstall(
+                                "APP_SENSOR",
+                                "SystemSensorManagerHook",
+                                mapOf("package" to packageName, "process" to processName),
+                            )
+                            Logger.info("[FakeLocation][SensorApp] SystemSensorManagerHook installed for $packageName/$processName")
+                        }.onFailure { e ->
+                            FlightRecorder.hookFail(
+                                "APP_SENSOR",
+                                "SystemSensorManagerHook",
+                                mapOf("package" to packageName, "process" to processName, "error" to e.javaClass.simpleName),
+                            )
+                            Logger.error("[FakeLocation][SensorApp] Failed to install SystemSensorManagerHook for $packageName/$processName", e)
+                            DomainGuard.reportCrash(Domain.SENSOR, e)
+                        }
+                    }
+                },
+            )
+            Logger.info("[FakeLocation][SensorApp] Application.attach hook queued for $packageName/$processName")
+        }.onFailure { e ->
+            FlightRecorder.hookFail(
+                "APP_SENSOR",
+                "Application.attach",
+                mapOf("package" to packageName, "process" to processName, "error" to e.javaClass.simpleName),
+            )
+            Logger.error("[FakeLocation][SensorApp] Failed to hook Application.attach for $packageName/$processName", e)
+            DomainGuard.reportCrash(Domain.SENSOR, e)
+        }
+    }
+
+    private object SensorAppConfigBridge : BaseDivineService() {
+        fun ensure(packageName: String, processName: String): Boolean {
+            val from = "SensorApp:${packageName}:${processName}".take(96)
+            return ensureDivineService(from)
         }
     }
 

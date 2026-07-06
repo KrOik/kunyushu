@@ -14,6 +14,7 @@
 
 # Security module (used via reflection + JNI)
 -keep class tv.kyshu.xposed.security.RemoteCommandSecurity { *; }
+-keep class tv.kyshu.xposed.security.RemoteCommandSecurity$* { *; }
 
 # Global config facade (accessed from all modules)
 -keep class tv.kyshu.xposed.utils.FakeLoc { *; }

@@ -9,11 +9,13 @@ import android.database.MatrixCursor
 import android.net.Uri
 import android.os.Binder
 import android.os.Bundle
+import android.os.ParcelFileDescriptor
 import com.alibaba.fastjson2.JSONObject
 import tv.kyshu.service.MockServiceHelper
 import tv.kyshu.ui.mock.HistoricalLocation
 import tv.kyshu.xposed.utils.FakeLoc
 import tv.kyshu.xposed.utils.PortalIdentity
+import java.io.File
 import java.util.concurrent.ConcurrentLinkedQueue
 
 /**
@@ -24,28 +26,41 @@ import java.util.concurrent.ConcurrentLinkedQueue
  *   content://tv.kyshu.xposed.config/config  — config key/value/type query
  *
  * Auth:
- *   - UID 1000 (system_server, where Xposed module runs): always allowed + audit log
- *   - App UID (>= 10000): must belong to the Portal control app, plus signature check
- *   - Other system UID (< 10000): allowed but audit-logged
+ *   - UID 1000 (system_server): can read commands, sensitive config, and RINEX.
+ *   - Portal control app UID: can write commands and read sensitive config/RINEX.
+ *   - Hook target/system processes: can read non-sensitive config and bounded RINEX only.
  */
 class ConfigProvider : ContentProvider() {
-    /** true if the current caller is authorized to read sensitive location data.
-     *  Set by enforceCaller(); read by queryConfig() to filter coordinate fields. */
-    @Volatile
-    private var isSensitiveAllowed = true
-
     companion object {
         const val AUTHORITY = "tv.kyshu.xposed.config"
         private const val PATH_CMD = "cmd"
         private const val PATH_CONFIG = "config"
+        private const val PATH_RINEX = "rinex"
         private const val CODE_CMD = 1
         private const val CODE_CONFIG = 2
+        private const val CODE_RINEX = 3
+        private const val SYSTEM_UID = 1000
+        private const val APP_UID_BASE = 10000
+        private const val MAX_COMMAND_BYTES = 256 * 1024
+        private const val MIN_RINEX_BYTES = 1024L
+        private const val MAX_RINEX_BYTES = 64L * 1024L * 1024L
+        private const val RINEX_HEADER_SCAN_BYTES = 8192
 
         private val uriMatcher = UriMatcher(UriMatcher.NO_MATCH).apply {
             addURI(AUTHORITY, PATH_CMD, CODE_CMD)
             addURI(AUTHORITY, PATH_CONFIG, CODE_CONFIG)
+            addURI(AUTHORITY, PATH_RINEX, CODE_RINEX)
         }
     }
+
+    private data class CallerAccess(
+        val uid: Int,
+        val isSystemUid: Boolean,
+        val isSystemServer: Boolean,
+        val isControlPackage: Boolean,
+        val canReadRinex: Boolean,
+        val sensitiveAllowed: Boolean,
+    )
 
     /** In-memory command queue for /cmd path (FIFO). */
     private val commandQueue = ConcurrentLinkedQueue<String>()
@@ -56,18 +71,24 @@ class ConfigProvider : ContentProvider() {
         uri: Uri, projection: Array<String>?, selection: String?,
         selectionArgs: Array<String>?, sortOrder: String?
     ): Cursor? {
-        enforceCaller()
+        val access = enforceCaller()
         return when (uriMatcher.match(uri)) {
-            CODE_CMD -> queryCommands()
-            CODE_CONFIG -> queryConfig()
+            CODE_CMD -> {
+                requireCommandReader(access)
+                queryCommands()
+            }
+            CODE_CONFIG -> queryConfig(access)
             else -> null
         }
     }
 
     override fun insert(uri: Uri, values: ContentValues?): Uri? {
-        enforceCaller()
+        val access = enforceCaller()
         return when (uriMatcher.match(uri)) {
-            CODE_CMD -> insertCommand(values)
+            CODE_CMD -> {
+                requireCommandWriter(access)
+                insertCommand(values)
+            }
             else -> null
         }
     }
@@ -77,34 +98,80 @@ class ConfigProvider : ContentProvider() {
         return when (uriMatcher.match(uri)) {
             CODE_CMD -> "vnd.android.cursor.item/command"
             CODE_CONFIG -> "vnd.android.cursor.dir/config"
+            CODE_RINEX -> "application/octet-stream"
             else -> "vnd.android.cursor.dir/unknown"
         }
     }
     override fun update(uri: Uri, values: ContentValues?, selection: String?, selectionArgs: Array<String>?): Int {
-        return 1 // Report 1 row updated to prevent unnecessary fallback-to-insert
+        val access = enforceCaller()
+        return when (uriMatcher.match(uri)) {
+            CODE_CONFIG -> {
+                requireConfigWriter(access)
+                1 // Report 1 row updated to prevent unnecessary fallback-to-insert
+            }
+            else -> 0
+        }
     }
-    override fun delete(uri: Uri, selection: String?, selectionArgs: Array<String>?): Int = 0
+    override fun delete(uri: Uri, selection: String?, selectionArgs: Array<String>?): Int {
+        enforceCaller()
+        return 0
+    }
+
+    override fun openFile(uri: Uri, mode: String): ParcelFileDescriptor? {
+        val access = enforceCaller()
+        if (uriMatcher.match(uri) != CODE_RINEX) return null
+        if (mode != "r") throw SecurityException("RINEX provider is read-only")
+        requireRinexReader(access)
+        val ctx = context ?: return null
+        val prefs = ctx.getSharedPreferences(MockServiceHelper.PROVIDER_NAME, Context.MODE_PRIVATE)
+        val file = resolveRinexFile(ctx, prefs) ?: return null
+        return ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
+    }
 
 
     // ---- Auth ----
 
-    private fun enforceCaller() {
+    private fun enforceCaller(): CallerAccess {
         val uid = Binder.getCallingUid()
         val ctx = context ?: throw SecurityException("No context")
 
-        when {
-            uid == 1000 -> {
-                // system_server (UID 1000): always allowed for all data
-                isSensitiveAllowed = true
+        return when {
+            uid == SYSTEM_UID -> {
+                // system_server (UID 1000): allowed to consume command queue and read all config.
+                CallerAccess(
+                    uid = uid,
+                    isSystemUid = true,
+                    isSystemServer = true,
+                    isControlPackage = false,
+                    canReadRinex = true,
+                    sensitiveAllowed = true,
+                )
             }
-            uid < 10000 -> {
-                // Other system UIDs — deny sensitive data, allow non-sensitive
-                isSensitiveAllowed = false
+            uid < APP_UID_BASE -> {
+                // Other system UIDs: allow non-sensitive config and bounded RINEX reads only.
+                CallerAccess(
+                    uid = uid,
+                    isSystemUid = true,
+                    isSystemServer = false,
+                    isControlPackage = false,
+                    canReadRinex = true,
+                    sensitiveAllowed = false,
+                )
             }
             else -> {
                 val packages = ctx.packageManager.getPackagesForUid(uid) ?: emptyArray()
                 if (!PortalIdentity.areAllControlPackages(packages)) {
-                    throw SecurityException("UID $uid not allowed to access ConfigProvider")
+                    // Xposed module code runs inside scoped target app UIDs. These callers
+                    // need a read-only bootstrap path but must not access command writes or
+                    // sensitive coordinate fields through the provider.
+                    return CallerAccess(
+                        uid = uid,
+                        isSystemUid = false,
+                        isSystemServer = false,
+                        isControlPackage = false,
+                        canReadRinex = true,
+                        sensitiveAllowed = false,
+                    )
                 }
                 val callerPackage = packages.first()
                 val ourPkg = ctx.packageManager.getPackagesForUid(
@@ -125,8 +192,39 @@ class ConfigProvider : ContentProvider() {
                 if (theirSig == null || ourSig == null || !theirSig.contentEquals(ourSig)) {
                     throw SecurityException("UID $uid signature mismatch — rejecting")
                 }
-                isSensitiveAllowed = true
+                CallerAccess(
+                    uid = uid,
+                    isSystemUid = false,
+                    isSystemServer = false,
+                    isControlPackage = true,
+                    canReadRinex = true,
+                    sensitiveAllowed = true,
+                )
             }
+        }
+    }
+
+    private fun requireCommandReader(access: CallerAccess) {
+        if (!access.isSystemServer) {
+            throw SecurityException("UID ${access.uid} cannot read command queue")
+        }
+    }
+
+    private fun requireCommandWriter(access: CallerAccess) {
+        if (!access.isControlPackage) {
+            throw SecurityException("UID ${access.uid} cannot write command queue")
+        }
+    }
+
+    private fun requireConfigWriter(access: CallerAccess) {
+        if (!access.isControlPackage) {
+            throw SecurityException("UID ${access.uid} cannot write provider config")
+        }
+    }
+
+    private fun requireRinexReader(access: CallerAccess) {
+        if (!access.canReadRinex) {
+            throw SecurityException("UID ${access.uid} cannot read RINEX provider")
         }
     }
 
@@ -134,6 +232,11 @@ class ConfigProvider : ContentProvider() {
 
     private fun insertCommand(values: ContentValues?): Uri? {
         val json = values?.getAsString("command") ?: return null
+        val byteSize = json.toByteArray(Charsets.UTF_8).size
+        if (byteSize > MAX_COMMAND_BYTES) {
+            android.util.Log.w("ConfigProvider", "Command payload too large: bytes=$byteSize")
+            return null
+        }
         // Cap queue to prevent OOM from uncontrolled inserts
         if (commandQueue.size >= 1024) {
             commandQueue.poll() // drain oldest
@@ -154,7 +257,7 @@ class ConfigProvider : ContentProvider() {
 
     // ---- /config path ----
 
-    private fun queryConfig(): Cursor {
+    private fun queryConfig(access: CallerAccess): Cursor {
         val cursor = MatrixCursor(arrayOf("key", "value", "type"))
         val ctx = context ?: return cursor
         val prefs = ctx.getSharedPreferences(MockServiceHelper.PROVIDER_NAME, Context.MODE_PRIVATE)
@@ -207,8 +310,14 @@ class ConfigProvider : ContentProvider() {
         bool("enable_nmea", "enableNMEA", FakeLoc.enableNMEA)
         bool("enable_agps", "enableAGPS", FakeLoc.enableAGPS)
         int("min_satellites", "minSatelliteCount", FakeLoc.minSatellites)
+        safeRead("rinex_path") {
+            val rinexPath = prefs.getString("rinexPath", FakeLoc.rinexPath)?.takeIf { it.isNotBlank() }
+            if (rinexPath != null) {
+                addRow(cursor, "rinex_path", rinexPath, "string")
+            }
+        }
         // Sensitive fields: only if caller is authorized
-        if (isSensitiveAllowed) {
+        if (access.sensitiveAllowed) {
             criticalRead("latitude") { addRow(cursor, "latitude", (selectedLocation?.lat ?: FakeLoc.latitude).toString(), "double") }
             criticalRead("longitude") { addRow(cursor, "longitude", (selectedLocation?.lon ?: FakeLoc.longitude).toString(), "double") }
             criticalDoubleFromFloat("altitude", "altitude", FakeLoc.altitude)
@@ -223,15 +332,27 @@ class ConfigProvider : ContentProvider() {
         string("mock_mac", "mockMac", FakeLoc.mockMac)
         string("mock_ip", "mockIp", FakeLoc.mockIp)
         int("mock_wifi_scan_count", "mockWifiScanCount", FakeLoc.mockWifiScanCount)
-        bool("hook_sensor", "hookSensor", false)
+        safeRead("hook_sensor") {
+            val hookSensor = prefs.getBoolean("hookSensor", false)
+            val stepMock = prefs.getBoolean("enableStepCountMock", FakeLoc.enableStepCountMock)
+            val shakeMock = prefs.getBoolean("enableShakeMock", FakeLoc.enableShakeMock)
+            addRow(cursor, "hook_sensor", (hookSensor || stepMock || shakeMock).toString(), "boolean")
+        }
         bool("enable_step_count_mock", "enableStepCountMock", FakeLoc.enableStepCountMock)
         int("step_count", "stepCount", FakeLoc.stepCount)
         bool("enable_shake_mock", "enableShakeMock", FakeLoc.enableShakeMock)
-        bool("enable_motion_mock", "enableMotionMock", FakeLoc.sensorData.enableMotionMock)
+        safeRead("enable_motion_mock") {
+            val value = prefs.getBoolean(
+                "enableMotionMock",
+                prefs.getBoolean("hookSensor", FakeLoc.sensorData.enableMotionMock)
+            )
+            addRow(cursor, "enable_motion_mock", value.toString(), "boolean")
+        }
         bool("keep_walking_waveform", "keepWalkingWaveform", FakeLoc.keepWalkingWaveform)
         long("doze_sensor_interval_ms", "dozeSensorIntervalMs", FakeLoc.dozeSensorIntervalMs)
         float("gait_freq", "gaitFreq", FakeLoc.gaitFreq)
         float("gait_amp_scale", "gaitAmpScale", FakeLoc.gaitAmpScale)
+        string("gait_params_json", "gaitParamsJson", FakeLoc.gaitParamsJson)
         bool("is_app_in_background", "isAppInBackground", FakeLoc.isAppInBackground)
         bool("is_screen_off", "isScreenOff", FakeLoc.isScreenOff)
         bool("is_device_idle_mode", "isDeviceIdleMode", FakeLoc.isDeviceIdleMode)
@@ -250,6 +371,54 @@ class ConfigProvider : ContentProvider() {
         doubleFromFloat("max_speed", "maxSpeed", FakeLoc.maxSpeed)
 
         return cursor
+    }
+
+    private fun resolveRinexFile(ctx: Context, prefs: android.content.SharedPreferences): File? {
+        val rawPath = prefs.getString("rinexPath", null)?.takeIf { it.isNotBlank() }
+            ?: File(ctx.filesDir, "brdc.rnx").absolutePath
+        val file = runCatching { File(rawPath).canonicalFile }.getOrElse {
+            android.util.Log.w("ConfigProvider", "RINEX path canonicalization failed: ${it.message}")
+            return null
+        }
+        val filesDir = runCatching { ctx.filesDir.canonicalFile }.getOrElse {
+            android.util.Log.w("ConfigProvider", "RINEX filesDir canonicalization failed: ${it.message}")
+            return null
+        }
+        if (!isUnderDirectory(file, filesDir)) {
+            android.util.Log.w("ConfigProvider", "RINEX openFile rejected outside app filesDir: path=${file.absolutePath}")
+            return null
+        }
+        val length = file.length()
+        if (!file.isFile || !file.canRead() || length < MIN_RINEX_BYTES || length > MAX_RINEX_BYTES) {
+            android.util.Log.w(
+                "ConfigProvider",
+                "RINEX openFile unavailable: path=${file.absolutePath} exists=${file.exists()} " +
+                    "canRead=${file.canRead()} length=$length"
+            )
+            return null
+        }
+        if (!hasRinexHeader(file)) {
+            android.util.Log.w("ConfigProvider", "RINEX openFile rejected invalid header: path=${file.absolutePath}")
+            return null
+        }
+        return file
+    }
+
+    private fun isUnderDirectory(file: File, directory: File): Boolean {
+        val dirPath = directory.path.trimEnd(File.separatorChar)
+        val filePath = file.path
+        return filePath == dirPath || filePath.startsWith(dirPath + File.separator)
+    }
+
+    private fun hasRinexHeader(file: File): Boolean {
+        return runCatching {
+            file.inputStream().buffered().use { input ->
+                val buffer = ByteArray(RINEX_HEADER_SCAN_BYTES)
+                val read = input.read(buffer)
+                if (read <= 0) return@use false
+                String(buffer, 0, read, Charsets.US_ASCII).contains("RINEX VERSION / TYPE")
+            }
+        }.getOrDefault(false)
     }
 
 

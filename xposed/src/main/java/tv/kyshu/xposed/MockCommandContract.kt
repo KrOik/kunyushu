@@ -80,6 +80,7 @@ object MockCommandContract {
         const val ENABLE_DEBUG_LOG = "enable_debug_log"
         const val HIDE_MOCK = "hide_mock"
         const val DISABLE_NETWORK_LOCATION = "disable_network_location"
+        const val RINEX_PATH = "rinex_path"
         const val TELEMETRY_JSONL = "telemetry_jsonl"
     }
 
@@ -188,17 +189,26 @@ object MockCommandContract {
     fun applyPutConfig(rely: Bundle) {
         with(Extract) {
             val parsedSpeed = if (rely.containsKey(Keys.SPEED)) requireSpeed(double(rely, Keys.SPEED)) else null
+            val parsedLatitude = if (rely.containsKey(Keys.LATITUDE)) requireLatitude(double(rely, Keys.LATITUDE)) else null
+            val parsedLongitude = if (rely.containsKey(Keys.LONGITUDE)) requireLongitude(double(rely, Keys.LONGITUDE)) else null
             val parsedAltitude = if (rely.containsKey(Keys.ALTITUDE)) requireAltitude(double(rely, Keys.ALTITUDE)) else null
             val parsedAccuracy = if (rely.containsKey(Keys.ACCURACY)) requireAccuracy(float(rely, Keys.ACCURACY)) else null
+            val parsedBearing = if (rely.containsKey(Keys.BEARING)) requireBearing(double(rely, Keys.BEARING)) else null
             val parsedMinSpeed = if (rely.containsKey(Keys.MIN_SPEED)) requireSpeed(double(rely, Keys.MIN_SPEED), Keys.MIN_SPEED) else null
             val parsedMaxSpeed = if (rely.containsKey(Keys.MAX_SPEED)) requireSpeed(double(rely, Keys.MAX_SPEED), Keys.MAX_SPEED) else null
             val parsedSpeedAmplitude = if (rely.containsKey(Keys.SPEED_AMPLITUDE)) requireSpeed(double(rely, Keys.SPEED_AMPLITUDE), Keys.SPEED_AMPLITUDE) else null
 
             synchronized(FakeLoc) {
                 if (rely.containsKey(Keys.ENABLE)) FakeLoc.enable = boolean(rely, Keys.ENABLE)
+                if (parsedLatitude != null) FakeLoc.latitude = parsedLatitude
+                if (parsedLongitude != null) FakeLoc.longitude = parsedLongitude
                 if (parsedSpeed != null) FakeLoc.speed = parsedSpeed
                 if (parsedAltitude != null) FakeLoc.altitude = parsedAltitude
                 if (parsedAccuracy != null) FakeLoc.accuracy = parsedAccuracy
+                if (parsedBearing != null) {
+                    FakeLoc.bearing = parsedBearing
+                    FakeLoc.hasBearings = true
+                }
 
                 if (rely.containsKey(Keys.ENABLE_MOCK_GNSS)) FakeLoc.enableMockGnss = boolean(rely, Keys.ENABLE_MOCK_GNSS)
                 if (rely.containsKey(Keys.ENABLE_NMEA)) FakeLoc.enableNMEA = boolean(rely, Keys.ENABLE_NMEA)
@@ -244,12 +254,19 @@ object MockCommandContract {
                 if (parsedSpeedAmplitude != null) FakeLoc.speedAmplitude = parsedSpeedAmplitude
                 if (rely.containsKey(Keys.HIDE_MOCK)) FakeLoc.locationData.hideMock = boolean(rely, Keys.HIDE_MOCK)
                 if (rely.containsKey(Keys.DISABLE_NETWORK_LOCATION)) FakeLoc.disableNetworkLocation = boolean(rely, Keys.DISABLE_NETWORK_LOCATION)
+                if (rely.containsKey(Keys.RINEX_PATH)) {
+                    val nextRinexPath = string(rely, Keys.RINEX_PATH)?.takeIf { it.isNotBlank() }
+                    FakeLoc.rinexPath = nextRinexPath
+                }
 
                 if (!rely.containsKey(Keys.DISABLE_REGISTER_LOCATION_LISTENER) && rely.containsKey(LegacyKeys.DISABLE_REGISTER_MISSPELLED)) {
                     FakeLoc.disableRegisterLocationListener = boolean(rely, LegacyKeys.DISABLE_REGISTER_MISSPELLED)
                 }
                 if (!rely.containsKey(Keys.LOOP_BROADCAST_LOCATION) && rely.containsKey(LegacyKeys.LOOP_BROADCAST_MISSPELLED)) {
                     FakeLoc.loopBroadcastLocation = boolean(rely, LegacyKeys.LOOP_BROADCAST_MISSPELLED)
+                }
+                if (FakeLoc.enableStepCountMock || FakeLoc.enableShakeMock || FakeLoc.sensorData.enableMotionMock) {
+                    FakeLoc.hookSensor = true
                 }
             }
         }
@@ -262,9 +279,12 @@ object MockCommandContract {
             rely.putDouble(Keys.LONGITUDE, longitude)
             rely.putDouble(Keys.ALTITUDE, altitude)
             rely.putDouble(Keys.SPEED, speed)
+            rely.putDouble(Keys.ACCURACY, accuracy.toDouble())
+            rely.putDouble(Keys.BEARING, bearing)
             rely.putDouble(Keys.SPEED_AMPLITUDE, 0.0)
             rely.putString(Keys.LAST_LOCATION, null)
             rely.putBoolean(Keys.HAS_BEARINGS, hasBearings)
+            rely.putString(Keys.RINEX_PATH, rinexPath)
             rely.putBoolean(Keys.ENABLE_MOCK_GNSS, enableMockGnss)
             rely.putBoolean(Keys.ENABLE_AGPS, enableAGPS)
             rely.putBoolean(Keys.ENABLE_NMEA, enableNMEA)

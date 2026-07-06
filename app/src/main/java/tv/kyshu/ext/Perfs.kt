@@ -333,6 +333,25 @@ var Context.gaitAmpScale: Float
         FakeLoc.gaitData.gaitAmpScale = value
     }
 
+var Context.gaitParamsJson: String
+    get() = sharedPrefs.getString("gaitParamsJson", FakeLoc.gaitData.gaitParamsJson) ?: FakeLoc.gaitData.gaitParamsJson
+    set(value) = sharedPrefs.edit {
+        putString("gaitParamsJson", value)
+        FakeLoc.gaitData.gaitParamsJson = value
+    }
+
+var Context.gaitRecordSeconds: Int
+    get() = sharedPrefs.getInt("gaitRecordSeconds", 10)
+    set(value) = sharedPrefs.edit {
+        putInt("gaitRecordSeconds", value.coerceIn(3, 120))
+    }
+
+var Context.gaitImportPath: String
+    get() = sharedPrefs.getString("gaitImportPath", "") ?: ""
+    set(value) = sharedPrefs.edit {
+        putString("gaitImportPath", value)
+    }
+
 // ==================== 其他 ====================
 
 var Context.hideBaseStation: Boolean

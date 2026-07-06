@@ -35,7 +35,7 @@
 // Expected hash value — compiled-in integrity fingerprint.
 // Compute this from trusted package + version combination.
 // ============================================================================
-static const uint64_t kExpectedHash = 0xAEF86E0F8F8E6C46ULL;
+static const uint64_t kExpectedHash = 0xE66DAD81F332545AULL;
 static const uint64_t kHashSeed = 0x811C9DC5ULL;  // FNV-1a initial seed
 
 // ============================================================================

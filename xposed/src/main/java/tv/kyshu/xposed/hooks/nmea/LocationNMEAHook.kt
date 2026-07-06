@@ -34,19 +34,72 @@ import tv.kyshu.xposed.utils.OrbitType
 import tv.kyshu.xposed.hooks.LocationServiceHook
 import java.util.concurrent.ConcurrentHashMap
 import java.util.Locale
+import java.lang.reflect.Modifier
 
 object LocationNMEAHook: BaseLocationHook() {
 
-    // GSV 多句替换缓存: 有序列表, 每次收到 GSV 第 1 句时全量生成并缓存
-    private val gsvSentenceCache = mutableListOf<String>()
-    private var gsvSequenceTotal: Int = 0
-    private var gsvSequenceSent: Int = 0
+    // GSV 多句替换缓存按星座隔离，避免 GPS/Galileo/BeiDou 多句流互相串台。
+    private data class GsvSequence(val sentences: List<String>, var nextIndex: Int)
+    private val gsvSequences = mutableMapOf<Int, GsvSequence>()
     private val gsvCacheLock = Any()
     private val diagnosticKeys = ConcurrentHashMap.newKeySet<String>()
+    private val skippedNmeaCallbackIds = ConcurrentHashMap.newKeySet<Int>()
+    private val internalNmeaCallbackMarkers = listOf(
+        "DeepThinkerDelegate",
+        "com.android.server.display.ambience.",
+    )
 
     private fun logOnce(key: String, message: String) {
         if (diagnosticKeys.add(key)) {
             Logger.info(message)
+        }
+    }
+
+    internal fun shouldSkipNmeaCallback(callback: Any): Boolean {
+        if (matchesInternalNmeaCallback(callback.javaClass.name)) return true
+        return callback.javaClass.concreteClassHierarchy().any { clazz ->
+            clazz.declaredFields.any { field ->
+                if (Modifier.isStatic(field.modifiers)) return@any false
+                if (matchesInternalNmeaCallback(field.type.name)) return@any true
+                runCatching {
+                    if (!field.isAccessible) field.isAccessible = true
+                    val value = field.get(callback) ?: return@runCatching false
+                    matchesInternalNmeaCallback(value.javaClass.name)
+                }.getOrDefault(false)
+            }
+        }
+    }
+
+    private fun matchesInternalNmeaCallback(className: String): Boolean {
+        return internalNmeaCallbackMarkers.any { className.contains(it) }
+    }
+
+    internal fun shouldSkipNmeaRegistration(callback: Any, args: Array<Any?>): Boolean {
+        if (shouldSkipNmeaCallback(callback)) return true
+        val stringArgs = args.filterIsInstance<String>()
+        if (stringArgs.any(::matchesInternalNmeaCallback)) return true
+        return stringArgs.any { it == "android" || it.startsWith("com.android.server.") }
+    }
+
+    internal fun rememberSkippedNmeaRegistration(callback: Any, args: Array<Any?>): Boolean {
+        val shouldSkip = shouldSkipNmeaRegistration(callback, args)
+        if (shouldSkip) {
+            skippedNmeaCallbackIds.add(callbackId(callback))
+        }
+        return shouldSkip
+    }
+
+    internal fun shouldSkipNmeaCallbackInstance(callback: Any): Boolean {
+        return skippedNmeaCallbackIds.contains(callbackId(callback)) || shouldSkipNmeaCallback(callback)
+    }
+
+    private fun callbackId(callback: Any): Int = System.identityHashCode(callback)
+
+    private fun Class<*>.concreteClassHierarchy(): Sequence<Class<*>> = sequence {
+        var clazz: Class<*>? = this@concreteClassHierarchy
+        while (clazz != null && clazz != Any::class.java) {
+            if (!clazz.isInterface) yield(clazz)
+            clazz = clazz.superclass
         }
     }
 
@@ -113,15 +166,25 @@ object LocationNMEAHook: BaseLocationHook() {
                     return@onceHookBefore
                 }).javaClass
 
+                Logger.info("[LocationNMEAHook] registerGnssNmeaCallback hit: callback=${cIGnssNmeaCallback.name}, args=${args.map { it?.javaClass?.simpleName }}")
+                if (rememberSkippedNmeaRegistration(callback, args)) {
+                    logOnce("nmea.callback.skip.${cIGnssNmeaCallback.name}",
+                        "[LocationNMEAHook] registerGnssNmeaCallback skipped for internal ambience callback=${cIGnssNmeaCallback.name}")
+                }
+
                 if (hookedGnssCallback.contains(cIGnssNmeaCallback.name)) return@onceHookBefore
                 hookedGnssCallback.add(cIGnssNmeaCallback.name)
 
-                Logger.info("[LocationNMEAHook] registerGnssNmeaCallback hit: callback=${cIGnssNmeaCallback.name}, args=${args.map { it?.javaClass?.simpleName }}")
                 if (FakeLoc.enableDebugLog) {
                     Logger.debug("registerGnssNmeaCallback: $cIGnssNmeaCallback")
                 }
 
                 cIGnssNmeaCallback.onceHookMethodBefore("onNmeaReceived", Long::class.java, String::class.java) {
+                    if (shouldSkipNmeaCallbackInstance(thisObject)) {
+                        logOnce("nmea.runtime.skip.${thisObject.javaClass.name}",
+                            "[LocationNMEAHook] onNmeaReceived skipped for internal ambience callback=${thisObject.javaClass.name}")
+                        return@onceHookMethodBefore
+                    }
                     if (!FakeLoc.enable) {
                         logOnce("nmea.runtime.disabled",
                             "[LocationNMEAHook] onNmeaReceived skipped: FakeLoc.enable=false")
@@ -157,51 +220,47 @@ object LocationNMEAHook: BaseLocationHook() {
             logOnce("injectNMEA.disabled", "[LocationNMEAHook] injectNMEA skipped: FakeLoc.enable=false")
             return null
         }
+
+        val original = nmea.trimEnd('\r', '\n')
+        if (!isSingleNmeaSentence(original)) {
+            logOnce("injectNMEA.invalid.input.${original.take(8)}",
+                "[LocationNMEAHook] injectNMEA skipped invalid input: ${original.take(96)}")
+            return null
+        }
         
         // Handle GSV injection with multi-sentence caching
-        if (nmea.contains("GSV")) {
+        if (original.contains("GSV")) {
             synchronized(gsvCacheLock) {
-                val parts = nmea.split(",")
-                if (parts.size >= 3) {
-                    val msgNum = parts[2].toIntOrNull()
-                    if (msgNum != null && msgNum > 1) {
-                        // Return cached sentence for multi-sentence GSV
-                        if (gsvSequenceSent < gsvSequenceTotal && gsvSentenceCache.isNotEmpty()) {
-                            val cached = gsvSentenceCache.getOrNull(gsvSequenceSent)
-                            gsvSequenceSent++
-                            if (gsvSequenceSent >= gsvSequenceTotal) {
-                                // Last sentence served, clear cache
-                                gsvSentenceCache.clear()
-                                gsvSequenceTotal = 0
-                            }
-                            return cached
-                        }
+                val gsvIdentity = parseGsvIdentity(original) ?: return null
+                val (constellation, talker, msgNum) = gsvIdentity
+
+                if (msgNum > 1) {
+                    val sequence = gsvSequences[constellation] ?: return null
+                    val cached = sequence.sentences.getOrNull(sequence.nextIndex) ?: run {
+                        gsvSequences.remove(constellation)
                         return null
                     }
+                    sequence.nextIndex++
+                    if (sequence.nextIndex >= sequence.sentences.size) {
+                        gsvSequences.remove(constellation)
+                    }
+                    return finalizeNmeaForCallback(cached, nmea)
                 }
 
-                val constellation = when {
-                    nmea.startsWith("\$GPGSV") -> GnssFlags.CONSTELLATION_GPS
-                    nmea.startsWith("\$GLGSV") -> GnssFlags.CONSTELLATION_GLONASS
-                    nmea.startsWith("\$GAGSV") -> GnssFlags.CONSTELLATION_GALILEO
-                    nmea.startsWith("\$GBGSV") || nmea.startsWith("\$BDGSV") -> GnssFlags.CONSTELLATION_BEIDOU
-                    nmea.startsWith("\$GQGSV") -> GnssFlags.CONSTELLATION_QZSS
-                    else -> return null
-                }
-
-                // Generate complete GSV sequence, split into individual sentences, cache them
-                val fullSequence = runCatching { generateGSV(constellation) }
+                // Generate complete GSV sequence, split into individual sentences, cache them.
+                val fullSequence = runCatching { generateGSV(constellation, talker) }
                     .onFailure { Logger.warn("[LocationNMEAHook] generateGSV failed constellation=$constellation", it) }
                     .getOrNull() ?: return null
-                val sentences = fullSequence.split("\r\n")
-                gsvSentenceCache.clear()
-                gsvSentenceCache.addAll(sentences)
-                gsvSequenceTotal = sentences.size
-                gsvSequenceSent = 1 // 第 0 句即将返回
+                val sentences = fullSequence.lineSequence()
+                    .map { it.trim() }
+                    .filter { it.isNotEmpty() }
+                    .toList()
+                if (sentences.isEmpty()) return null
+                gsvSequences[constellation] = GsvSequence(sentences, nextIndex = 1)
                 logOnce("gsv.generated.$constellation",
                     "[LocationNMEAHook] generated GSV constellation=$constellation sentences=${sentences.size}")
 
-                return sentences.getOrNull(0)
+                return finalizeNmeaForCallback(sentences[0], nmea)
             }
         }
 
@@ -229,6 +288,7 @@ object LocationNMEAHook: BaseLocationHook() {
                     fixQuality
                 )
             }.getOrNull()
+                ?.let { finalizeNmeaForCallback(it, nmea) }
         }
 
         if (nmea.startsWith("\$GPRMC") || nmea.startsWith("\$GNRMC")) {
@@ -238,8 +298,9 @@ object LocationNMEAHook: BaseLocationHook() {
                      FakeLoc.longitude,
                      FakeLoc.speed,
                      FakeLoc.bearing
-                 )
-             }.getOrNull()
+	                 )
+	             }.getOrNull()
+                 ?.let { finalizeNmeaForCallback(it, nmea) }
         }
 
         // Generate GSA: mode+fix type + PRN of used satellites + PDOP/HDOP/VDOP
@@ -255,6 +316,7 @@ object LocationNMEAHook: BaseLocationHook() {
                     vdop = 0.5 + kotlin.random.Random.nextDouble() * 2.0
                 )
             }.getOrNull()
+                ?.let { finalizeNmeaForCallback(it, nmea) }
         }
 
         // Generate VTG: course + speed
@@ -265,6 +327,7 @@ object LocationNMEAHook: BaseLocationHook() {
                     FakeLoc.speed
                 )
             }.getOrNull()
+                ?.let { finalizeNmeaForCallback(it, nmea) }
         }
 
         // Generate GST: pseudorange residual statistics
@@ -276,12 +339,61 @@ object LocationNMEAHook: BaseLocationHook() {
                     FakeLoc.accuracy
                 )
             }.getOrNull()
+                ?.let { finalizeNmeaForCallback(it, nmea) }
         }
 
         return super.injectNMEA(nmea)
     }
 
-    private fun generateGSV(constellation: Int): String? {
+    private data class GsvIdentity(val constellation: Int, val talker: String, val msgNum: Int)
+
+    private fun parseGsvIdentity(nmea: String): GsvIdentity? {
+        val talker = nmea.removePrefix("$").take(2)
+        val constellation = when {
+            nmea.startsWith("\$GPGSV") -> GnssFlags.CONSTELLATION_GPS
+            nmea.startsWith("\$GLGSV") -> GnssFlags.CONSTELLATION_GLONASS
+            nmea.startsWith("\$GAGSV") -> GnssFlags.CONSTELLATION_GALILEO
+            nmea.startsWith("\$GBGSV") || nmea.startsWith("\$BDGSV") -> GnssFlags.CONSTELLATION_BEIDOU
+            nmea.startsWith("\$GQGSV") -> GnssFlags.CONSTELLATION_QZSS
+            else -> return null
+        }
+        val parts = nmea.split(",")
+        val msgNum = parts.getOrNull(2)?.substringBefore("*")?.toIntOrNull() ?: run {
+            logOnce("gsv.invalid.msgnum.${nmea.take(8)}",
+                "[LocationNMEAHook] GSV skipped invalid message number: ${nmea.take(96)}")
+            return null
+        }
+        return GsvIdentity(constellation, talker, msgNum)
+    }
+
+    private fun isSingleNmeaSentence(sentence: String): Boolean {
+        if (!sentence.startsWith("$")) return false
+        if (sentence.drop(1).contains("$")) return false
+        if (sentence.any { it == '\r' || it == '\n' }) return false
+        val star = sentence.indexOf('*')
+        if (star <= 1 || star + 3 != sentence.length) return false
+        val checksum = sentence.substring(star + 1)
+        if (!checksum.all { it in '0'..'9' || it in 'A'..'F' || it in 'a'..'f' }) return false
+        val content = sentence.substring(1, star)
+        return calculateChecksum(content).equals(checksum, ignoreCase = true)
+    }
+
+    private fun finalizeNmeaForCallback(sentence: String, original: String): String? {
+        val body = sentence.trimEnd('\r', '\n')
+        if (!isSingleNmeaSentence(body)) {
+            Logger.error("[LocationNMEAHook] generated invalid NMEA sentence, skipped: ${body.take(96)}")
+            return null
+        }
+        val terminator = when {
+            original.endsWith("\r\n") -> "\r\n"
+            original.endsWith("\n") -> "\n"
+            original.endsWith("\r") -> "\r"
+            else -> "\r\n"
+        }
+        return body + terminator
+    }
+
+    private fun generateGSV(constellation: Int, talkerOverride: String? = null): String? {
         data class SatState(val prn: Int, val elevation: Float, val azimuth: Float, val cn0: Float)
 
         val observerLat = FakeLoc.latitude.toFloat()
@@ -345,11 +457,11 @@ object LocationNMEAHook: BaseLocationHook() {
         val satsPerMsg = 4
         val totalMsgs = (effectiveSats.size + satsPerMsg - 1) / satsPerMsg
 
-        val talker = when (constellation) {
+        val talker = talkerOverride ?: when (constellation) {
             GnssFlags.CONSTELLATION_GPS -> "GP"
             GnssFlags.CONSTELLATION_GLONASS -> "GL"
             GnssFlags.CONSTELLATION_GALILEO -> "GA"
-            GnssFlags.CONSTELLATION_BEIDOU -> "BD"
+            GnssFlags.CONSTELLATION_BEIDOU -> "GB"
             GnssFlags.CONSTELLATION_QZSS -> "GQ"
             else -> "GP"
         }

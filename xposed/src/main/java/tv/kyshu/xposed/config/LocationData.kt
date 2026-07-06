@@ -199,8 +199,14 @@ class LocationData {
         if (newAccuracy != null) accuracy = newAccuracy
         if (newSpeed != null) speed = newSpeed
         if (newBearing != null) bearing = newBearing
-        val rinexPathValue = map.getAnyVal(rinexPath ?: "", "rinexPath", "rinex_path")
-        rinexPath = rinexPathValue.takeIf { it.isNotBlank() }
+        val rinexPathValue = when {
+            map.containsKey("rinexPath") -> map.getVal("rinexPath", rinexPath ?: "")
+            map.containsKey("rinex_path") -> map.getVal("rinex_path", rinexPath ?: "")
+            else -> null
+        }?.trim()
+        if (!rinexPathValue.isNullOrEmpty()) {
+            rinexPath = rinexPathValue
+        }
         enableAtmosphereJitter = map.getAnyVal(enableAtmosphereJitter, "enableAtmosphereJitter", "enable_atmosphere_jitter")
         atmosphereJitterIntensity = map.getAnyVal(atmosphereJitterIntensity, "atmosphereJitterIntensity", "atmosphere_jitter_intensity")
         enableAltitudeJitter = map.getAnyVal(enableAltitudeJitter, "enableAltitudeJitter", "enable_altitude_jitter")

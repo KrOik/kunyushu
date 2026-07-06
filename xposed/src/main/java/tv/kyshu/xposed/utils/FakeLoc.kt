@@ -30,7 +30,6 @@ import tv.kyshu.xposed.utils.config.ConfigLoader
 import tv.kyshu.xposed.utils.config.ContentProviderLoader
 import tv.kyshu.xposed.utils.config.XPrefLoader
 import org.json.JSONArray
-import java.lang.ref.WeakReference
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.PI
 import kotlin.math.atan2
@@ -64,14 +63,47 @@ object FakeLoc {
 
     // ==================== 系统上下文 (私有) ====================
 
-    private var systemContextRef: WeakReference<Context>? = null
+    @Volatile
+    private var retainedContext: RetainedContext? = null
+    private var lastContextLogAt = 0L
+    private var lastContextStatus: String? = null
+    private var lastContextSkipLogAt = 0L
+    private var lastContextSkipStatus: String? = null
+    private var lastReloadMissLogAt = 0L
+    private var lastReloadMissStatus: String? = null
 
-    fun setContext(context: Context) {
-        systemContextRef = WeakReference(context.applicationContext)
+    private data class RetainedContext(
+        val context: Context,
+        val packageName: String,
+        val authoritative: Boolean,
+    )
+
+    @Synchronized
+    fun setContext(context: Context, authoritative: Boolean = false): Boolean {
+        val appContext = context.applicationContext ?: context
+        val packageName = safePackageName(appContext)
+        val incomingAuthoritative = authoritative || isAuthoritativePackage(packageName)
+        val current = retainedContext
+        if (current != null &&
+            current.packageName != packageName &&
+            !incomingAuthoritative
+        ) {
+            logContextSkipIfNeeded(current, appContext, packageName, incomingAuthoritative)
+            return false
+        }
+        retainedContext = RetainedContext(appContext, packageName, incomingAuthoritative)
+        logContextIfNeeded(appContext, incomingAuthoritative)
+        return true
     }
 
     fun getContext(): Context? {
-        return systemContextRef?.get()
+        return retainedContext?.context
+    }
+
+    internal fun clearContextForTest() {
+        retainedContext = null
+        lastContextStatus = null
+        lastContextSkipStatus = null
     }
 
     // ==================== 加载器 ====================
@@ -442,12 +474,14 @@ object FakeLoc {
             }
             mockState.lastReloadTime = nowLocked
 
-            for (loader in loaders) {
+            val activeLoaders = loaders
+            for (loader in activeLoaders) {
                 try {
                     val data = loader.load()
                     if (data != null && data.isNotEmpty()) {
                         updateFromMap(data)
                         logRootModeIfNeeded(loader.name)
+                        logConfigShapeIfNeeded(loader.name, data)
                         if (mockState.enableDebugLog) {
                             Logger.debug("FakeLoc: Reloaded using ${loader.name}. StepMock=$enableStepCountMock, Count=$stepCount")
                         }
@@ -457,6 +491,7 @@ object FakeLoc {
                     Logger.error("FakeLoc: Error loading from ${loader.name}", e)
                 }
             }
+            logReloadMissIfNeeded(activeLoaders.joinToString(",") { it.name })
         } finally {
             mockState.reloadLock.unlock()
         }
@@ -503,8 +538,8 @@ object FakeLoc {
         // 4) 交叉后处理
         wifiData.normalizeMockWifi()
 
-        Logger.info("[FakeLoc] config applied: enable=$enable, mockGnss=$enableMockGnss, NMEA=$enableNMEA, mockWifi=$enableMockWifi, hookSensor=$hookSensor, stepMock=$enableStepCountMock, shakeMock=$enableShakeMock")
-        MockAuditTrail.config("FakeLoc", "reload: enable=$enable gnss=$enableMockGnss nmea=$enableNMEA wifi=$enableMockWifi sensor=$hookSensor step=$enableStepCountMock shake=$enableShakeMock forceDisable=$forceDisable")
+        Logger.info("[FakeLoc] config applied: enable=$enable, mockGnss=$enableMockGnss, NMEA=$enableNMEA, mockWifi=$enableMockWifi, hookSensor=$hookSensor, stepMock=$enableStepCountMock, motionMock=${sensorData.enableMotionMock}, shakeMock=$enableShakeMock, keepWalking=$keepWalkingWaveform, rinex=${rinexPath ?: ""}")
+        MockAuditTrail.config("FakeLoc", "reload: enable=$enable gnss=$enableMockGnss nmea=$enableNMEA wifi=$enableMockWifi sensor=$hookSensor step=$enableStepCountMock motion=${sensorData.enableMotionMock} shake=$enableShakeMock forceDisable=$forceDisable")
     }
 
     // ==================== Provider 读写 ====================
@@ -577,6 +612,99 @@ object FakeLoc {
             lastRootStatus = status
             lastRootLogAt = now
             Logger.info("FakeLoc: $status")
+        }
+    }
+
+    private fun logContextIfNeeded(context: Context, authoritative: Boolean) {
+        val status = "${context.javaClass.name}@${System.identityHashCode(context).toString(16)} package=${safePackageName(context)} authoritative=$authoritative"
+        val now = System.currentTimeMillis()
+        if (status != lastContextStatus || now - lastContextLogAt > 60_000L) {
+            lastContextStatus = status
+            lastContextLogAt = now
+            Logger.info("[FakeLoc] context retained: $status")
+        }
+    }
+
+    private fun logContextSkipIfNeeded(
+        current: RetainedContext,
+        incoming: Context,
+        incomingPackage: String,
+        incomingAuthoritative: Boolean,
+    ) {
+        val status = "retained=${current.packageName}/${current.context.javaClass.name} authoritative=${current.authoritative} " +
+            "incoming=$incomingPackage/${incoming.javaClass.name} authoritative=$incomingAuthoritative"
+        val now = System.currentTimeMillis()
+        if (status != lastContextSkipStatus || now - lastContextSkipLogAt > 60_000L) {
+            lastContextSkipStatus = status
+            lastContextSkipLogAt = now
+            Logger.warn("[FakeLoc] context replacement skipped: $status")
+        }
+    }
+
+    private fun isAuthoritativePackage(packageName: String): Boolean {
+        return packageName == "android" || PortalIdentity.isControlPackage(packageName)
+    }
+
+    private fun safePackageName(context: Context): String {
+        return runCatching { context.packageName }.getOrDefault("?")
+    }
+
+    private fun logReloadMissIfNeeded(loaderNames: String) {
+        val context = getContext()
+        val status = "context=${context?.javaClass?.name ?: "null"} package=${context?.let { runCatching { it.packageName }.getOrDefault("?") } ?: ""} loaders=$loaderNames"
+        val now = System.currentTimeMillis()
+        if (status != lastReloadMissStatus || now - lastReloadMissLogAt > 60_000L) {
+            lastReloadMissStatus = status
+            lastReloadMissLogAt = now
+            Logger.warn("[FakeLoc] reload found no config source: $status")
+        }
+    }
+
+    private fun logConfigShapeIfNeeded(loaderName: String, map: Map<String, Any?>) {
+        val shape = criticalConfigShape(map)
+        Logger.info("[FakeLoc][ConfigShape] source=$loaderName size=${map.size} $shape")
+    }
+
+    private fun criticalConfigShape(map: Map<String, Any?>): String {
+        val keys = listOf(
+            "enable",
+            "enable_mock_gnss",
+            "rinex_path",
+            "hook_sensor",
+            "enable_step_count_mock",
+            "enable_motion_mock",
+            "step_count",
+            "enable_shake_mock",
+            "keep_walking_waveform",
+            "gait_params_json",
+            "gait_freq",
+            "gait_amp_scale",
+            "hookSensor",
+            "enableStepCountMock",
+            "enableMotionMock",
+            "stepCount",
+            "enableShakeMock",
+            "keepWalkingWaveform",
+            "gaitParamsJson",
+            "gaitFreq",
+            "gaitAmpScale",
+            "rinexPath",
+        )
+        return keys
+            .filter { map.containsKey(it) }
+            .joinToString(prefix = "fields=[", postfix = "]") { key ->
+                "$key=${formatConfigShapeValue(key, map[key])}"
+            }
+            .ifEmpty { "fields=[]" }
+    }
+
+    private fun formatConfigShapeValue(key: String, value: Any?): String {
+        return if (key.equals("gait_params_json", ignoreCase = true) ||
+            key.equals("gaitParamsJson", ignoreCase = true)
+        ) {
+            "len=${value?.toString()?.length ?: 0}"
+        } else {
+            value.toString()
         }
     }
 

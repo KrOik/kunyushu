@@ -1,6 +1,10 @@
 package tv.kyshu.ui.settings
 
 import android.annotation.SuppressLint
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.content.Context
@@ -11,8 +15,10 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.activityViewModels
+import androidx.fragment.app.viewModels
 import android.content.ClipData
 import android.content.ClipboardManager
+import androidx.core.widget.addTextChangedListener
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
@@ -59,6 +65,7 @@ import tv.kyshu.service.MockServiceHelper
 import tv.kyshu.service.BlackBoxProbe
 import tv.kyshu.xposed.utils.Log
 import tv.kyshu.ui.viewmodel.MockServiceViewModel
+import tv.kyshu.ui.viewmodel.SensorViewModel
 import tv.kyshu.ui.viewmodel.SettingsViewModel
 
 class SettingsFragment : Fragment() {
@@ -66,6 +73,17 @@ class SettingsFragment : Fragment() {
     private val binding get() = _binding!!
 
     private val mockServiceViewModel by activityViewModels<MockServiceViewModel>()
+    private val sensorViewModel by viewModels<SensorViewModel>()
+    private var sensorManager: SensorManager? = null
+
+    private val imuRecordingListener = object : SensorEventListener {
+        override fun onSensorChanged(event: SensorEvent?) {
+            event ?: return
+            sensorViewModel.onRealSensorChanged(event.sensor.type, event.values.copyOf(), event.timestamp)
+        }
+
+        override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
+    }
 
     @SuppressLint("SetTextI18n")
     override fun onCreateView(
@@ -80,6 +98,7 @@ class SettingsFragment : Fragment() {
         val root: View = binding.root
 
         val context = requireContext()
+        sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
 
         binding.altitudeValue.text = "%.2f米".format(context.altitude)
         binding.speedValue.text = "%.2f米/秒".format(context.speed)
@@ -416,6 +435,7 @@ class SettingsFragment : Fragment() {
                 updateRemoteConfig()
             }
         }
+        setupGaitCaptureControls()
 
         // ===================== 其他绑定 =====================
 
@@ -478,6 +498,100 @@ class SettingsFragment : Fragment() {
         }
 
         return root
+    }
+
+    private fun setupGaitCaptureControls() {
+        binding.gaitRecordSecondsInput.setText((sensorViewModel.recordSeconds.value ?: 10).toString())
+        binding.gaitRecordSecondsInput.addTextChangedListener {
+            val value = it?.toString()?.trim()?.toIntOrNull() ?: return@addTextChangedListener
+            if (value in 3..120) {
+                sensorViewModel.setRecordSeconds(value)
+                binding.gaitRecordSecondsLayout.error = null
+            } else {
+                binding.gaitRecordSecondsLayout.error = "范围 3-120 秒"
+            }
+        }
+
+        binding.gaitImportPathInput.setText(sensorViewModel.gaitImportPath.value.orEmpty())
+        binding.gaitImportPathInput.addTextChangedListener {
+            sensorViewModel.setGaitImportPath(it?.toString().orEmpty())
+        }
+
+        binding.btnRecordGait.setOnClickListener {
+            sensorViewModel.startRecordingProcess()
+        }
+
+        binding.btnImportGait.setOnClickListener {
+            sensorViewModel.importAndAnalyzeGaitFromPath(binding.gaitImportPathInput.text?.toString().orEmpty())
+        }
+
+        sensorViewModel.recordSeconds.observe(viewLifecycleOwner) {
+            val text = it.toString()
+            if (binding.gaitRecordSecondsInput.text?.toString() != text) {
+                binding.gaitRecordSecondsInput.setText(text)
+            }
+            binding.btnRecordGait.text = "录制并拟合 ${it}s"
+        }
+
+        sensorViewModel.gaitImportPath.observe(viewLifecycleOwner) {
+            if (binding.gaitImportPathInput.text?.toString() != it) {
+                binding.gaitImportPathInput.setText(it)
+            }
+        }
+
+        sensorViewModel.isRecording.observe(viewLifecycleOwner) { recording ->
+            if (recording) {
+                registerImuRecordingSensors()
+            } else {
+                unregisterImuRecordingSensors()
+            }
+            binding.btnRecordGait.isEnabled = !recording
+            binding.btnImportGait.isEnabled = !recording
+        }
+
+        sensorViewModel.recordingMessage.observe(viewLifecycleOwner) {
+            if (it.isNotBlank()) binding.gaitAnalysisResultValue.text = it
+        }
+
+        sensorViewModel.analysisResult.observe(viewLifecycleOwner) { result ->
+            if (result.error != null) {
+                binding.gaitAnalysisResultValue.text = result.error
+                showToast(result.error)
+                return@observe
+            }
+            binding.gaitFreqValue.text = "%.2f".format(result.frequency)
+            binding.gaitAnalysisResultValue.text = buildString {
+                append("频率 %.2fHz\n".format(result.frequency))
+                append(result.message)
+                if (result.exportPath.isNotBlank()) {
+                    append("\n导出: ${result.exportPath}")
+                }
+            }
+            showToast("步态拟合完成，正在同步配置")
+            updateRemoteConfig()
+        }
+    }
+
+    private fun registerImuRecordingSensors() {
+        val manager = sensorManager ?: return
+        manager.unregisterListener(imuRecordingListener)
+        val delay = SensorManager.SENSOR_DELAY_GAME
+        val types = intArrayOf(
+            Sensor.TYPE_ACCELEROMETER,
+            Sensor.TYPE_LINEAR_ACCELERATION,
+            Sensor.TYPE_GYROSCOPE,
+            Sensor.TYPE_GRAVITY,
+        )
+        types.forEach { type ->
+            manager.getDefaultSensor(type)?.let { sensor ->
+                runCatching { manager.registerListener(imuRecordingListener, sensor, delay) }
+                    .onFailure { showToast("传感器注册失败: ${sensor.name}") }
+            }
+        }
+    }
+
+    private fun unregisterImuRecordingSensors() {
+        sensorManager?.unregisterListener(imuRecordingListener)
     }
 
     private fun showToast(message: String) {
@@ -553,6 +667,7 @@ class SettingsFragment : Fragment() {
 
     override fun onDestroyView() {
         super.onDestroyView()
+        unregisterImuRecordingSensors()
         _binding = null
     }
 }

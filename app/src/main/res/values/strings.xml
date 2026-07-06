@@ -105,6 +105,12 @@
     <string name="gait_freq_desc">步态基础频率(Hz)</string>
     <string name="gait_amp_scale">振幅缩放</string>
     <string name="gait_amp_scale_desc">步态振幅缩放倍数</string>
+    <string name="gait_record_seconds_hint">IMU录制时长</string>
+    <string name="gait_record_seconds_suffix">秒</string>
+    <string name="gait_record_button_label">录制并拟合</string>
+    <string name="gait_import_path_hint">IMU数据目录</string>
+    <string name="gait_import_button_label">导入并拟合</string>
+    <string name="gait_analysis_result_placeholder">尚未拟合步态参数</string>
 
     <!-- 其他 -->
     <string name="section_other">其他</string>

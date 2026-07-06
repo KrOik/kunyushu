@@ -7,6 +7,7 @@ import de.robv.android.xposed.XposedHelpers
 import tv.kyshu.xposed.BaseLocationHook
 import tv.kyshu.xposed.hooks.blindhook.BlindHookLocation
 import tv.kyshu.xposed.hooks.blindhook.BlindHookLocation.invoke
+import tv.kyshu.xposed.hooks.nmea.LocationNMEAHook
 import tv.kyshu.xposed.utils.FakeLoc
 import tv.kyshu.xposed.utils.Logger
 import tv.kyshu.xposed.utils.beforeHook
@@ -56,7 +57,9 @@ object GnssHook: BaseLocationHook() {
                 XposedBridge.hookMethod(method, object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam?) {
                         if (param == null || param.args[0] == null) return
-                        val classListener = param.args[0].javaClass
+                        val listener = param.args[0]
+                        val classListener = listener.javaClass
+                        LocationNMEAHook.rememberSkippedNmeaRegistration(listener, param.args)
 
                         if (hookedGnssCallback.contains(classListener.name)) return
                         hookedGnssCallback.add(classListener.name)
@@ -66,6 +69,9 @@ object GnssHook: BaseLocationHook() {
                         kotlin.runCatching {
                             XposedHelpers.findAndHookMethod(classListener, "onNmeaReceived", Long::class.java, String::class.java, object: XC_MethodHook() {
                                 override fun beforeHookedMethod(param: MethodHookParam) {
+                                    if (LocationNMEAHook.shouldSkipNmeaCallbackInstance(param.thisObject)) {
+                                        return
+                                    }
                                     if (FakeLoc.enableMockGnss && !FakeLoc.enableAGPS) {
                                         if (FakeLoc.enableDebugLog)
                                             Logger.debug("GnssManagerService.onNmeaReceived: disable")
@@ -74,7 +80,7 @@ object GnssHook: BaseLocationHook() {
                                     }
 
                                     val nmea = param.args[1] as String
-                                    param.args[1] = injectNMEA(nmea) ?: nmea
+                                    param.args[1] = LocationNMEAHook.injectNMEA(nmea) ?: nmea
                                 }
                             })
                         }.onFailure {

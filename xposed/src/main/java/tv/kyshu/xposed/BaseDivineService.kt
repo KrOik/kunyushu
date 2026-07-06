@@ -8,6 +8,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Parcel
 import tv.kyshu.xposed.security.RemoteCommandSecurity
+import tv.kyshu.xposed.hooks.sensor.SystemSensorManagerHook
 import tv.kyshu.xposed.utils.BinderUtils
 import tv.kyshu.xposed.utils.FakeLoc
 import tv.kyshu.xposed.utils.ChannelIdentity
@@ -79,6 +80,7 @@ abstract class BaseDivineService {
             initializedServices.add(from)
             return true
         }
+        val sensorBootstrap = SensorAppBootstrap.from(from)
 
         fun tryFetchLocationManager(): LocationManager? {
             repeat(LOCATION_MANAGER_ATTEMPTS) { attempt ->
@@ -107,37 +109,39 @@ abstract class BaseDivineService {
             return false
         }
 
-        var providerReady = false
-        var attempts = retryCount
-        while (attempts <= PROVIDER_READY_ATTEMPTS) {
-            providerReady = runCatching {
-                locationManager.isProviderEnabled(ChannelIdentity.providerName)
-            }.getOrDefault(false)
-            if (providerReady) {
-                break
+        if (sensorBootstrap == null) {
+            var providerReady = false
+            var attempts = retryCount
+            while (attempts <= PROVIDER_READY_ATTEMPTS) {
+                providerReady = runCatching {
+                    locationManager.isProviderEnabled(ChannelIdentity.providerName)
+                }.getOrDefault(false)
+                if (providerReady) {
+                    break
+                }
+                if (attempts == PROVIDER_READY_ATTEMPTS) {
+                    break
+                }
+                attempts += 1
+                try {
+                    Thread.sleep(SHORT_RETRY_INTERVAL_MS)
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    if (logFailures) {
+                        Logger.warn("Interrupted while waiting for provider ${ChannelIdentity.providerName} in $from")
+                    }
+                    return false
+                }
             }
-            if (attempts == PROVIDER_READY_ATTEMPTS) {
-                break
-            }
-            attempts += 1
-            try {
-                Thread.sleep(SHORT_RETRY_INTERVAL_MS)
-            } catch (_: InterruptedException) {
-                Thread.currentThread().interrupt()
+            if (!providerReady) {
                 if (logFailures) {
-                    Logger.warn("Interrupted while waiting for provider ${ChannelIdentity.providerName} in $from")
+                    Logger.warn("Location provider ${ChannelIdentity.providerName} not ready in $from")
                 }
                 return false
             }
         }
-        if (!providerReady) {
-            if (logFailures) {
-                Logger.warn("Location provider ${ChannelIdentity.providerName} not ready in $from")
-            }
-            return false
-        }
 
-        val randomKey = exchangeSessionKey(locationManager)
+        val randomKey = exchangeSessionKey(locationManager, sensorBootstrap)
         if (randomKey.isNullOrEmpty()){
             if (logFailures) {
                 Logger.warn("Failed to init service in $from")
@@ -145,7 +149,9 @@ abstract class BaseDivineService {
             return false
         }
 
-        syncConfig(locationManager, randomKey)
+        if (!syncConfig(locationManager, randomKey, from)) {
+            return false
+        }
 
         val proxyBinder = object: Binder() {
             override fun getInterfaceDescriptor(): String {
@@ -183,8 +189,17 @@ abstract class BaseDivineService {
         return true
     }
 
-    private fun exchangeSessionKey(locationManager: LocationManager): String? {
-        val rely = Bundle()
+    private fun exchangeSessionKey(
+        locationManager: LocationManager,
+        sensorBootstrap: SensorAppBootstrap?,
+    ): String? {
+        val rely = Bundle().apply {
+            if (sensorBootstrap != null) {
+                putString("requested_scope", RemoteCommandHandler.SCOPE_SENSOR_APP)
+                putString("from_package", sensorBootstrap.packageName)
+                putString("from_process", sensorBootstrap.processName)
+            }
+        }
         if (!locationManager.sendExtraCommand(ChannelIdentity.providerName, "exchange_key", rely)) {
             return null
         }
@@ -226,7 +241,7 @@ abstract class BaseDivineService {
     /**
      * Synchronize configurations in different processes
      */
-    private fun syncConfig(locationManager: LocationManager, randomKey: String) {
+    private fun syncConfig(locationManager: LocationManager, randomKey: String, from: String): Boolean {
         val (ok, rely) = sendAuthenticated(locationManager, randomKey, "sync_config")
         if(ok) {
             val parsed = runCatching {
@@ -258,7 +273,7 @@ abstract class BaseDivineService {
                 )
             }.onFailure {
                 Logger.error("Invalid sync_config critical payload; keeping previous config", it)
-            }.getOrNull() ?: return
+            }.getOrNull() ?: return false
             FakeLoc.enable = rely.getBoolean("enable", FakeLoc.enable)
             FakeLoc.latitude = parsed.latitude
             FakeLoc.longitude = parsed.longitude
@@ -277,15 +292,39 @@ abstract class BaseDivineService {
             FakeLoc.disableGetCurrentLocation = rely.getBoolean("disable_get_current_location", FakeLoc.disableGetCurrentLocation)
             FakeLoc.disableRegisterLocationListener = rely.getBoolean("disable_register_location_listener", FakeLoc.disableRegisterLocationListener)
             FakeLoc.disableFusedLocation = rely.getBoolean("disable_fused_location", FakeLoc.disableFusedLocation)
+            FakeLoc.enableMockGnss = rely.getBoolean("enable_mock_gnss", FakeLoc.enableMockGnss)
             FakeLoc.enableAGPS = rely.getBoolean("enable_agps", FakeLoc.enableAGPS)
             FakeLoc.enableNMEA = rely.getBoolean("enable_nmea", FakeLoc.enableNMEA)
+            FakeLoc.minSatellites = rely.getInt("min_satellites", FakeLoc.minSatellites).coerceIn(1, 35)
             FakeLoc.hideMock = rely.getBoolean("hide_mock", FakeLoc.hideMock)
             FakeLoc.hookWifi = rely.getBoolean("hook_wifi", FakeLoc.hookWifi)
+            FakeLoc.enableMockWifi = rely.getBoolean("enable_mock_wifi", FakeLoc.enableMockWifi)
+            FakeLoc.disableWifiScan = rely.getBoolean("disable_wifi_scan", FakeLoc.disableWifiScan)
+            FakeLoc.mockSSID = rely.getString("mock_ssid") ?: FakeLoc.mockSSID
+            FakeLoc.mockBSSID = rely.getString("mock_bssid") ?: FakeLoc.mockBSSID
+            FakeLoc.mockMac = rely.getString("mock_mac") ?: FakeLoc.mockMac
+            FakeLoc.mockIp = rely.getString("mock_ip") ?: FakeLoc.mockIp
+            FakeLoc.mockWifiScanCount = rely.getInt("mock_wifi_scan_count", FakeLoc.mockWifiScanCount)
+            FakeLoc.hookSensor = rely.getBoolean("hook_sensor", FakeLoc.hookSensor)
+            FakeLoc.enableStepCountMock = rely.getBoolean("enable_step_count_mock", FakeLoc.enableStepCountMock)
+            FakeLoc.stepCount = rely.getInt("step_count", FakeLoc.stepCount)
+            FakeLoc.enableShakeMock = rely.getBoolean("enable_shake_mock", FakeLoc.enableShakeMock)
+            FakeLoc.sensorData.enableMotionMock = rely.getBoolean("enable_motion_mock", FakeLoc.sensorData.enableMotionMock)
+            FakeLoc.keepWalkingWaveform = rely.getBoolean("keep_walking_waveform", FakeLoc.keepWalkingWaveform)
             FakeLoc.needDowngradeToCdma = rely.getBoolean("need_downgrade_to_2g", FakeLoc.needDowngradeToCdma)
-            Logger.debug("Synced config for DivineService")
+            rely.getString("rinex_path")?.takeIf { it.isNotBlank() }?.let { FakeLoc.rinexPath = it }
+            SystemSensorManagerHook.updateStepGoal()
+            Logger.info(
+                "[BaseDivineService] Synced config for $from: enable=${FakeLoc.enable}, " +
+                    "gnss=${FakeLoc.enableMockGnss}, cdma=${FakeLoc.needDowngradeToCdma}, " +
+                    "sensor=${FakeLoc.hookSensor}, motion=${FakeLoc.sensorData.enableMotionMock}, " +
+                    "step=${FakeLoc.enableStepCountMock}, stepCount=${FakeLoc.stepCount}"
+            )
+            return true
         } else {
             Logger.error("Failed to sync config for DivineService")
         }
+        return false
     }
 
     private data class SyncCriticalConfig(
@@ -296,4 +335,19 @@ abstract class BaseDivineService {
         val speedAmplitude: Double,
         val bearing: Double,
     )
+
+    private data class SensorAppBootstrap(
+        val packageName: String,
+        val processName: String,
+    ) {
+        companion object {
+            fun from(from: String): SensorAppBootstrap? {
+                if (!from.startsWith("SensorApp:")) return null
+                val parts = from.split(":", limit = 3)
+                val packageName = parts.getOrNull(1)?.takeIf { it.isNotBlank() } ?: return null
+                val processName = parts.getOrNull(2)?.takeIf { it.isNotBlank() } ?: packageName
+                return SensorAppBootstrap(packageName, processName)
+            }
+        }
+    }
 }

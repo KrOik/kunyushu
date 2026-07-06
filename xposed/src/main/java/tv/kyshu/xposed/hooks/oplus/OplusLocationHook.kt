@@ -60,5 +60,21 @@ object OplusLocationHook: BaseLocationHook() {
             BlindHookLocation(clazz, classLoader)
             Logger.debug("[OplusLocationHook] Applied BlindHookLocation to $className")
         }
+
+        // OPlus telephony vendor hooks
+        val oplusTelephonyClasses = listOf(
+            "oplus.telephony.OplusTelephonyManager",
+            "com.oplus.telephony.OplusTelephonyManager",
+            "oplus.telephony.OplusCellLocation",
+            "com.oplus.telephony.OplusCellIdentity",
+        )
+        for (className in oplusTelephonyClasses) {
+            val clazz = XposedHelpers.findClassIfExists(className, classLoader) ?: continue
+            Logger.info("[OplusLocationHook] Found OPlus telephony class: $className")
+            val hooked = BlindHookLocation(clazz, classLoader)
+            if (hooked > 0) {
+                Logger.info("[OplusLocationHook] OPlus telephony: BlindHookLocation hooked $hooked methods on $className")
+            }
+        }
     }
 }

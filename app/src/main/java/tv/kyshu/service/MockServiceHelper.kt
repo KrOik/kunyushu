@@ -25,6 +25,7 @@ import tv.kyshu.ext.minSatelliteCount
 import tv.kyshu.ext.needDowngradeToCdma
 import tv.kyshu.ext.speed
 import tv.kyshu.ext.hookWifi
+import tv.kyshu.ext.hookSensor
 import tv.kyshu.ext.mockSSID
 import tv.kyshu.ext.mockBSSID
 import tv.kyshu.ext.mockMac
@@ -37,6 +38,7 @@ import tv.kyshu.ext.keepWalkingWaveform
 import tv.kyshu.ext.dozeSensorIntervalMs
 import tv.kyshu.ext.gaitFreq
 import tv.kyshu.ext.gaitAmpScale
+import tv.kyshu.ext.gaitParamsJson
 import tv.kyshu.ext.hideBaseStation
 import tv.kyshu.ext.loopBroadcastLocation
 import tv.kyshu.ext.hideMock
@@ -44,6 +46,7 @@ import tv.kyshu.ext.disableNetworkLocation
 import tv.kyshu.ext.speedAmplitude
 import tv.kyshu.ext.minSpeed
 import tv.kyshu.ext.maxSpeed
+import tv.kyshu.ext.rinexPath
 import tv.kyshu.xposed.utils.FakeLoc
 import tv.kyshu.xposed.security.RemoteCommandBundleCodec
 import tv.kyshu.xposed.security.RemoteCommandSecurity
@@ -394,6 +397,7 @@ object MockServiceHelper {
             putDouble("altitude", context.altitude)
             putFloat("altitudeJitter", context.altitudeJitter)
             putDouble("speed", context.speed)
+            putDouble("bearing", FakeLoc.bearing)
             putBoolean("enable_debug_log", context.debug)
             putBoolean("disable_get_current_location", context.disableGetCurrentLocation)
             putBoolean("disable_register_location_listener", context.disableRegisterLocationListener)
@@ -411,13 +415,16 @@ object MockServiceHelper {
             putString("mock_mac", context.mockMac)
             putString("mock_ip", context.mockIp)
             putInt("mock_wifi_scan_count", context.mockWifiScanCount)
+            putBoolean("hook_sensor", context.hookSensor || context.enableStepCountMock || context.enableShakeMock)
             putBoolean("enable_step_count_mock", context.enableStepCountMock)
             putInt("step_count", context.stepCount)
             putBoolean("enable_shake_mock", context.enableShakeMock)
+            putBoolean("enable_motion_mock", context.hookSensor)
             putBoolean("keep_walking_waveform", context.keepWalkingWaveform)
             putLong("doze_sensor_interval_ms", context.dozeSensorIntervalMs)
             putFloat("gait_freq", context.gaitFreq)
             putFloat("gait_amp_scale", context.gaitAmpScale)
+            putString("gait_params_json", context.gaitParamsJson)
             putBoolean("hide_base_station", context.hideBaseStation)
             putBoolean("loop_broadcast_location", context.loopBroadcastLocation)
             putBoolean("hide_mock", context.hideMock)
@@ -425,6 +432,7 @@ object MockServiceHelper {
             putDouble("speed_amplitude", context.speedAmplitude)
             putDouble("min_speed", context.minSpeed)
             putDouble("max_speed", context.maxSpeed)
+            context.rinexPath?.takeIf { it.isNotBlank() }?.let { putString("rinex_path", it) }
         }.also { (ok, _) ->
             MockServiceProbe.configSync("put_config: enable=${context.sharedPrefs.getBoolean("enable", false)} ok=$ok")
         }.first

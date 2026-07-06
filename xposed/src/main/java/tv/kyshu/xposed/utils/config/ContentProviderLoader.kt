@@ -7,20 +7,43 @@ import tv.kyshu.xposed.utils.Logger
 class ContentProviderLoader(private val context: Context?) : ConfigLoader {
 
     override val name: String = "ContentProvider"
-    private var lastErrorAt = 0L
 
     companion object {
         const val AUTHORITY = "tv.kyshu.xposed.config"
         const val PATH_CONFIG = "config"
         val CONTENT_URI: Uri = Uri.parse("content://$AUTHORITY/$PATH_CONFIG")
+        private const val LOG_INTERVAL_MS = 60_000L
+        private val SHAPE_KEYS = listOf(
+            "enable",
+            "enable_mock_gnss",
+            "rinex_path",
+            "hook_sensor",
+            "enable_step_count_mock",
+            "enable_motion_mock",
+            "step_count",
+            "enable_shake_mock",
+            "keep_walking_waveform",
+            "gait_params_json",
+        )
+        @Volatile private var lastErrorAt = 0L
+        @Volatile private var lastEmptyAt = 0L
+        @Volatile private var lastNullContextAt = 0L
+        @Volatile private var lastShapeAt = 0L
+        @Volatile private var lastShape = ""
     }
 
     override fun load(): Map<String, Any?>? {
-        if (context == null) return null
+        val ctx = context ?: run {
+            logThrottled("nullContext") {
+                lastNullContextAt = it
+                Logger.warn("ContentProviderLoader: skipped because context=null")
+            }
+            return null
+        }
         
         val result = mutableMapOf<String, Any?>()
         try {
-            val cursor = context.contentResolver.query(
+            val cursor = ctx.contentResolver.query(
                 CONTENT_URI, 
                 null, null, null, null
             )
@@ -43,17 +66,50 @@ class ContentProviderLoader(private val context: Context?) : ConfigLoader {
             }
             
             if (result.isNotEmpty()) {
-                // Logger.debug("ContentProviderLoader: Loaded ${result.size} items.")
+                logShape(ctx, result)
                 return result
             }
+            logThrottled("empty") {
+                lastEmptyAt = it
+                Logger.warn("ContentProviderLoader: provider returned no config rows; context=${ctx.javaClass.name} package=${safePackageName(ctx)}")
+            }
         } catch (e: Exception) {
-            val now = System.currentTimeMillis()
-            if (now - lastErrorAt > 60_000L) {
-                lastErrorAt = now
+            logThrottled("error") {
+                lastErrorAt = it
                 Logger.error("ContentProviderLoader: Failed to load provider config; this source is ignored for this reload", e)
             }
         }
         return null
+    }
+
+    private fun logShape(context: Context, result: Map<String, Any?>) {
+        val shape = SHAPE_KEYS
+            .filter { result.containsKey(it) }
+            .joinToString(prefix = "fields=[", postfix = "]") { key -> "$key=${formatShapeValue(key, result[key])}" }
+            .ifEmpty { "fields=[]" }
+        val status = "package=${safePackageName(context)} size=${result.size} $shape"
+        val now = System.currentTimeMillis()
+        if (status != lastShape || now - lastShapeAt > LOG_INTERVAL_MS) {
+            lastShape = status
+            lastShapeAt = now
+            Logger.info("ContentProviderLoader: loaded config shape: $status")
+        }
+    }
+
+    private fun logThrottled(kind: String, block: (Long) -> Unit) {
+        val now = System.currentTimeMillis()
+        val last = when (kind) {
+            "nullContext" -> lastNullContextAt
+            "empty" -> lastEmptyAt
+            else -> lastErrorAt
+        }
+        if (now - last > LOG_INTERVAL_MS) {
+            block(now)
+        }
+    }
+
+    private fun safePackageName(context: Context): String {
+        return runCatching { context.packageName }.getOrDefault("?")
     }
 
     private fun parseValue(key: String, value: String?, type: String?): Any? {
@@ -76,5 +132,13 @@ class ContentProviderLoader(private val context: Context?) : ConfigLoader {
 
     private fun invalidValue(key: String, type: String, value: String?): IllegalArgumentException {
         return IllegalArgumentException("Invalid provider config value: key=$key type=$type value=${value?.take(128) ?: "null"}")
+    }
+
+    private fun formatShapeValue(key: String, value: Any?): String {
+        return if (key == "gait_params_json") {
+            "len=${value?.toString()?.length ?: 0}"
+        } else {
+            value.toString()
+        }
     }
 }

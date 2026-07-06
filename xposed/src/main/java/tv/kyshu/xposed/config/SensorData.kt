@@ -62,7 +62,7 @@ class SensorData {
      * 与enableStepCountMock分离，允许只模拟步数而不篡改IMU。
      */
     @Volatile
-    var enableMotionMock: Boolean = true
+    var enableMotionMock: Boolean = false
 
     // ==================== 子对象专属更新 ====================
 
@@ -80,5 +80,6 @@ class SensorData {
 
         if (stepCount < 0) stepCount = 0
         if (dozeSensorIntervalMs < 20L) dozeSensorIntervalMs = 20L
+        if (enableStepCountMock || enableShakeMock || enableMotionMock) hookSensor = true
     }
 }
