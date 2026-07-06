@@ -30,6 +30,16 @@ class ConfigStrictParsingTest {
     }
 
     @Test
+    fun `critical numeric strings accept comma decimal separator`() {
+        val data = LocationData()
+
+        data.updateFromMap(mapOf("latitude" to "31,2", "longitude" to "121,5"))
+
+        assertEquals(31.2, data.latitude, 0.0)
+        assertEquals(121.5, data.longitude, 0.0)
+    }
+
+    @Test
     fun `non critical getVal falls back on malformed values`() {
         val map = mapOf<String, Any?>("min_satellites" to "bad")
 

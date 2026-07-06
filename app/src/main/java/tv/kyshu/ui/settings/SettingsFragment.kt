@@ -67,6 +67,7 @@ import tv.kyshu.xposed.utils.Log
 import tv.kyshu.ui.viewmodel.MockServiceViewModel
 import tv.kyshu.ui.viewmodel.SensorViewModel
 import tv.kyshu.ui.viewmodel.SettingsViewModel
+import java.util.Locale
 
 class SettingsFragment : Fragment() {
     private var _binding: FragmentSettingsBinding? = null
@@ -100,15 +101,15 @@ class SettingsFragment : Fragment() {
         val context = requireContext()
         sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
 
-        binding.altitudeValue.text = "%.2f米".format(context.altitude)
-        binding.speedValue.text = "%.2f米/秒".format(context.speed)
-        binding.accuracyValue.text = "%.2f米".format(context.accuracy)
-        binding.reportDurationValue.text = "%dms".format(context.reportDuration)
-        binding.satelliteCountValue.text = "%d颗".format(context.minSatelliteCount)
+        binding.altitudeValue.text = formatUs("%.2f米", context.altitude)
+        binding.speedValue.text = formatUs("%.2f米/秒", context.speed)
+        binding.accuracyValue.text = formatUs("%.2f米", context.accuracy)
+        binding.reportDurationValue.text = formatUs("%dms", context.reportDuration)
+        binding.satelliteCountValue.text = formatUs("%d颗", context.minSatelliteCount)
 
         binding.altitudeLayout.setOnClickListener {
             showDialog("设置海拔高度", binding.altitudeValue.text.toString().let { it.substring(0, it.length - 1) }) {
-                val value = it.toDoubleOrNull()
+                val value = it.toInputDoubleOrNull()
                 if (value == null || value < 0.0) {
                     showToast("海拔高度不合法")
                     return@showDialog
@@ -117,15 +118,15 @@ class SettingsFragment : Fragment() {
                     return@showDialog
                 }
                 context.altitude = value
-                Log.dialogOp("Settings", "海拔高度", "%.2f米".format(value))
-                binding.altitudeValue.text = "%.2f米".format(value)
+                Log.dialogOp("Settings", "海拔高度", formatUs("%.2f米", value))
+                binding.altitudeValue.text = formatUs("%.2f米", value)
             }
         }
 
-        binding.altitudeJitterValue.text = "%.1f米".format(context.altitudeJitter)
+        binding.altitudeJitterValue.text = formatUs("%.1f米", context.altitudeJitter)
         binding.altitudeJitterLayout.setOnClickListener {
             showDialog("设置海拔抖动", binding.altitudeJitterValue.text.toString().let { it.substring(0, it.length - 1) }) {
-                val value = it.toFloatOrNull()
+                val value = it.toInputFloatOrNull()
                 if (value == null || value < 0.0f) {
                     showToast("海拔抖动必须 >= 0")
                     return@showDialog
@@ -134,14 +135,14 @@ class SettingsFragment : Fragment() {
                     return@showDialog
                 }
                 context.altitudeJitter = value
-                Log.dialogOp("Settings", "海拔抖动", "%.1f米".format(value))
-                binding.altitudeJitterValue.text = "%.1f米".format(value)
+                Log.dialogOp("Settings", "海拔抖动", formatUs("%.1f米", value))
+                binding.altitudeJitterValue.text = formatUs("%.1f米", value)
             }
         }
 
         binding.speedLayout.setOnClickListener {
             showDialog("设置速度", binding.speedValue.text.toString().let { it.substring(0, it.length - 3) }) {
-                val value = it.toDoubleOrNull()
+                val value = it.toInputDoubleOrNull()
                 if (value == null || value < 0.0) {
                     showToast("速度不合法")
                     return@showDialog
@@ -150,14 +151,14 @@ class SettingsFragment : Fragment() {
                     return@showDialog
                 }
                 context.speed = value
-                Log.dialogOp("Settings", "速度", "%.2f米/秒".format(value))
-                binding.speedValue.text = "%.2f米/秒".format(value)
+                Log.dialogOp("Settings", "速度", formatUs("%.2f米/秒", value))
+                binding.speedValue.text = formatUs("%.2f米/秒", value)
             }
         }
 
         binding.accuracyLayout.setOnClickListener {
             showDialog("设置精度", binding.accuracyValue.text.toString().let { it.substring(0, it.length - 1) }) {
-                val value = it.toFloatOrNull()
+                val value = it.toInputFloatOrNull()
                 if (value == null || value < 0.0) {
                     Toast.makeText(context, "精度不合法", Toast.LENGTH_SHORT).show()
                     return@showDialog
@@ -166,8 +167,8 @@ class SettingsFragment : Fragment() {
                     return@showDialog
                 }
                 context.accuracy = value
-                Log.dialogOp("Settings", "精度", "%.2f米".format(value))
-                binding.accuracyValue.text = "%.2f米".format(value)
+                Log.dialogOp("Settings", "精度", formatUs("%.2f米", value))
+                binding.accuracyValue.text = formatUs("%.2f米", value)
             }
         }
 
@@ -261,8 +262,8 @@ class SettingsFragment : Fragment() {
                     return@showDialog
                 }
                 context.reportDuration = value
-                Log.dialogOp("Settings", "上报间隔", "%dms".format(value))
-                binding.reportDurationValue.text = "%dms".format(value)
+                Log.dialogOp("Settings", "上报间隔", formatUs("%dms", value))
+                binding.reportDurationValue.text = formatUs("%dms", value)
             }
         }
 
@@ -279,8 +280,8 @@ class SettingsFragment : Fragment() {
                     return@showDialog
                 }
                 context.minSatelliteCount = value
-                Log.dialogOp("Settings", "卫星数量", "%d颗".format(value))
-                binding.satelliteCountValue.text = "%d颗".format(value)
+                Log.dialogOp("Settings", "卫星数量", formatUs("%d颗", value))
+                binding.satelliteCountValue.text = formatUs("%d颗", value)
             }
         }
 
@@ -412,26 +413,26 @@ class SettingsFragment : Fragment() {
 
         // ===================== 步态参数绑定 =====================
 
-        binding.gaitFreqValue.text = "%.1f".format(context.gaitFreq)
+        binding.gaitFreqValue.text = formatUs("%.1f", context.gaitFreq)
         binding.gaitFreqLayout.setOnClickListener {
             showDialog("步态频率(Hz)", binding.gaitFreqValue.text.toString()) {
-                val v = it.toFloatOrNull()
+                val v = it.toInputFloatOrNull()
                 if (v == null || v <= 0f) { showToast("频率必须 > 0"); return@showDialog }
-                Log.dialogOp("Settings", "步态频率", "%.1fHz".format(v))
+                Log.dialogOp("Settings", "步态频率", formatUs("%.1fHz", v))
                 context.gaitFreq = v
-                binding.gaitFreqValue.text = "%.1f".format(v)
+                binding.gaitFreqValue.text = formatUs("%.1f", v)
                 updateRemoteConfig()
             }
         }
 
-        binding.gaitAmpScaleValue.text = "%.1f".format(context.gaitAmpScale)
+        binding.gaitAmpScaleValue.text = formatUs("%.1f", context.gaitAmpScale)
         binding.gaitAmpScaleLayout.setOnClickListener {
             showDialog("振幅缩放", binding.gaitAmpScaleValue.text.toString()) {
-                val v = it.toFloatOrNull()
+                val v = it.toInputFloatOrNull()
                 if (v == null || v <= 0f) { showToast("缩放必须 > 0"); return@showDialog }
-                Log.dialogOp("Settings", "振幅缩放", "%.1f".format(v))
+                Log.dialogOp("Settings", "振幅缩放", formatUs("%.1f", v))
                 context.gaitAmpScale = v
-                binding.gaitAmpScaleValue.text = "%.1f".format(v)
+                binding.gaitAmpScaleValue.text = formatUs("%.1f", v)
                 updateRemoteConfig()
             }
         }
@@ -470,14 +471,14 @@ class SettingsFragment : Fragment() {
             updateRemoteConfig()
         }
 
-        binding.speedAmplitudeValue.text = "%.1f".format(context.speedAmplitude)
+        binding.speedAmplitudeValue.text = formatUs("%.1f", context.speedAmplitude)
         binding.speedAmplitudeLayout.setOnClickListener {
             showDialog("速度振幅", binding.speedAmplitudeValue.text.toString()) {
-                val v = it.toDoubleOrNull()
+                val v = it.toInputDoubleOrNull()
                 if (v == null || v < 0.0) { showToast("振幅必须 >= 0"); return@showDialog }
-                Log.dialogOp("Settings", "速度振幅", "%.1f".format(v))
+                Log.dialogOp("Settings", "速度振幅", formatUs("%.1f", v))
                 context.speedAmplitude = v
-                binding.speedAmplitudeValue.text = "%.1f".format(v)
+                binding.speedAmplitudeValue.text = formatUs("%.1f", v)
                 updateRemoteConfig()
             }
         }
@@ -559,9 +560,9 @@ class SettingsFragment : Fragment() {
                 showToast(result.error)
                 return@observe
             }
-            binding.gaitFreqValue.text = "%.2f".format(result.frequency)
+            binding.gaitFreqValue.text = formatUs("%.2f", result.frequency)
             binding.gaitAnalysisResultValue.text = buildString {
-                append("频率 %.2fHz\n".format(result.frequency))
+                append(formatUs("频率 %.2fHz\n", result.frequency))
                 append(result.message)
                 if (result.exportPath.isNotBlank()) {
                     append("\n导出: ${result.exportPath}")
@@ -599,6 +600,25 @@ class SettingsFragment : Fragment() {
         lifecycleScope.launch(Dispatchers.Main) {
             Toast.makeText(ctx, message, Toast.LENGTH_SHORT).show()
         }
+    }
+
+    private fun formatUs(pattern: String, vararg args: Any?): String {
+        return String.format(Locale.US, pattern, *args)
+    }
+
+    private fun String.toInputDoubleOrNull(): Double? {
+        return normalizeDecimalInput()?.toDoubleOrNull()?.takeIf { it.isFinite() }
+    }
+
+    private fun String.toInputFloatOrNull(): Float? {
+        return normalizeDecimalInput()?.toFloatOrNull()?.takeIf { it.isFinite() }
+    }
+
+    private fun String.normalizeDecimalInput(): String? {
+        val raw = trim()
+        if (raw.isEmpty()) return null
+        if (raw.contains('.')) return raw
+        return if (raw.count { it == ',' } == 1) raw.replace(',', '.') else raw
     }
 
     private fun showDiagnosticsResult(report: BlackBoxProbe.Report) {

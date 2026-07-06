@@ -16,6 +16,8 @@
 
 package tv.kyshu.xposed.config
 
+import tv.kyshu.xposed.utils.LocaleNumberParsing
+
 @PublishedApi
 internal class ConfigParseException(message: String) : IllegalArgumentException(message)
 
@@ -90,7 +92,7 @@ internal fun coerceLong(key: String, value: Any, fieldName: String): Long {
 
 @PublishedApi
 internal fun coerceFloat(key: String, value: Any, fieldName: String): Float {
-    val parsed = if (value is Number) value.toFloat() else value.toString().trim().toFloatOrNull()
+    val parsed = if (value is Number) value.toFloat() else LocaleNumberParsing.parseFiniteFloat(value.toString())
     if (parsed == null || !parsed.isFinite()) {
         throw ConfigParseException(invalidConfigMessage(fieldName, key, "finite Float", value))
     }
@@ -99,7 +101,7 @@ internal fun coerceFloat(key: String, value: Any, fieldName: String): Float {
 
 @PublishedApi
 internal fun coerceDouble(key: String, value: Any, fieldName: String): Double {
-    val parsed = if (value is Number) value.toDouble() else value.toString().trim().toDoubleOrNull()
+    val parsed = if (value is Number) value.toDouble() else LocaleNumberParsing.parseFiniteDouble(value.toString())
     if (parsed == null || !parsed.isFinite()) {
         throw ConfigParseException(invalidConfigMessage(fieldName, key, "finite Double", value))
     }

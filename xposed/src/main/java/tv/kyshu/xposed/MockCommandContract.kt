@@ -1,6 +1,7 @@
 package tv.kyshu.xposed
 
 import android.os.Bundle
+import tv.kyshu.xposed.utils.LocaleNumberParsing
 import tv.kyshu.xposed.utils.FakeLoc
 
 object MockCommandContract {
@@ -96,7 +97,7 @@ object MockCommandContract {
             val value = b.get(k) ?: throw IllegalArgumentException("Missing required numeric command field '$k'")
             val parsed = when (value) {
                 is Number -> value.toDouble()
-                is String -> value.trim().toDoubleOrNull()
+                is String -> LocaleNumberParsing.parseFiniteDouble(value)
                 else -> null
             }
             if (parsed == null || !parsed.isFinite()) {
@@ -109,7 +110,7 @@ object MockCommandContract {
             val value = b.get(k) ?: throw IllegalArgumentException("Missing required float command field '$k'")
             val parsed = when (value) {
                 is Number -> value.toFloat()
-                is String -> value.trim().toFloatOrNull()
+                is String -> LocaleNumberParsing.parseFiniteFloat(value)
                 else -> null
             }
             if (parsed == null || !parsed.isFinite()) {

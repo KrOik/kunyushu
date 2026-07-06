@@ -122,6 +122,46 @@ object NmeaGenerator {
         return "\$$content*${calculateChecksum(content)}"
     }
 
+    fun generateGNS(
+        talker: String = "GN",
+        lat: Double,
+        lon: Double,
+        alt: Double,
+        satellitesCount: Int,
+        accuracy: Float,
+        mode: String = "AN"
+    ): String {
+        val now = Date()
+        val timeStr = timeFormat.format(now)
+
+        val latDeg = floor(abs(lat)).toInt()
+        val latMin = (abs(lat) - latDeg) * 60.0
+        val latStr = String.format(Locale.US, "%02d%07.4f", latDeg, latMin)
+        val latDir = if (lat >= 0) "N" else "S"
+
+        val lonDeg = floor(abs(lon)).toInt()
+        val lonMin = (abs(lon) - lonDeg) * 60.0
+        val lonStr = String.format(Locale.US, "%03d%07.4f", lonDeg, lonMin)
+        val lonDir = if (lon >= 0) "E" else "W"
+
+        val hdop = (accuracy / 5.0f).coerceIn(0.5f, 20.0f)
+        val content = String.format(
+            Locale.US,
+            "%sGNS,%s,%s,%s,%s,%s,%s,%02d,%.1f,%.1f,0.0,,",
+            talker.take(2).uppercase(Locale.US),
+            timeStr,
+            latStr,
+            latDir,
+            lonStr,
+            lonDir,
+            mode,
+            satellitesCount.coerceIn(0, 99),
+            hdop,
+            alt
+        )
+        return "\$$content*${calculateChecksum(content)}"
+    }
+
     fun generateVTG(
         bearing: Double,
         speedMPS: Double

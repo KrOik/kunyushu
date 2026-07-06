@@ -319,6 +319,22 @@ object LocationNMEAHook: BaseLocationHook() {
                 ?.let { finalizeNmeaForCallback(it, nmea) }
         }
 
+        if (nmea.startsWith("\$GPGNS") || nmea.startsWith("\$GNGNS")) {
+            val usedSatellitesCount = FakeLoc.minSatellites +
+                kotlin.random.Random.nextInt(0, 8)
+            return runCatching {
+                tv.kyshu.xposed.utils.NmeaGenerator.generateGNS(
+                    talker = original.removePrefix("$").take(2),
+                    lat = FakeLoc.latitude,
+                    lon = FakeLoc.longitude,
+                    alt = FakeLoc.altitude,
+                    satellitesCount = usedSatellitesCount.coerceAtMost(35),
+                    accuracy = FakeLoc.accuracy,
+                )
+            }.getOrNull()
+                ?.let { finalizeNmeaForCallback(it, nmea) }
+        }
+
         // Generate VTG: course + speed
         if (nmea.startsWith("\$GPVTG") || nmea.startsWith("\$GNVTG")) {
             return runCatching {

@@ -2,6 +2,7 @@ package tv.kyshu.xposed.utils.config
 
 import android.content.Context
 import android.net.Uri
+import tv.kyshu.xposed.utils.LocaleNumberParsing
 import tv.kyshu.xposed.utils.Logger
 
 class ContentProviderLoader(private val context: Context?) : ConfigLoader {
@@ -122,8 +123,8 @@ class ContentProviderLoader(private val context: Context?) : ConfigLoader {
                 else -> throw invalidValue(key, normalizedType, value)
             }
             "int" -> raw?.toIntOrNull() ?: throw invalidValue(key, normalizedType, value)
-            "float" -> raw?.toFloatOrNull()?.takeIf { it.isFinite() } ?: throw invalidValue(key, normalizedType, value)
-            "double" -> raw?.toDoubleOrNull()?.takeIf { it.isFinite() } ?: throw invalidValue(key, normalizedType, value)
+            "float" -> raw?.let(LocaleNumberParsing::parseFiniteFloat) ?: throw invalidValue(key, normalizedType, value)
+            "double" -> raw?.let(LocaleNumberParsing::parseFiniteDouble) ?: throw invalidValue(key, normalizedType, value)
             "long" -> raw?.toLongOrNull() ?: throw invalidValue(key, normalizedType, value)
             "string", "" -> value.orEmpty()
             else -> throw IllegalArgumentException("Unknown provider config type: key=$key type=$type value=${value?.take(128)}")
