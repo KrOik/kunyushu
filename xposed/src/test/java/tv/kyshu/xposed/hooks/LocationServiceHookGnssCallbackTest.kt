@@ -12,6 +12,10 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
+import tv.kyshu.xposed.utils.GnssFlags
+import tv.kyshu.xposed.utils.OrbitType
+import tv.kyshu.xposed.utils.deterministicFallbackPosition
+import tv.kyshu.xposed.utils.satelliteList
 import java.io.File
 
 @RunWith(RobolectricTestRunner::class)
@@ -59,6 +63,21 @@ class LocationServiceHookGnssCallbackTest {
         assertTrue(LocationServiceHook.isFallbackSatelliteUsedInFix(15f, 30f))
         assertFalse(LocationServiceHook.isFallbackSatelliteUsedInFix(14.9f, 30f))
         assertFalse(LocationServiceHook.isFallbackSatelliteUsedInFix(15f, 29.9f))
+    }
+
+    @Test
+    fun `fallback satellite position is deterministic for same location and time`() {
+        val satellite = satelliteList.first {
+            it.constellation == GnssFlags.CONSTELLATION_BEIDOU && it.type == OrbitType.MEO
+        }
+        val first = deterministicFallbackPosition(satellite, 39.9042, 116.4074, 1_700_000_000_000L)
+        val second = deterministicFallbackPosition(satellite, 39.9042, 116.4074, 1_700_000_000_000L)
+        val later = deterministicFallbackPosition(satellite, 39.9042, 116.4074, 1_700_003_600_000L)
+
+        assertEquals(first, second)
+        assertNotEquals(first.azimuth, later.azimuth)
+        assertTrue(first.elevation in 0f..90f)
+        assertTrue(first.azimuth in 0f..360f)
     }
 
     @Test

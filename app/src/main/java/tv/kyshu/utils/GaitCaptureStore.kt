@@ -3,6 +3,8 @@ package tv.kyshu.utils
 import java.io.File
 
 object GaitCaptureStore {
+    private val requiredCaptureFiles = listOf("linear.csv", "gyro.csv", "gravity.csv")
+
     data class CsvParseResult(
         val samples: List<GaitAnalyzer.SensorSample>,
         val linesTotal: Int,
@@ -50,6 +52,18 @@ object GaitCaptureStore {
             return ImportPathResult(null, "目录不存在: $path")
         }
         return ImportPathResult(canonical, null)
+    }
+
+    fun latestCaptureDirectory(externalFilesDir: File?): File? {
+        val capturesDir = externalFilesDir?.resolve("captures") ?: return null
+        if (!capturesDir.isDirectory) return null
+        return capturesDir.listFiles()
+            ?.filter { it.isDirectory && hasRequiredCaptureFiles(it) }
+            ?.maxByOrNull { it.lastModified() }
+    }
+
+    fun hasRequiredCaptureFiles(directory: File): Boolean {
+        return requiredCaptureFiles.all { File(directory, it).isFile }
     }
 
     fun readCsvSamples(file: File): CsvParseResult {

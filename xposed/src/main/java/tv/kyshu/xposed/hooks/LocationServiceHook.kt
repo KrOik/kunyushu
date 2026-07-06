@@ -44,6 +44,7 @@ import kotlin.random.Random
 import kotlin.uuid.ExperimentalUuidApi
 import tv.kyshu.xposed.utils.GnssSatellite
 import tv.kyshu.xposed.utils.OrbitType
+import tv.kyshu.xposed.utils.deterministicFallbackPosition
 import tv.kyshu.xposed.utils.satelliteList as multiConstellationSatellites
 import tv.kyshu.xposed.gnss.Ephemeris
 import tv.kyshu.xposed.gnss.GnssMath
@@ -216,8 +217,12 @@ internal object LocationServiceHook: BaseLocationHook() {
 
     fun getOrCreateState(sat: tv.kyshu.xposed.utils.GnssSatellite): SatelliteState {
         return satelliteStates.getOrPut(getSatKey(sat.constellation, sat.prn)) {
-            val elevation = Random.nextFloat(sat.type.elevationRange.start, sat.type.elevationRange.endInclusive)
-            val cn0 = Random.nextFloat(sat.type.minCn0, sat.type.maxCn0)
+            val fallback = deterministicFallbackPosition(
+                sat,
+                FakeLoc.latitude,
+                FakeLoc.longitude,
+                System.currentTimeMillis(),
+            )
 
             val carrierFreq = when (sat.constellation) {
                 tv.kyshu.xposed.utils.GnssFlags.CONSTELLATION_GPS -> {
@@ -247,13 +252,13 @@ internal object LocationServiceHook: BaseLocationHook() {
 
             SatelliteState(
                 satellite = sat,
-                azimuth = Random.nextFloat(0f, 360f),
-                elevation = elevation,
-                cn0 = cn0,
+                azimuth = fallback.azimuth,
+                elevation = fallback.elevation,
+                cn0 = fallback.cn0,
                 carrierFreq = carrierFreq,
                 hasEphemeris = false,
                 hasAlmanac = false,
-                usedInFix = elevation >= 10f && cn0 >= 28f
+                usedInFix = isFallbackSatelliteUsedInFix(fallback.elevation, fallback.cn0)
             )
         }
     }
@@ -625,22 +630,23 @@ internal object LocationServiceHook: BaseLocationHook() {
                     }
                 }
             } else {
-                // Legacy random drift (无星历时使用)
-                state.azimuth = (state.azimuth + Random.nextFloat(-2f, 2f) * deltaSeconds + 360f) % 360f
-                state.elevation = clamp(
-                    state.elevation + Random.nextFloat(-1.2f, 1.2f) * deltaSeconds,
-                    sat.type.elevationRange.start,
-                    sat.type.elevationRange.endInclusive
+                val fallback = deterministicFallbackPosition(
+                    sat,
+                    FakeLoc.latitude,
+                    FakeLoc.longitude,
+                    System.currentTimeMillis(),
                 )
-                var driftCn0 = state.cn0 + Random.nextFloat(-1.5f, 1.5f) * deltaSeconds
+                var fallbackCn0 = fallback.cn0
 
                 if (atmosphereJitter && jitterIntensity > 0f) {
-                    val elRatio = (state.elevation / 90f).coerceIn(0f, 1f)
-                    val absorption = (1f - elRatio) * jitterIntensity * Random.nextFloat(0.1f, 0.5f)
-                    driftCn0 -= absorption * 3f
+                    val elRatio = (fallback.elevation / 90f).coerceIn(0f, 1f)
+                    val absorption = (1f - elRatio) * jitterIntensity * 0.3f
+                    fallbackCn0 -= absorption * 3f
                 }
 
-                state.cn0 = clamp(driftCn0, sat.type.minCn0, sat.type.maxCn0)
+                state.azimuth = fallback.azimuth
+                state.elevation = fallback.elevation
+                state.cn0 = clamp(fallbackCn0, sat.type.minCn0, sat.type.maxCn0)
                 state.hasEphemeris = false
                 state.hasAlmanac = true
                 state.usedInFix = isFallbackSatelliteUsedInFix(state.elevation, state.cn0)

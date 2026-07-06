@@ -25,13 +25,18 @@ import androidx.core.widget.addTextChangedListener
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.activityViewModels
 import androidx.fragment.app.viewModels
+import androidx.lifecycle.lifecycleScope
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.textfield.TextInputEditText
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import tv.kyshu.R
 import tv.kyshu.databinding.FragmentSensorSettingsBinding
 import tv.kyshu.service.MockServiceHelper
 import tv.kyshu.ui.viewmodel.MockServiceViewModel
 import tv.kyshu.ui.viewmodel.SensorViewModel
+import tv.kyshu.utils.GaitCaptureStore
 
 class SensorSettingsFragment : Fragment() {
     private var _binding: FragmentSensorSettingsBinding? = null
@@ -50,6 +55,9 @@ class SensorSettingsFragment : Fragment() {
     private var isSensorDetailsExpanded = false
     private var progressDialog: AlertDialog? = null
     private var progressMessageView: TextView? = null
+    private var autoImportJob: Job? = null
+    private var suppressImportPathWatcher = false
+    private var lastAutoImportPath: String? = null
 
     @Suppress("DEPRECATION")
     private val orientationSensorType = Sensor.TYPE_ORIENTATION
@@ -102,6 +110,7 @@ class SensorSettingsFragment : Fragment() {
         setupUi()
         setupObservers()
         updatePermissionButton()
+        scheduleAutoImport(viewModel.gaitImportPath.value.orEmpty(), immediate = true)
         return binding.root
     }
 
@@ -160,10 +169,13 @@ class SensorSettingsFragment : Fragment() {
             viewModel.startRecordingProcess()
         }
         binding.gaitImportPathInput.addTextChangedListener {
-            viewModel.setGaitImportPath(it?.toString().orEmpty())
+            if (suppressImportPathWatcher) return@addTextChangedListener
+            val path = it?.toString().orEmpty()
+            viewModel.setGaitImportPath(path)
+            scheduleAutoImport(path)
         }
         binding.btnImportGait.setOnClickListener {
-            viewModel.importAndAnalyzeGaitFromPath(binding.gaitImportPathInput.text?.toString().orEmpty())
+            analyzeImportPath(manual = true)
         }
         binding.btnRequestPermission.setOnClickListener {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -204,30 +216,49 @@ class SensorSettingsFragment : Fragment() {
         }
         viewModel.gaitImportPath.observe(viewLifecycleOwner) {
             val text = it.orEmpty()
-            if (binding.gaitImportPathInput.text.toString() != text) binding.gaitImportPathInput.setText(text)
+            if (binding.gaitImportPathInput.text.toString() != text) {
+                suppressImportPathWatcher = true
+                binding.gaitImportPathInput.setText(text)
+                binding.gaitImportPathInput.setSelection(text.length)
+                suppressImportPathWatcher = false
+            }
         }
         viewModel.isRecording.observe(viewLifecycleOwner) { recording ->
-            if (recording) showProgressDialog(viewModel.recordingMessage.value) else dismissProgressDialog()
-            binding.btnRecordGait.isEnabled = !recording
-            binding.btnImportGait.isEnabled = !recording
+            updateBusyUi(recording, viewModel.isAnalyzing.value == true)
             updateSensorSampling()
+        }
+        viewModel.isAnalyzing.observe(viewLifecycleOwner) { analyzing ->
+            updateBusyUi(viewModel.isRecording.value == true, analyzing)
         }
         viewModel.recordingMessage.observe(viewLifecycleOwner) {
             if (!it.isNullOrBlank()) {
-                showProgressDialog(it)
+                if (viewModel.isRecording.value == true || viewModel.isAnalyzing.value == true) {
+                    showProgressDialog(it)
+                }
                 progressMessageView?.text = it
+                binding.gaitAnalysisResultValue.text = it
             }
         }
         viewModel.analysisResult.observe(viewLifecycleOwner) { result ->
             if (result.error != null) {
-                Toast.makeText(requireContext(), result.error, Toast.LENGTH_SHORT).show()
+                binding.gaitAnalysisResultValue.text = result.error
+                showToast(result.error)
                 return@observe
             }
-            syncRemoteConfig()
+            binding.gaitAnalysisResultValue.text = buildString {
+                append(getString(R.string.gait_analysis_loaded_summary, result.frequency))
+                append('\n')
+                append(result.message)
+                if (result.exportPath.isNotBlank()) {
+                    append('\n')
+                    append(getString(R.string.gait_analysis_export_path, result.exportPath))
+                }
+            }
+            syncRemoteConfig(showSuccess = true)
             MaterialAlertDialogBuilder(requireContext())
                 .setTitle(R.string.recording_analysis_dialog_title)
                 .setMessage(getString(R.string.recording_analysis_verify, result.frequency, result.message, result.exportPath))
-                .setPositiveButton(android.R.string.ok, null)
+                .setPositiveButton(R.string.gait_analysis_loaded_button, null)
                 .show()
         }
         viewModel.realSensorData.observe(viewLifecycleOwner) { data ->
@@ -306,6 +337,43 @@ class SensorSettingsFragment : Fragment() {
         progressMessageView = null
     }
 
+    private fun updateBusyUi(recording: Boolean, analyzing: Boolean) {
+        val busy = recording || analyzing
+        if (busy) {
+            showProgressDialog(viewModel.recordingMessage.value)
+        } else {
+            dismissProgressDialog()
+        }
+        binding.btnRecordGait.isEnabled = !busy
+        binding.btnImportGait.isEnabled = !busy
+    }
+
+    private fun analyzeImportPath(manual: Boolean) {
+        val path = binding.gaitImportPathInput.text?.toString().orEmpty()
+        if (manual && path.isBlank()) {
+            showToast(getString(R.string.gait_import_path_empty))
+            return
+        }
+        if (path.isBlank()) return
+        binding.gaitAnalysisResultValue.text = getString(R.string.gait_import_analyzing)
+        viewModel.importAndAnalyzeGaitFromPath(path)
+    }
+
+    private fun scheduleAutoImport(path: String, immediate: Boolean = false) {
+        autoImportJob?.cancel()
+        val trimmed = path.trim()
+        if (trimmed.isBlank() || trimmed == lastAutoImportPath) return
+        autoImportJob = viewLifecycleOwner.lifecycleScope.launch {
+            if (!immediate) delay(700L)
+            val resolved = GaitCaptureStore.resolveImportDirectory(trimmed, requireContext().packageName)
+            val dir = resolved.directory ?: return@launch
+            if (!GaitCaptureStore.hasRequiredCaptureFiles(dir)) return@launch
+            lastAutoImportPath = dir.absolutePath
+            binding.gaitAnalysisResultValue.text = getString(R.string.gait_import_auto_loading, dir.absolutePath)
+            viewModel.importAndAnalyzeGaitFromPath(dir.absolutePath)
+        }
+    }
+
     override fun onResume() {
         super.onResume()
         updateSensorSampling()
@@ -352,15 +420,26 @@ class SensorSettingsFragment : Fragment() {
         }
     }
 
-    private fun syncRemoteConfig() {
-        val manager = mockServiceViewModel.locationManager ?: return
-        if (!MockServiceHelper.putConfig(manager, requireContext())) {
-            Toast.makeText(requireContext(), R.string.sensor_remote_sync_failed, Toast.LENGTH_SHORT).show()
+    private fun syncRemoteConfig(showSuccess: Boolean = false) {
+        val manager = mockServiceViewModel.locationManager ?: run {
+            if (showSuccess) showToast(getString(R.string.sensor_remote_not_ready))
+            return
         }
+        if (!MockServiceHelper.putConfig(manager, requireContext())) {
+            showToast(getString(R.string.sensor_remote_sync_failed))
+        } else if (showSuccess) {
+            showToast(getString(R.string.gait_analysis_loaded_toast))
+        }
+    }
+
+    private fun showToast(message: String) {
+        val context = requireContext().applicationContext
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
     }
 
     override fun onDestroyView() {
         super.onDestroyView()
+        autoImportJob?.cancel()
         dismissProgressDialog()
         _binding = null
     }

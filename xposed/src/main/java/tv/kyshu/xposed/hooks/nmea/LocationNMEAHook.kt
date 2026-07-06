@@ -30,7 +30,7 @@ import java.util.Collections
 import kotlin.math.roundToInt
 import tv.kyshu.xposed.utils.satelliteList
 import tv.kyshu.xposed.utils.GnssFlags
-import tv.kyshu.xposed.utils.OrbitType
+import tv.kyshu.xposed.utils.deterministicFallbackPosition
 import tv.kyshu.xposed.hooks.LocationServiceHook
 import java.util.concurrent.ConcurrentHashMap
 import java.util.Locale
@@ -396,61 +396,40 @@ object LocationNMEAHook: BaseLocationHook() {
     private fun generateGSV(constellation: Int, talkerOverride: String? = null): String? {
         data class SatState(val prn: Int, val elevation: Float, val azimuth: Float, val cn0: Float)
 
-        val observerLat = FakeLoc.latitude.toFloat()
-
         val satellites = satelliteList.filter {
             it.constellation == constellation
-        }.mapNotNull { sat ->
-            // 根据轨道类型生成可见性概率和仰角范围
-            val (minElev, maxElev, visibleProb) = when (sat.type) {
-                is OrbitType.GEO -> {
-                    val latAbs = kotlin.math.abs(observerLat)
-                    // 高纬度看不到GEO
-                    if (latAbs > 70f) return@mapNotNull null
-                    Triple(0f, 30f, 0.5f)
-                }
-                is OrbitType.IGSO -> Triple(20f, 75f, 0.7f)
-                is OrbitType.MEO -> Triple(15f, 85f, 0.8f)
-            }
-
-            // 可见性概率过滤
-            if (kotlin.random.Random.nextFloat() > visibleProb) return@mapNotNull null
-
-            // 方位角基于卫星类型和模拟位置生成
-            val azimuth = when (sat.type) {
-                is OrbitType.GEO -> {
-                    // GEO卫星大致在南方（北半球）或北方（南半球）
-                    if (observerLat >= 0f) 150f + kotlin.random.Random.nextFloat() * 60f // 南向
-                    else 330f + kotlin.random.Random.nextFloat() * 60f // 北向
-                }
-                else -> kotlin.random.Random.nextFloat() * 360f // 均匀分布
-            }
-
-            // 仰角在范围内随机但偏向中间值 (triangular分布)
-            val elevation = minElev + (maxElev - minElev) * (0.3f + kotlin.random.Random.nextFloat() * 0.4f)
-
-            // 信噪比基于轨道类型
-            val cn0 = sat.type.minCn0 + kotlin.random.Random.nextFloat() * (sat.type.maxCn0 - sat.type.minCn0)
-
+        }.map { sat ->
+            val position = deterministicFallbackPosition(
+                sat,
+                FakeLoc.latitude,
+                FakeLoc.longitude,
+                System.currentTimeMillis(),
+            )
             SatState(
                 prn = sat.prn,
-                elevation = elevation.coerceIn(0f, 90f),
-                azimuth = azimuth.coerceIn(0f, 360f),
-                cn0 = cn0.coerceIn(10f, 55f)
+                elevation = position.elevation.coerceIn(0f, 90f),
+                azimuth = position.azimuth.coerceIn(0f, 360f),
+                cn0 = position.cn0.coerceIn(10f, 55f),
             )
-        }.sortedByDescending { it.prn }
+        }.filter {
+            it.elevation >= 5f
+        }.sortedWith(
+            compareByDescending<SatState> { it.cn0 }.thenBy { it.prn },
+        ).take(16)
 
-        // 确保至少有一些卫星
         val effectiveSats = if (satellites.isEmpty()) {
-            // 保底：生成4颗随机卫星
-            (1..4).map {
-                SatState(
-                    prn = kotlin.random.Random.nextInt(1, 32),
-                    elevation = 20f + kotlin.random.Random.nextFloat() * 50f,
-                    azimuth = kotlin.random.Random.nextFloat() * 360f,
-                    cn0 = 25f + kotlin.random.Random.nextFloat() * 20f
-                )
-            }
+            satelliteList.filter { it.constellation == constellation }
+                .map { sat ->
+                    val position = deterministicFallbackPosition(
+                        sat,
+                        FakeLoc.latitude,
+                        FakeLoc.longitude,
+                        System.currentTimeMillis(),
+                    )
+                    SatState(sat.prn, position.elevation, position.azimuth, position.cn0)
+                }
+                .sortedWith(compareByDescending<SatState> { it.cn0 }.thenBy { it.prn })
+                .take(4)
         } else satellites
 
         val sb = StringBuilder()

@@ -1,5 +1,10 @@
 package tv.kyshu.xposed.utils
 
+import kotlin.math.PI
+import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.sin
+
 // 载噪比范围，考虑不同轨道类型
 private const val GEO_MIN_CN0 = 30.0f  // GEO卫星信号较强
 private const val GEO_MAX_CN0 = 45.0f
@@ -43,6 +48,76 @@ data class GnssSatellite(
     val type: OrbitType,
     val constellation: Int
 )
+
+data class DeterministicSatellitePosition(
+    val elevation: Float,
+    val azimuth: Float,
+    val cn0: Float,
+)
+
+fun deterministicFallbackPosition(
+    satellite: GnssSatellite,
+    observerLat: Double,
+    observerLon: Double,
+    timeMillis: Long,
+): DeterministicSatellitePosition {
+    val lat = observerLat.coerceIn(-89.0, 89.0)
+    val lon = normalizeDegrees(observerLon)
+    val hours = timeMillis / 3_600_000.0
+    val phase = stablePhaseDegrees(satellite) + hours * when (satellite.type) {
+        OrbitType.GEO -> 0.02
+        OrbitType.IGSO -> 15.0
+        OrbitType.MEO -> 30.0
+    }
+
+    val (azimuth, elevation) = when (satellite.type) {
+        OrbitType.GEO -> {
+            val orbitalSlot = normalizeDegrees(satellite.prn * 17.0 + satellite.constellation * 23.0)
+            val relativeLon = shortestAngleDegrees(orbitalSlot - lon)
+            val southBearing = if (lat >= 0.0) 180.0 else 0.0
+            val az = normalizeDegrees(southBearing + relativeLon * 0.45)
+            val el = 55.0 - abs(lat) * 0.45 - abs(relativeLon) * 0.08
+            az to el
+        }
+        OrbitType.IGSO -> {
+            val p = Math.toRadians(phase)
+            val az = normalizeDegrees(phase + lon * 0.25 + sin(p) * 28.0)
+            val el = 42.0 + sin(p) * 22.0 + cos(p * 0.5) * 8.0 - abs(lat) * 0.06
+            az to el
+        }
+        OrbitType.MEO -> {
+            val p = Math.toRadians(phase + lon * 0.12)
+            val az = normalizeDegrees(phase + lon + sin(p * 0.5) * 35.0)
+            val el = 45.0 + sin(p + Math.toRadians(lat)) * 38.0
+            az to el
+        }
+    }
+
+    val clampedElevation = elevation
+        .coerceIn(satellite.type.elevationRange.start.toDouble(), satellite.type.elevationRange.endInclusive.toDouble())
+        .toFloat()
+    val ratio = (clampedElevation / 90f).coerceIn(0f, 1f)
+    val cn0 = satellite.type.minCn0 + (satellite.type.maxCn0 - satellite.type.minCn0) * ratio
+    return DeterministicSatellitePosition(
+        elevation = clampedElevation,
+        azimuth = normalizeDegrees(azimuth).toFloat(),
+        cn0 = cn0.coerceIn(satellite.type.minCn0, satellite.type.maxCn0),
+    )
+}
+
+private fun stablePhaseDegrees(satellite: GnssSatellite): Double {
+    return normalizeDegrees((satellite.constellation * 997 + satellite.prn * 37).toDouble())
+}
+
+private fun normalizeDegrees(value: Double): Double {
+    val mod = value % 360.0
+    return if (mod < 0.0) mod + 360.0 else mod
+}
+
+private fun shortestAngleDegrees(value: Double): Double {
+    val normalized = normalizeDegrees(value)
+    return if (normalized > 180.0) normalized - 360.0 else normalized
+}
 
 val satelliteList: List<GnssSatellite> = buildList {
     // BDS Satellites

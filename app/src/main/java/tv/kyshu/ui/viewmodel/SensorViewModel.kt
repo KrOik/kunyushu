@@ -71,11 +71,14 @@ class SensorViewModel(application: Application) : AndroidViewModel(application) 
     private val _recordSeconds = MutableLiveData(context.gaitRecordSeconds)
     val recordSeconds: LiveData<Int> = _recordSeconds
 
-    private val _gaitImportPath = MutableLiveData(context.gaitImportPath)
+    private val _gaitImportPath = MutableLiveData(initialGaitImportPath())
     val gaitImportPath: LiveData<String> = _gaitImportPath
 
     private val _isRecording = MutableLiveData(false)
     val isRecording: LiveData<Boolean> = _isRecording
+
+    private val _isAnalyzing = MutableLiveData(false)
+    val isAnalyzing: LiveData<Boolean> = _isAnalyzing
 
     private val _recordingMessage = MutableLiveData("")
     val recordingMessage: LiveData<String> = _recordingMessage
@@ -89,6 +92,18 @@ class SensorViewModel(application: Application) : AndroidViewModel(application) 
     private val recordedGravity = ArrayList<GaitAnalyzer.SensorSample>()
     private val lastRealUiUpdates = HashMap<Int, Long>()
     private val lastMockUiUpdates = HashMap<Int, Long>()
+
+    private fun initialGaitImportPath(): String {
+        val saved = context.gaitImportPath
+        if (saved.isNotBlank()) return saved
+        val latest = GaitCaptureStore.latestCaptureDirectory(context.getExternalFilesDir(null))
+            ?.absolutePath
+            .orEmpty()
+        if (latest.isNotBlank()) {
+            context.gaitImportPath = latest
+        }
+        return latest
+    }
 
     fun setStepCountMock(enabled: Boolean) {
         context.enableStepCountMock = enabled
@@ -127,7 +142,7 @@ class SensorViewModel(application: Application) : AndroidViewModel(application) 
 
     fun setGaitImportPath(path: String) {
         context.gaitImportPath = path
-        _gaitImportPath.value = path
+        _gaitImportPath.postValue(path)
     }
 
     fun onRealSensorChanged(type: Int, values: FloatArray, timestamp: Long) {
@@ -181,35 +196,47 @@ class SensorViewModel(application: Application) : AndroidViewModel(application) 
         }
         setGaitImportPath(dir.absolutePath)
         viewModelScope.launch(Dispatchers.IO) {
-            analyzeDirectory(dir)
+            _isAnalyzing.postValue(true)
+            _recordingMessage.postValue("正在导入并拟合步态数据...")
+            try {
+                analyzeDirectory(dir)
+            } finally {
+                _isAnalyzing.postValue(false)
+            }
         }
     }
 
     private fun analyzeAndSaveRecorded() {
         viewModelScope.launch(Dispatchers.IO) {
+            _isAnalyzing.postValue(true)
             val accel = synchronized(this@SensorViewModel) { recordedAccel.toList() }
             val linear = synchronized(this@SensorViewModel) { recordedLinear.toList() }
             val gyro = synchronized(this@SensorViewModel) { recordedGyro.toList() }
             val gravity = synchronized(this@SensorViewModel) { recordedGravity.toList() }
-            if (linear.size < 50) {
-                _analysisResult.postValue(GaitAnalysisResult(0f, "", "", error = "数据不足，请确认线性加速度传感器可用并保持移动"))
-                return@launch
-            }
+            try {
+                if (linear.size < 50) {
+                    _analysisResult.postValue(GaitAnalysisResult(0f, "", "", error = "数据不足，请确认线性加速度传感器可用并保持移动"))
+                    return@launch
+                }
 
-            val timeText = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
-            val dir = File(context.getExternalFilesDir(null), "captures/$timeText")
-            if (!dir.exists()) dir.mkdirs()
-            GaitCaptureStore.saveCsv(File(dir, "accel.csv"), accel)
-            GaitCaptureStore.saveCsv(File(dir, "linear.csv"), linear)
-            GaitCaptureStore.saveCsv(File(dir, "gyro.csv"), gyro)
-            GaitCaptureStore.saveCsv(File(dir, "gravity.csv"), gravity)
-            MediaScannerConnection.scanFile(
-                context,
-                arrayOf("accel.csv", "linear.csv", "gyro.csv", "gravity.csv").map { File(dir, it).absolutePath }.toTypedArray(),
-                null,
-                null,
-            )
-            analyzeSamples(linear, gyro, gravity, dir.absolutePath, parseWarnings = emptyList())
+                val timeText = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
+                val dir = File(context.getExternalFilesDir(null), "captures/$timeText")
+                if (!dir.exists()) dir.mkdirs()
+                GaitCaptureStore.saveCsv(File(dir, "accel.csv"), accel)
+                GaitCaptureStore.saveCsv(File(dir, "linear.csv"), linear)
+                GaitCaptureStore.saveCsv(File(dir, "gyro.csv"), gyro)
+                GaitCaptureStore.saveCsv(File(dir, "gravity.csv"), gravity)
+                setGaitImportPath(dir.absolutePath)
+                MediaScannerConnection.scanFile(
+                    context,
+                    arrayOf("accel.csv", "linear.csv", "gyro.csv", "gravity.csv").map { File(dir, it).absolutePath }.toTypedArray(),
+                    null,
+                    null,
+                )
+                analyzeSamples(linear, gyro, gravity, dir.absolutePath, parseWarnings = emptyList())
+            } finally {
+                _isAnalyzing.postValue(false)
+            }
         }
     }
 

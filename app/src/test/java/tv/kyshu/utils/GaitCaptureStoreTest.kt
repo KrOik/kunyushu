@@ -63,6 +63,27 @@ class GaitCaptureStoreTest {
         assertTrue(croppedLinear.size == croppedGyro.size)
     }
 
+    @Test
+    fun latestCaptureDirectoryReturnsNewestCompleteCapture() {
+        val external = temp.newFolder("files")
+        val oldComplete = File(external, "captures/20260706_123000").apply { mkdirs() }
+        val newComplete = File(external, "captures/20260706_123840").apply { mkdirs() }
+        val incomplete = File(external, "captures/20260706_124000").apply { mkdirs() }
+
+        listOf(oldComplete, newComplete).forEach { dir ->
+            File(dir, "linear.csv").writeText("timestamp_ns,x,y,z\n1,1,1,1\n")
+            File(dir, "gyro.csv").writeText("timestamp_ns,x,y,z\n1,1,1,1\n")
+            File(dir, "gravity.csv").writeText("timestamp_ns,x,y,z\n1,1,1,1\n")
+        }
+        File(incomplete, "linear.csv").writeText("timestamp_ns,x,y,z\n1,1,1,1\n")
+        oldComplete.setLastModified(1000L)
+        newComplete.setLastModified(2000L)
+        incomplete.setLastModified(3000L)
+
+        assertEquals(newComplete.canonicalFile, GaitCaptureStore.latestCaptureDirectory(external)?.canonicalFile)
+        assertTrue(GaitCaptureStore.hasRequiredCaptureFiles(newComplete))
+    }
+
     private fun samplesAt(vararg timestamps: Long): List<GaitAnalyzer.SensorSample> {
         return timestamps.map { GaitAnalyzer.SensorSample(it, 1f, 2f, 3f) }
     }

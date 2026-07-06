@@ -84,7 +84,7 @@ class GnssMockFragment : Fragment() {
         binding.ephemerisStatus.text = if (rinexPath != null) {
             "星历文件: $rinexPath"
         } else {
-            "未加载星历，卫星位置使用随机算法"
+            "未加载星历，卫星位置使用确定性轨道模板"
         }
         binding.btnDownloadEphemeris.setOnClickListener {
             Log.buttonOp("GNSS", "下载星历")

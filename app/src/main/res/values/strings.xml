@@ -135,6 +135,13 @@
     <string name="recording_prepare_title">准备录制</string>
     <string name="recording_analysis_dialog_title">拟合结果验证</string>
     <string name="recording_analysis_verify">步频: %1$.1f Hz\n%2$s\n\n原始数据已保存至:\n%3$s</string>
+    <string name="gait_analysis_loaded_button">已载入</string>
+    <string name="gait_analysis_loaded_toast">步态参数已载入并同步</string>
+    <string name="gait_analysis_loaded_summary">已载入步态参数: %1$.2f Hz</string>
+    <string name="gait_analysis_export_path">数据目录: %s</string>
+    <string name="gait_import_analyzing">正在导入并拟合步态数据...</string>
+    <string name="gait_import_auto_loading">自动载入步态数据:\n%s</string>
+    <string name="gait_import_path_empty">请输入 IMU 数据目录</string>
     <string name="sensor_status_title">传感器状态</string>
     <string name="real_step_count">真实步数: %d</string>
     <string name="mock_step_count">模拟步数: %d</string>
@@ -159,6 +166,7 @@
     <string name="real_orientation_placeholder">真实方向: --</string>
     <string name="mock_orientation_placeholder">模拟方向: --</string>
     <string name="sensor_remote_sync_failed">传感器配置同步失败</string>
+    <string name="sensor_remote_not_ready">定位服务未就绪，步态参数已本地载入</string>
 
     <!-- 其他 -->
     <string name="section_other">其他</string>
