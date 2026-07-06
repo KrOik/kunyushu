@@ -166,6 +166,7 @@ class SensorSettingsFragment : Fragment() {
             syncRemoteConfig()
         }
         binding.btnRecordGait.setOnClickListener {
+            showToast("已开始录制准备")
             viewModel.startRecordingProcess()
         }
         binding.gaitImportPathInput.addTextChangedListener {
@@ -179,6 +180,7 @@ class SensorSettingsFragment : Fragment() {
         }
         binding.btnRequestPermission.setOnClickListener {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                showToast("正在请求运动权限")
                 requestPermissionLauncher.launch(Manifest.permission.ACTIVITY_RECOGNITION)
             }
         }
@@ -188,6 +190,7 @@ class SensorSettingsFragment : Fragment() {
             binding.btnToggleSensorDetails.text = getString(
                 if (isSensorDetailsExpanded) R.string.sensor_details_collapse else R.string.sensor_details_expand,
             )
+            showToast(if (isSensorDetailsExpanded) "已展开传感器数据" else "已收起传感器数据")
             updateSensorSampling()
         }
     }
@@ -356,6 +359,7 @@ class SensorSettingsFragment : Fragment() {
         }
         if (path.isBlank()) return
         binding.gaitAnalysisResultValue.text = getString(R.string.gait_import_analyzing)
+        if (manual) showToast(getString(R.string.gait_import_analyzing))
         viewModel.importAndAnalyzeGaitFromPath(path)
     }
 

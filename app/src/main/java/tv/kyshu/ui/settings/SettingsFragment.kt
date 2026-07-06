@@ -486,6 +486,7 @@ class SettingsFragment : Fragment() {
 
         binding.runDiagnosticsBtn.setOnClickListener {
             Log.buttonOp("Settings", "运行系统诊断")
+            showToast("正在运行系统诊断")
             val ctx = requireContext()
             val lm = mockServiceViewModel.locationManager
 
@@ -519,11 +520,19 @@ class SettingsFragment : Fragment() {
         }
 
         binding.btnRecordGait.setOnClickListener {
+            showToast("已开始录制准备")
             sensorViewModel.startRecordingProcess()
         }
 
         binding.btnImportGait.setOnClickListener {
-            sensorViewModel.importAndAnalyzeGaitFromPath(binding.gaitImportPathInput.text?.toString().orEmpty())
+            val path = binding.gaitImportPathInput.text?.toString().orEmpty()
+            if (path.isBlank()) {
+                showToast("请输入 IMU 数据目录")
+                return@setOnClickListener
+            }
+            binding.gaitAnalysisResultValue.text = "正在导入并拟合步态数据..."
+            showToast("正在导入并拟合步态数据...")
+            sensorViewModel.importAndAnalyzeGaitFromPath(path)
         }
 
         sensorViewModel.recordSeconds.observe(viewLifecycleOwner) {

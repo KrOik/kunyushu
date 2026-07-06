@@ -973,12 +973,15 @@
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btn_record_gait"
+                style="@style/AppTheme.MaterialButton"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginStart="5dp"
                 android:layout_marginTop="6dp"
                 android:layout_marginEnd="5dp"
-                android:text="@string/gait_record_button_label" />
+                android:text="@string/gait_record_button_label"
+                android:textColor="@color/white"
+                app:backgroundTint="@color/portal_appbar_color" />
 
             <com.google.android.material.textfield.TextInputLayout
                 android:id="@+id/gait_import_path_layout"
@@ -998,12 +1001,15 @@
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btn_import_gait"
+                style="@style/AppTheme.MaterialButton"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginStart="5dp"
                 android:layout_marginTop="6dp"
                 android:layout_marginEnd="5dp"
-                android:text="@string/gait_import_button_label" />
+                android:text="@string/gait_import_button_label"
+                android:textColor="@color/white"
+                app:backgroundTint="@color/portal_appbar_color" />
 
             <com.google.android.material.textview.MaterialTextView
                 android:id="@+id/gait_analysis_result_value"
@@ -1204,11 +1210,13 @@
 
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/run_diagnostics_btn"
+                    style="@style/AppTheme.MaterialButton"
                     android:layout_width="match_parent"
                     android:layout_height="56dp"
                     android:text="运行系统诊断"
+                    android:textColor="@color/white"
                     android:textSize="14sp"
-                    style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
+                    app:backgroundTint="@color/portal_appbar_color" />
 
             </LinearLayout>
         </LinearLayout>

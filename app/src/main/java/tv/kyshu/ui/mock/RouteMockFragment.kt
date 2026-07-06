@@ -66,8 +66,10 @@ class RouteMockFragment : Fragment() {
 
         binding.switchMock.setOnClickListener {
             if (mockServiceViewModel.isServiceStart()) {
+                showToast("正在停止路线模拟")
                 tryCloseService(it as MaterialButton)
             } else {
+                showToast("正在启动路线模拟")
                 tryOpenService(it as MaterialButton)
             }
         }
@@ -96,9 +98,11 @@ class RouteMockFragment : Fragment() {
                 lifecycleScope.launch(Dispatchers.Main) {
                     if (checkedTextView.isChecked) {
                         rocker.show()
+                        Toast.makeText(requireContext(), "摇杆已显示", Toast.LENGTH_SHORT).show()
                     } else {
                         rocker.hide()
                         rockerCoroutineController.pause()
+                        Toast.makeText(requireContext(), "摇杆已隐藏", Toast.LENGTH_SHORT).show()
                     }
                 }
             }
@@ -391,6 +395,7 @@ class RouteMockFragment : Fragment() {
                     mockServiceViewModel.rockerCoroutineController.pause()
                     binding.rocker.isClickable = true
                 }
+                if (isClosed) showToast("模拟服务已停止")
             } finally {
                 button.isClickable = true
             }

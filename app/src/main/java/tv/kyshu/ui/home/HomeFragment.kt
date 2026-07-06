@@ -280,14 +280,17 @@ class HomeFragment : Fragment() {
         }
 
         binding.fabMyLocation.setOnClickListener {
+            Toast.makeText(requireContext(), "正在定位当前位置", Toast.LENGTH_SHORT).show()
             baiduMapViewModel.baiduMap.locateMe()
         }
 
         binding.fabGoto.setOnClickListener {
+            Toast.makeText(requireContext(), "请输入目标坐标", Toast.LENGTH_SHORT).show()
             showInputCoordinatesDialog()
         }
 
         binding.fabAdd.setOnClickListener {
+            Toast.makeText(requireContext(), "正在添加当前位置", Toast.LENGTH_SHORT).show()
             if (!showAddLocationDialog()) {
                 Toast.makeText(requireContext(), "选择位置异常", Toast.LENGTH_SHORT).show()
             }

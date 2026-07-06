@@ -309,9 +309,10 @@ class RouteEditFragment : Fragment() {
         }
 
         binding.fabStart.setOnClickListener {
-            isDrawing = true;
+            isDrawing = true
             mPoints = arrayListOf()
-            lastPoint = null; // 重置上一个点
+            lastPoint = null // 重置上一个点
+            Toast.makeText(requireContext(), "开始绘制路线", Toast.LENGTH_SHORT).show()
         }
 
         binding.fabRollback.setOnClickListener {
@@ -319,17 +320,22 @@ class RouteEditFragment : Fragment() {
             if (mPoints.size > 0) {
                 mPoints.removeAt(mPoints.size - 1)
                 refresh()
+                Toast.makeText(requireContext(), "已撤回上一点", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(requireContext(), "没有可撤回的路线点", Toast.LENGTH_SHORT).show()
             }
         }
 
         binding.fabComplete.setOnClickListener {
             isDrawing = false
+            Toast.makeText(requireContext(), "正在保存路线", Toast.LENGTH_SHORT).show()
             if (!showAddRouteDialog()) {
                 Toast.makeText(requireContext(), "选择路线异常", Toast.LENGTH_SHORT).show()
             }
         }
 
         binding.fabMyLocation.setOnClickListener {
+            Toast.makeText(requireContext(), "正在定位当前位置", Toast.LENGTH_SHORT).show()
             baiduMapViewModel.baiduMap.locateMe()
         }
 

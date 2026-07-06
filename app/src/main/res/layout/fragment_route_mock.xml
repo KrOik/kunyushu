@@ -67,6 +67,7 @@
                             android:textColor="@color/white"
                             android:text="@string/start_mock"
                             style="@style/Widget.MaterialComponents.Button.UnelevatedButton"
+                            app:backgroundTint="@color/portal_appbar_color"
                             android:insetRight="0dp"
                             android:insetLeft="0dp"
                             android:insetTop="0dp"
@@ -141,7 +142,7 @@
         android:contentDescription="@string/follow_location"
         app:srcCompat="@drawable/sharp_location_off_24"
         android:backgroundTint="@color/portal_mock_off"
-        android:tint="@color/portal_appbar_color"
+        android:tint="@color/white"
         app:fabSize="auto"
         android:visibility="gone"
         android:layout_gravity="bottom|end"/>

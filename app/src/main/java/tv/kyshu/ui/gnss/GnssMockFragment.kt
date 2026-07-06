@@ -90,6 +90,7 @@ class GnssMockFragment : Fragment() {
             Log.buttonOp("GNSS", "下载星历")
             binding.btnDownloadEphemeris.isEnabled = false
             binding.ephemerisStatus.text = "正在下载..."
+            showToast("正在下载星历")
             EphemerisManager.updateEphemeris(requireContext(), locationManager) { success, msg ->
                 lifecycleScope.launch(Dispatchers.Main) {
                     binding.btnDownloadEphemeris.isEnabled = true
