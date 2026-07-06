@@ -44,6 +44,10 @@ class MockServiceViewModel : ViewModel() {
     var selectedLocation: HistoricalLocation? = null
     var selectedRoute: HistoricalRoute? = null
 
+    private fun powerSafeIntervalMs(requestedMs: Int): Long = requestedMs.coerceIn(100, 5_000).toLong()
+    private fun distancePerTick(speed: Double, delayTime: Long): Double {
+        return speed / (1000.0 / delayTime) / 0.85
+    }
 
     fun initRocker(activity: Activity): Rocker {
         if (!::rocker.isInitialized) {
@@ -52,15 +56,15 @@ class MockServiceViewModel : ViewModel() {
 
         if (rockerJob == null || rockerJob!!.isCancelled) {
             rockerCoroutineController.pause()
-            val delayTime = activity.reportDuration.toLong()
-            val applicationContext = activity.applicationContext
+            val delayTime = powerSafeIntervalMs(activity.reportDuration)
             rockerJob = viewModelScope.launch {
                 while (isActive) {
                     rockerCoroutineController.controlledCoroutine()
                     delay(delayTime)
 
+                    if (!isServiceStart()) continue
                     locationManager?.let { mgr ->
-                        if (!MockServiceHelper.move(mgr, FakeLoc.speed / (1000 / delayTime) / 0.85, FakeLoc.bearing)) {
+                        if (!MockServiceHelper.move(mgr, distancePerTick(FakeLoc.speed, delayTime), FakeLoc.bearing)) {
                             Log.e("MockServiceViewModel", "Failed to move")
                         }
                     } ?: break
@@ -74,11 +78,12 @@ class MockServiceViewModel : ViewModel() {
 
         if (routeMockJob == null || routeMockJob!!.isCancelled) {
             routeMockCoroutine.pause()
-            val delayTime = activity.reportDuration.toLong()
+            val delayTime = powerSafeIntervalMs(activity.reportDuration)
             routeMockJob = viewModelScope.launch {
                 while (isActive) {
                     routeMockCoroutine.routeMockCoroutine()
                     delay(delayTime)
+                    if (!isServiceStart()) continue
                     // 如果是第0阶段，定位到第一个点
                     if (routeStage == 0) {
                         val route0 = selectedRoute?.route?.get(0) ?: break
@@ -88,7 +93,8 @@ class MockServiceViewModel : ViewModel() {
                         routeStage++
                     }
                     val route = selectedRoute?.route ?: break
-                    while (routeStage < route.size) {
+                    var transitionsThisTick = 0
+                    while (routeStage < route.size && transitionsThisTick < 32) {
                         val target = route[routeStage]
                         val loc = locationManager?.let { MockServiceHelper.getLocation(it) } ?: break
                         val currentLat = loc.first
@@ -107,12 +113,14 @@ class MockServiceViewModel : ViewModel() {
                                 MockServiceHelper.setLocation(mgr, target.first, target.second)
                             } ?: break
                             routeStage++
-                        } else if (inverse.s12 < FakeLoc.speed / (1000 / delayTime) / 0.85) {
+                            transitionsThisTick++
+                        } else if (inverse.s12 < distancePerTick(FakeLoc.speed, delayTime)) {
                             // 如果距离小于速度，直接移动到目标点
                             locationManager?.let { mgr ->
                                 MockServiceHelper.setLocation(mgr, target.first, target.second)
                             } ?: break
                             routeStage++
+                            transitionsThisTick++
 
                         } else {
                             break
@@ -147,7 +155,7 @@ class MockServiceViewModel : ViewModel() {
 
                     Log.d("MockServiceViewModel", "从 $currentLat, $currentLon 移动到 ${target.first}, ${target.second}, 方位角: $azimuth")
                     locationManager?.let { mgr ->
-                        if (!MockServiceHelper.move(mgr, FakeLoc.speed / (1000 / delayTime) / 0.85, azimuth)) {
+                        if (!MockServiceHelper.move(mgr, distancePerTick(FakeLoc.speed, delayTime), azimuth)) {
                             Log.e("MockServiceViewModel", "移动失败")
                         }
                     } ?: break
@@ -166,6 +174,10 @@ class MockServiceViewModel : ViewModel() {
 
     override fun onCleared() {
         super.onCleared()
+        rockerJob?.cancel()
+        routeMockJob?.cancel()
+        rockerCoroutineController.pause()
+        routeMockCoroutine.pause()
         runCatching { rocker.hide() }
     }
 }

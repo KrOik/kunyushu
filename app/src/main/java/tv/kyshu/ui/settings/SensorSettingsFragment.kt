@@ -385,8 +385,7 @@ class SensorSettingsFragment : Fragment() {
 
     override fun onPause() {
         super.onPause()
-        sensorManager?.unregisterListener(realListener)
-        sensorManager?.unregisterListener(mockListener)
+        stopSensorSampling()
     }
 
     private fun safeRegisterListener(listener: SensorEventListener, sensor: Sensor, delay: Int) {
@@ -398,11 +397,11 @@ class SensorSettingsFragment : Fragment() {
     }
 
     private fun updateSensorSampling() {
-        sensorManager?.unregisterListener(realListener)
-        sensorManager?.unregisterListener(mockListener)
+        stopSensorSampling()
 
         val isRecording = viewModel.isRecording.value == true
-        val baseDelay = if (isSensorDetailsExpanded || isRecording) SensorManager.SENSOR_DELAY_GAME else SensorManager.SENSOR_DELAY_UI
+        val shouldSampleMotion = isSensorDetailsExpanded || isRecording
+        val baseDelay = if (isRecording) SensorManager.SENSOR_DELAY_GAME else SensorManager.SENSOR_DELAY_UI
         val stepDelay = SensorManager.SENSOR_DELAY_NORMAL
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q ||
             ContextCompat.checkSelfPermission(requireContext(), Manifest.permission.ACTIVITY_RECOGNITION) == PackageManager.PERMISSION_GRANTED
@@ -412,6 +411,7 @@ class SensorSettingsFragment : Fragment() {
                 safeRegisterListener(mockListener, it, stepDelay)
             }
         }
+        if (!shouldSampleMotion) return
         listOfNotNull(accelSensor, linearSensor, gyroSensor, gravitySensor).forEach {
             safeRegisterListener(realListener, it, baseDelay)
             safeRegisterListener(mockListener, it, baseDelay)
@@ -422,6 +422,11 @@ class SensorSettingsFragment : Fragment() {
                 safeRegisterListener(mockListener, it, baseDelay)
             }
         }
+    }
+
+    private fun stopSensorSampling() {
+        sensorManager?.unregisterListener(realListener)
+        sensorManager?.unregisterListener(mockListener)
     }
 
     private fun syncRemoteConfig(showSuccess: Boolean = false) {
@@ -444,6 +449,7 @@ class SensorSettingsFragment : Fragment() {
     override fun onDestroyView() {
         super.onDestroyView()
         autoImportJob?.cancel()
+        stopSensorSampling()
         dismissProgressDialog()
         _binding = null
     }

@@ -229,8 +229,8 @@ class RouteEditFragment : Fragment() {
         option.isOpenGps = true
         option.enableSimulateGps = false
         option.setIsNeedAddress(true) /* 关掉这个无法获取当前城市 */
-        option.setNeedDeviceDirect(true)
-        option.isLocationNotify = true
+        option.setNeedDeviceDirect(false)
+        option.isLocationNotify = false
         option.setIgnoreKillProcess(true)
         option.setIsNeedLocationDescribe(false)
         option.setIsNeedLocationPoiList(false)
@@ -239,7 +239,7 @@ class RouteEditFragment : Fragment() {
         option.locationMode = LocationClientOption.LocationMode.Hight_Accuracy
 
         option.setCoorType(Portal.DEFAULT_COORD_STR)
-        option.setScanSpan(1000)
+        option.setScanSpan(3000)
         mLocationClient.locOption = option
         mLocationClient.registerLocationListener(object : BDAbstractLocationListener() {
             override fun onReceiveLocation(loc: BDLocation?) {
@@ -513,5 +513,27 @@ class RouteEditFragment : Fragment() {
             mLocationClient.stop()
         }
         _binding = null
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (_binding != null) {
+            binding.bmapView.onResume()
+            binding.bmapView.map.isMyLocationEnabled = true
+        }
+        if (::mLocationClient.isInitialized && !mLocationClient.isStarted) {
+            mLocationClient.start()
+        }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        if (_binding != null) {
+            binding.bmapView.onPause()
+            binding.bmapView.map.isMyLocationEnabled = false
+        }
+        if (::mLocationClient.isInitialized && mLocationClient.isStarted) {
+            mLocationClient.stop()
+        }
     }
 }

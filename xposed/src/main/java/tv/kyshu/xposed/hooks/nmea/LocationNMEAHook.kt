@@ -35,12 +35,20 @@ import tv.kyshu.xposed.hooks.LocationServiceHook
 import java.util.concurrent.ConcurrentHashMap
 import java.util.Locale
 import java.lang.reflect.Modifier
+import android.os.SystemClock
 
 object LocationNMEAHook: BaseLocationHook() {
 
     // GSV 多句替换缓存按星座隔离，避免 GPS/Galileo/BeiDou 多句流互相串台。
     private data class GsvSequence(val sentences: List<String>, var nextIndex: Int)
+    private data class TimedGsvPayload(
+        val text: String,
+        val generatedAtMs: Long,
+        val lat: Double,
+        val lon: Double,
+    )
     private val gsvSequences = mutableMapOf<Int, GsvSequence>()
+    private val gsvPayloadCache = mutableMapOf<String, TimedGsvPayload>()
     private val gsvCacheLock = Any()
     private val diagnosticKeys = ConcurrentHashMap.newKeySet<String>()
     private val skippedNmeaCallbackIds = ConcurrentHashMap.newKeySet<Int>()
@@ -411,6 +419,23 @@ object LocationNMEAHook: BaseLocationHook() {
 
     private fun generateGSV(constellation: Int, talkerOverride: String? = null): String? {
         data class SatState(val prn: Int, val elevation: Float, val azimuth: Float, val cn0: Float)
+        val talker = talkerOverride ?: when (constellation) {
+            GnssFlags.CONSTELLATION_GPS -> "GP"
+            GnssFlags.CONSTELLATION_GLONASS -> "GL"
+            GnssFlags.CONSTELLATION_GALILEO -> "GA"
+            GnssFlags.CONSTELLATION_BEIDOU -> "GB"
+            GnssFlags.CONSTELLATION_QZSS -> "GQ"
+            else -> "GP"
+        }
+        val cacheKey = "$constellation:$talker"
+        val nowElapsed = SystemClock.elapsedRealtime()
+        gsvPayloadCache[cacheKey]?.let { cached ->
+            val samePlace = kotlin.math.abs(cached.lat - FakeLoc.latitude) < 0.00001 &&
+                kotlin.math.abs(cached.lon - FakeLoc.longitude) < 0.00001
+            if (samePlace && nowElapsed - cached.generatedAtMs < 1_000L) {
+                return cached.text
+            }
+        }
 
         val satellites = satelliteList.filter {
             it.constellation == constellation
@@ -451,15 +476,6 @@ object LocationNMEAHook: BaseLocationHook() {
         val sb = StringBuilder()
         val satsPerMsg = 4
         val totalMsgs = (effectiveSats.size + satsPerMsg - 1) / satsPerMsg
-
-        val talker = talkerOverride ?: when (constellation) {
-            GnssFlags.CONSTELLATION_GPS -> "GP"
-            GnssFlags.CONSTELLATION_GLONASS -> "GL"
-            GnssFlags.CONSTELLATION_GALILEO -> "GA"
-            GnssFlags.CONSTELLATION_BEIDOU -> "GB"
-            GnssFlags.CONSTELLATION_QZSS -> "GQ"
-            else -> "GP"
-        }
 
         for (i in 0 until totalMsgs) {
             val msgNum = i + 1
@@ -506,7 +522,14 @@ object LocationNMEAHook: BaseLocationHook() {
             }
         }
 
-        return sb.toString()
+        return sb.toString().also {
+            gsvPayloadCache[cacheKey] = TimedGsvPayload(
+                text = it,
+                generatedAtMs = nowElapsed,
+                lat = FakeLoc.latitude,
+                lon = FakeLoc.longitude,
+            )
+        }
     }
 
     private fun calculateChecksum(sentence: String): String {

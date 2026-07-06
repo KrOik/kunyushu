@@ -62,6 +62,9 @@ class SatelliteRadarView(context: Context, attributeSet: AttributeSet): View(con
 
     // 是否使用设备朝向
     private var useDeviceOrientation: Boolean = false
+    private var isAttached = false
+    private var sensorsRegistered = false
+    private var lastOrientationInvalidateAt = 0L
 
     init {
         initSensors(context)
@@ -88,29 +91,35 @@ class SatelliteRadarView(context: Context, attributeSet: AttributeSet): View(con
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
-        registerSensors()
+        isAttached = true
+        if (useDeviceOrientation) registerSensors()
     }
 
     override fun onDetachedFromWindow() {
         super.onDetachedFromWindow()
+        isAttached = false
         unregisterSensors()
     }
 
     private fun registerSensors() {
+        if (sensorsRegistered) return
         if (rotationSensor != null) {
-            sensorManager?.registerListener(this, rotationSensor, SensorManager.SENSOR_DELAY_UI)
+            sensorsRegistered = sensorManager?.registerListener(this, rotationSensor, SensorManager.SENSOR_DELAY_UI) == true
         } else {
+            var registered = false
             if (accelerometerSensor != null) {
-                sensorManager?.registerListener(this, accelerometerSensor, SensorManager.SENSOR_DELAY_UI)
+                registered = sensorManager?.registerListener(this, accelerometerSensor, SensorManager.SENSOR_DELAY_UI) == true || registered
             }
             if (magneticSensor != null) {
-                sensorManager?.registerListener(this, magneticSensor, SensorManager.SENSOR_DELAY_UI)
+                registered = sensorManager?.registerListener(this, magneticSensor, SensorManager.SENSOR_DELAY_UI) == true || registered
             }
+            sensorsRegistered = registered
         }
     }
 
     private fun unregisterSensors() {
         sensorManager?.unregisterListener(this)
+        sensorsRegistered = false
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
@@ -217,7 +226,13 @@ class SatelliteRadarView(context: Context, attributeSet: AttributeSet): View(con
 
     // 设置是否使用设备朝向
     fun setUseDeviceOrientation(use: Boolean) {
+        if (this.useDeviceOrientation == use) return
         this.useDeviceOrientation = use
+        if (use && isAttached) {
+            registerSensors()
+        } else {
+            unregisterSensors()
+        }
         invalidate()
     }
 
@@ -259,7 +274,7 @@ class SatelliteRadarView(context: Context, attributeSet: AttributeSet): View(con
             }
 
             // 更新当前方位角
-            if (Math.abs(azimuthInDegrees - currentAzimuth) > 1) {
+            if (shouldUpdateOrientation(azimuthInDegrees)) {
                 currentAzimuth = azimuthInDegrees
                 invalidate()
             }
@@ -286,12 +301,20 @@ class SatelliteRadarView(context: Context, attributeSet: AttributeSet): View(con
                 }
 
                 // 更新当前方位角（添加一定阈值避免频繁刷新）
-                if (abs(azimuthInDegrees - currentAzimuth) > 1) {
+                if (shouldUpdateOrientation(azimuthInDegrees)) {
                     currentAzimuth = azimuthInDegrees
                     invalidate()
                 }
             }
         }
+    }
+
+    private fun shouldUpdateOrientation(nextAzimuth: Float): Boolean {
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now - lastOrientationInvalidateAt < 250L) return false
+        if (abs(nextAzimuth - currentAzimuth) <= 3f) return false
+        lastOrientationInvalidateAt = now
+        return true
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {

@@ -10,8 +10,11 @@ import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.viewModelScope
 import com.alibaba.fastjson2.JSON
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import tv.kyshu.ext.dozeSensorIntervalMs
 import tv.kyshu.ext.enableShakeMock
 import tv.kyshu.ext.enableStepCountMock
@@ -92,6 +95,8 @@ class SensorViewModel(application: Application) : AndroidViewModel(application) 
     private val recordedGravity = ArrayList<GaitAnalyzer.SensorSample>()
     private val lastRealUiUpdates = HashMap<Int, Long>()
     private val lastMockUiUpdates = HashMap<Int, Long>()
+    private var recordingJob: Job? = null
+    private var analysisJob: Job? = null
 
     private fun initialGaitImportPath(): String {
         val saved = context.gaitImportPath
@@ -165,10 +170,11 @@ class SensorViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun startRecordingProcess() {
-        if (_isRecording.value == true) return
+        if (_isRecording.value == true || recordingJob?.isActive == true || analysisJob?.isActive == true) return
         val seconds = _recordSeconds.value ?: 10
-        viewModelScope.launch {
+        recordingJob = viewModelScope.launch {
             for (remaining in 3 downTo 1) {
+                ensureActive()
                 _recordingMessage.value = "请将手机放入口袋，${remaining}秒后开始..."
                 delay(1000L)
             }
@@ -188,6 +194,7 @@ class SensorViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun importAndAnalyzeGaitFromPath(path: String) {
+        if (_isRecording.value == true) return
         val resolved = GaitCaptureStore.resolveImportDirectory(path, context.packageName)
         val dir = resolved.directory
         if (dir == null) {
@@ -195,7 +202,8 @@ class SensorViewModel(application: Application) : AndroidViewModel(application) 
             return
         }
         setGaitImportPath(dir.absolutePath)
-        viewModelScope.launch(Dispatchers.IO) {
+        analysisJob?.cancel()
+        analysisJob = viewModelScope.launch(Dispatchers.Default) {
             _isAnalyzing.postValue(true)
             _recordingMessage.postValue("正在导入并拟合步态数据...")
             try {
@@ -207,7 +215,8 @@ class SensorViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     private fun analyzeAndSaveRecorded() {
-        viewModelScope.launch(Dispatchers.IO) {
+        analysisJob?.cancel()
+        analysisJob = viewModelScope.launch(Dispatchers.Default) {
             _isAnalyzing.postValue(true)
             val accel = synchronized(this@SensorViewModel) { recordedAccel.toList() }
             val linear = synchronized(this@SensorViewModel) { recordedLinear.toList() }
@@ -221,11 +230,13 @@ class SensorViewModel(application: Application) : AndroidViewModel(application) 
 
                 val timeText = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
                 val dir = File(context.getExternalFilesDir(null), "captures/$timeText")
-                if (!dir.exists()) dir.mkdirs()
-                GaitCaptureStore.saveCsv(File(dir, "accel.csv"), accel)
-                GaitCaptureStore.saveCsv(File(dir, "linear.csv"), linear)
-                GaitCaptureStore.saveCsv(File(dir, "gyro.csv"), gyro)
-                GaitCaptureStore.saveCsv(File(dir, "gravity.csv"), gravity)
+                withContext(Dispatchers.IO) {
+                    if (!dir.exists()) dir.mkdirs()
+                    GaitCaptureStore.saveCsv(File(dir, "accel.csv"), accel)
+                    GaitCaptureStore.saveCsv(File(dir, "linear.csv"), linear)
+                    GaitCaptureStore.saveCsv(File(dir, "gyro.csv"), gyro)
+                    GaitCaptureStore.saveCsv(File(dir, "gravity.csv"), gravity)
+                }
                 setGaitImportPath(dir.absolutePath)
                 MediaScannerConnection.scanFile(
                     context,
@@ -240,10 +251,22 @@ class SensorViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    private fun analyzeDirectory(dir: File) {
-        val linearResult = GaitCaptureStore.readCsvSamples(File(dir, "linear.csv"))
-        val gyroResult = GaitCaptureStore.readCsvSamples(File(dir, "gyro.csv"))
-        val gravityResult = GaitCaptureStore.readCsvSamples(File(dir, "gravity.csv"))
+    private suspend fun analyzeDirectory(dir: File) {
+        val linearFile = File(dir, "linear.csv")
+        val gyroFile = File(dir, "gyro.csv")
+        val gravityFile = File(dir, "gravity.csv")
+        val (linearResult, gyroResult, gravityResult) = try {
+            withContext(Dispatchers.IO) {
+                Triple(
+                    GaitCaptureStore.readCsvSamples(linearFile),
+                    GaitCaptureStore.readCsvSamples(gyroFile),
+                    GaitCaptureStore.readCsvSamples(gravityFile),
+                )
+            }
+        } catch (e: Exception) {
+            _analysisResult.postValue(GaitAnalysisResult(0f, "", dir.absolutePath, error = "读取失败: ${e.message}"))
+            return
+        }
         val parseWarnings = buildList {
             if (linearResult.linesSkipped > 0) add("linear.csv: ${linearResult.linesSkipped}/${linearResult.linesTotal} 行解析失败")
             if (gyroResult.linesSkipped > 0) add("gyro.csv: ${gyroResult.linesSkipped}/${gyroResult.linesTotal} 行解析失败")

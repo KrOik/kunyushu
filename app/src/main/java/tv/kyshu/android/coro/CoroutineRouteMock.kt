@@ -4,7 +4,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.withTimeoutOrNull
 
 class CoroutineRouteMock {
-    private val routeMockChannel = Channel<RouteMockCommand>(Channel.UNLIMITED)
+    private val routeMockChannel = Channel<RouteMockCommand>(Channel.CONFLATED)
     var isPaused = false
 
     suspend fun routeMockCoroutine() {

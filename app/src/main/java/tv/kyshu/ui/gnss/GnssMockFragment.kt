@@ -38,6 +38,8 @@ class GnssMockFragment : Fragment() {
     private val binding get() = _binding!!
     private lateinit var locationManager: LocationManager
     private var gnssStatusCallback: GnssStatus.Callback? = null
+    private var isGnssCallbackRegistered = false
+    private var lastGnssUiUpdateAt = 0L
 
     private val requestMultiplePermissionsLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -45,7 +47,7 @@ class GnssMockFragment : Fragment() {
         val allGranted = permissions.entries.all { it.value }
         if (allGranted) {
             Toast.makeText(requireContext(), "所有权限都已授予", Toast.LENGTH_SHORT).show()
-            setupGnssStatusCallback()
+            registerGnssStatusCallback()
         } else {
             val deniedPermissions = permissions.filter { !it.value }.keys.joinToString()
             Toast.makeText(requireContext(), "以下权限被拒绝: $deniedPermissions", Toast.LENGTH_SHORT).show()
@@ -70,7 +72,7 @@ class GnssMockFragment : Fragment() {
             ContextCompat.checkSelfPermission(requireContext(), it) != PackageManager.PERMISSION_GRANTED
         }.toTypedArray()
         if (permissionsNeeded.isEmpty()) {
-            setupGnssStatusCallback()
+            registerGnssStatusCallback()
         } else {
             requestMultiplePermissionsLauncher.launch(permissionsNeeded)
         }
@@ -142,10 +144,14 @@ class GnssMockFragment : Fragment() {
     }
 
     @SuppressLint("SetTextI18n")
-    private fun setupGnssStatusCallback() {
+    private fun ensureGnssStatusCallback() {
+        if (gnssStatusCallback != null) return
         gnssStatusCallback = object: GnssStatus.Callback() {
             override fun onSatelliteStatusChanged(status: GnssStatus) {
                 if (_binding == null) return
+                val now = android.os.SystemClock.elapsedRealtime()
+                if (now - lastGnssUiUpdateAt < 1_000L) return
+                lastGnssUiUpdateAt = now
 
                 val satelliteCount = status.satelliteCount
                 var inViewSatelliteCount = 0
@@ -186,7 +192,7 @@ class GnssMockFragment : Fragment() {
                     }
                 }
 
-                val avgSignalStrength = signalStrength.average().toFloat()
+                val avgSignalStrength = signalStrength.takeIf { it.isNotEmpty() }?.average()?.toFloat() ?: 0f
                 binding.signalStrengthRightItem.text = "${avgSignalStrength.toString().take(5)} dB-Hz"
                 binding.inViewRightItem.text = "$inViewSatelliteCount"
                 binding.inUseRightItem.text = "$inUseSatelliteCount"
@@ -196,7 +202,11 @@ class GnssMockFragment : Fragment() {
                 binding.satelliteRadaView.setSatellites(satellites)
             }
         }
+    }
 
+    private fun registerGnssStatusCallback() {
+        if (_binding == null || isGnssCallbackRegistered) return
+        ensureGnssStatusCallback()
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 locationManager.registerGnssStatusCallback(requireContext().mainExecutor, gnssStatusCallback ?: return)
@@ -204,18 +214,37 @@ class GnssMockFragment : Fragment() {
                 @Suppress("DEPRECATION")
                 locationManager.registerGnssStatusCallback(gnssStatusCallback ?: return, null)
             }
+            isGnssCallbackRegistered = true
         } catch (e: SecurityException) {
             Log.e("GnssMockFragment", "registerGnssStatusCallback failed", e)
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        if (::locationManager.isInitialized &&
+            ContextCompat.checkSelfPermission(requireContext(), Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        ) {
+            registerGnssStatusCallback()
+        }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        unregisterGnssStatusCallback()
+    }
+
+    private fun unregisterGnssStatusCallback() {
+        val cb = gnssStatusCallback ?: return
+        if (::locationManager.isInitialized && isGnssCallbackRegistered) {
+            runCatching { locationManager.unregisterGnssStatusCallback(cb) }
+            isGnssCallbackRegistered = false
+        }
+    }
+
     override fun onDestroyView() {
         super.onDestroyView()
-        gnssStatusCallback?.let { cb ->
-            if (::locationManager.isInitialized) {
-                locationManager.unregisterGnssStatusCallback(cb)
-            }
-        }
+        unregisterGnssStatusCallback()
         _binding = null
     }
 }

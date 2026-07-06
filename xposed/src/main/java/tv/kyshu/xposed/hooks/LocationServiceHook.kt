@@ -1428,6 +1428,9 @@ internal object LocationServiceHook: BaseLocationHook() {
             return false
         }
         val binder = listener.asBinder()
+        if (locationListeners.any { it.second.asBinder() == binder }) {
+            return false
+        }
         val mDeathRecipient = object: IBinder.DeathRecipient {
             override fun binderDied() { binderDied(binder) }
             override fun binderDied(who: IBinder) {
@@ -1505,7 +1508,7 @@ internal object LocationServiceHook: BaseLocationHook() {
         }
         // 位置更新时同步结算卫星星图位置
         if (FakeLoc.enableMockGnss) {
-            forceUpdateSatelliteStates()
+            updateSatelliteStates(1f)
         }
         Logger.debugRL("callOnLocationChanged_end", "==> callOnLocationChanged: end")
     }
