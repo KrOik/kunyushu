@@ -12,9 +12,15 @@ import com.alibaba.fastjson2.JSON
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import tv.kyshu.ext.dozeSensorIntervalMs
+import tv.kyshu.ext.enableShakeMock
+import tv.kyshu.ext.enableStepCountMock
 import tv.kyshu.ext.gaitImportPath
 import tv.kyshu.ext.gaitParamsJson
 import tv.kyshu.ext.gaitRecordSeconds
+import tv.kyshu.ext.hookSensor
+import tv.kyshu.ext.keepWalkingWaveform
+import tv.kyshu.ext.stepCount
 import tv.kyshu.utils.GaitAnalyzer
 import tv.kyshu.utils.GaitCaptureStore
 import java.io.File
@@ -30,8 +36,37 @@ data class GaitAnalysisResult(
     val error: String? = null,
 )
 
+data class SensorUiData(
+    val type: Int,
+    val x: Float,
+    val y: Float,
+    val z: Float,
+    val stepCount: Long = 0L,
+)
+
 class SensorViewModel(application: Application) : AndroidViewModel(application) {
     private val context: Context get() = getApplication()
+
+    private val _realSensorData = MutableLiveData<SensorUiData>()
+    val realSensorData: LiveData<SensorUiData> = _realSensorData
+
+    private val _mockSensorData = MutableLiveData<SensorUiData>()
+    val mockSensorData: LiveData<SensorUiData> = _mockSensorData
+
+    private val _stepCountMockEnabled = MutableLiveData(context.enableStepCountMock)
+    val stepCountMockEnabled: LiveData<Boolean> = _stepCountMockEnabled
+
+    private val _shakeMockEnabled = MutableLiveData(context.enableShakeMock)
+    val shakeMockEnabled: LiveData<Boolean> = _shakeMockEnabled
+
+    private val _keepWalkingWaveformEnabled = MutableLiveData(context.keepWalkingWaveform)
+    val keepWalkingWaveformEnabled: LiveData<Boolean> = _keepWalkingWaveformEnabled
+
+    private val _currentStepCount = MutableLiveData(context.stepCount)
+    val currentStepCount: LiveData<Int> = _currentStepCount
+
+    private val _dozeSensorIntervalMs = MutableLiveData(context.dozeSensorIntervalMs.toInt())
+    val dozeSensorIntervalMs: LiveData<Int> = _dozeSensorIntervalMs
 
     private val _recordSeconds = MutableLiveData(context.gaitRecordSeconds)
     val recordSeconds: LiveData<Int> = _recordSeconds
@@ -52,11 +87,42 @@ class SensorViewModel(application: Application) : AndroidViewModel(application) 
     private val recordedLinear = ArrayList<GaitAnalyzer.SensorSample>()
     private val recordedGyro = ArrayList<GaitAnalyzer.SensorSample>()
     private val recordedGravity = ArrayList<GaitAnalyzer.SensorSample>()
+    private val lastRealUiUpdates = HashMap<Int, Long>()
+    private val lastMockUiUpdates = HashMap<Int, Long>()
+
+    fun setStepCountMock(enabled: Boolean) {
+        context.enableStepCountMock = enabled
+        if (enabled) context.hookSensor = true
+        _stepCountMockEnabled.value = enabled
+    }
+
+    fun setShakeMock(enabled: Boolean) {
+        context.enableShakeMock = enabled
+        if (enabled) context.hookSensor = true
+        _shakeMockEnabled.value = enabled
+    }
+
+    fun setKeepWalkingWaveform(enabled: Boolean) {
+        context.keepWalkingWaveform = enabled
+        _keepWalkingWaveformEnabled.value = enabled
+    }
+
+    fun setStepCount(count: Int) {
+        if (count !in 0..100_000) return
+        context.stepCount = count
+        _currentStepCount.value = count
+    }
 
     fun setRecordSeconds(seconds: Int) {
         if (seconds !in 3..120) return
         context.gaitRecordSeconds = seconds
         _recordSeconds.value = seconds
+    }
+
+    fun setDozeSensorIntervalMs(value: Int) {
+        if (value !in 40..2000) return
+        context.dozeSensorIntervalMs = value.toLong()
+        _dozeSensorIntervalMs.value = value
     }
 
     fun setGaitImportPath(path: String) {
@@ -65,16 +131,22 @@ class SensorViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun onRealSensorChanged(type: Int, values: FloatArray, timestamp: Long) {
-        if (_isRecording.value != true || values.size < 3) return
-        val sample = GaitAnalyzer.SensorSample(timestamp, values[0], values[1], values[2])
-        synchronized(this) {
-            when (type) {
-                Sensor.TYPE_ACCELEROMETER -> recordedAccel.add(sample)
-                Sensor.TYPE_LINEAR_ACCELERATION -> recordedLinear.add(sample)
-                Sensor.TYPE_GYROSCOPE -> recordedGyro.add(sample)
-                Sensor.TYPE_GRAVITY -> recordedGravity.add(sample)
+        if (values.size >= 3 && _isRecording.value == true) {
+            val sample = GaitAnalyzer.SensorSample(timestamp, values[0], values[1], values[2])
+            synchronized(this) {
+                when (type) {
+                    Sensor.TYPE_ACCELEROMETER -> recordedAccel.add(sample)
+                    Sensor.TYPE_LINEAR_ACCELERATION -> recordedLinear.add(sample)
+                    Sensor.TYPE_GYROSCOPE -> recordedGyro.add(sample)
+                    Sensor.TYPE_GRAVITY -> recordedGravity.add(sample)
+                }
             }
         }
+        postThrottledSensorData(_realSensorData, lastRealUiUpdates, type, values)
+    }
+
+    fun onMockSensorChanged(type: Int, values: FloatArray) {
+        postThrottledSensorData(_mockSensorData, lastMockUiUpdates, type, values)
     }
 
     fun startRecordingProcess() {
@@ -187,5 +259,28 @@ class SensorViewModel(application: Application) : AndroidViewModel(application) 
         } catch (e: Exception) {
             _analysisResult.postValue(GaitAnalysisResult(0f, "", exportPath, error = "分析失败: ${e.message}"))
         }
+    }
+
+    private fun postThrottledSensorData(
+        liveData: MutableLiveData<SensorUiData>,
+        lastUpdates: MutableMap<Int, Long>,
+        type: Int,
+        values: FloatArray,
+    ) {
+        val now = System.currentTimeMillis()
+        val lastUpdate = lastUpdates[type] ?: 0L
+        if (now - lastUpdate < 80L) return
+        lastUpdates[type] = now
+        val data = if (type == Sensor.TYPE_STEP_COUNTER) {
+            SensorUiData(type, 0f, 0f, 0f, values.getOrElse(0) { 0f }.toLong())
+        } else {
+            SensorUiData(
+                type = type,
+                x = values.getOrElse(0) { 0f },
+                y = values.getOrElse(1) { 0f },
+                z = values.getOrElse(2) { 0f },
+            )
+        }
+        liveData.postValue(data)
     }
 }
