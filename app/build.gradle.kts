@@ -266,9 +266,9 @@ fun getVersionName(): String {
             isIgnoreExitValue = true
         }
         val date = dateOut.toString().trim()
-        if (date.isNotBlank()) return "1.0.7-$hash-$date"
+        if (date.isNotBlank()) return "1.0.8-$hash-$date"
     } catch (_: Exception) { }
-    return "1.0.7-$hash"
+    return "1.0.8-$hash"
 }
 
 fun getBaiduMapKey(): String {

@@ -6,6 +6,8 @@ import android.content.pm.PackageManager
 import android.hardware.Sensor
 import android.hardware.SensorEventListener
 import android.hardware.SensorEvent
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import android.util.ArrayMap
 import android.util.SparseArray
@@ -56,6 +58,16 @@ object SystemSensorManagerHook {
 
     // listener -> 该 listener 注册的所有 Sensor（支持多传感器注册）
     private val listenerMap = ConcurrentHashMap<SensorEventListener, CopyOnWriteArrayList<Sensor>>()
+    private val listenerDeliveryHandlers = ConcurrentHashMap<SensorEventListener, Handler>()
+    private val mainSensorDeliveryHandler: Handler? by lazy(LazyThreadSafetyMode.PUBLICATION) {
+        runCatching { Handler(Looper.getMainLooper()) }
+            .onFailure {
+                logOnce("stepPusher.mainHandler.failed.${it.javaClass.simpleName}") {
+                    "[SensorHook][StepPusher][Shape] main handler unavailable: ${it.javaClass.simpleName}:${it.message ?: ""}"
+                }
+            }
+            .getOrNull()
+    }
     // sensor handle -> sensor type 缓存（dispatchSensorEvent 用 handle 定位类型）
     private val sensorHandleMap = ConcurrentHashMap<Int, Int>()
     // sensor handle -> 上次 hook 时间（节流用）
@@ -561,8 +573,7 @@ object SystemSensorManagerHook {
         } else if (type == Sensor.TYPE_STEP_COUNTER) {
             if (FakeLoc.sensorData.enableStepCountMock) {
                 // 用自增计数器覆盖，避免真实步数泄漏
-                val valueToUse = if (mCurrentStepCount > 0) mCurrentStepCount else values[0].toLong()
-                values[0] = valueToUse.toFloat()
+                replaceStepCounterValue(values)
                 logOnce("dispatch.stepCounter", "[SensorHook] passive step counter replaced: current=$mCurrentStepCount goal=$mStepGoalEnd")
             }
         } else if (type == Sensor.TYPE_STEP_DETECTOR) {
@@ -729,6 +740,13 @@ object SystemSensorManagerHook {
                 }
                 return@beforeHook
             }
+            (args.getOrNull(3) as? Handler)?.let { handler ->
+                listenerDeliveryHandlers[listener] = handler
+                logOnce("register.handler.${listener.javaClass.name}.${handler.looper.thread.name}") {
+                    "[SensorHook][Register] delivery handler captured: listener=${listener.javaClass.name}, " +
+                        "thread=${handler.looper.thread.name}"
+                }
+            }
             logOnce("register.${listener.javaClass.name}.${sensor.type}") {
                 "[SensorHook][Register] registerListenerImpl hit: listener=${listener.javaClass.name}, " +
                     "sensor=${sensorSummary(sensor)}, delay=${args.getOrNull(2)}, handler=${objectSummary(args.getOrNull(3))}, " +
@@ -793,8 +811,7 @@ object SystemSensorManagerHook {
                     }
                 } else if (sensorType == Sensor.TYPE_STEP_COUNTER) {
                     if (FakeLoc.sensorData.enableStepCountMock) {
-                        val valueToUse = if (mCurrentStepCount > 0) mCurrentStepCount else event.values[0].toLong()
-                        event.values[0] = valueToUse.toFloat()
+                        replaceStepCounterValue(event.values)
                         logOnce("listener.stepCounter", "[SensorHook] listener step counter replaced: current=$mCurrentStepCount goal=$mStepGoalEnd")
                     }
                 }
@@ -824,6 +841,7 @@ object SystemSensorManagerHook {
             val sensor = if (args.size > 1) args[1] as? Sensor else null
             if (sensor == null) {
                 listenerMap.remove(listener)
+                listenerDeliveryHandlers.remove(listener)
                 logOnce("unregister.all.${listener.javaClass.name}") {
                     "[SensorHook][StepPusher] unregisterListenerImpl removed listener=${listener.javaClass.name}; " +
                         listenerMapSummary()
@@ -832,6 +850,7 @@ object SystemSensorManagerHook {
                 listenerMap[listener]?.removeIf { it.type == sensor.type }
                 if (listenerMap[listener]?.isEmpty() == true) {
                     listenerMap.remove(listener)
+                    listenerDeliveryHandlers.remove(listener)
                 }
                 logOnce("unregister.${listener.javaClass.name}.${sensor.type}") {
                     "[SensorHook][StepPusher] unregisterListenerImpl removed sensor=${sensorSummary(sensor)} " +
@@ -1264,6 +1283,12 @@ object SystemSensorManagerHook {
 
     fun getCurrentStepCount(): Long = mCurrentStepCount
 
+    private fun replaceStepCounterValue(values: FloatArray) {
+        if (values.isNotEmpty()) {
+            values[0] = mCurrentStepCount.coerceAtLeast(0L).toFloat()
+        }
+    }
+
     // ==================== 步数主动事件推送 ====================
 
     /**
@@ -1349,18 +1374,14 @@ object SystemSensorManagerHook {
                                 } ?: continue
                                 val event = createSensorEvent(sensor, values)
                                 if (event != null) {
-                                    try {
-                                        listener.onSensorChanged(event)
+                                    if (deliverSensorEvent(listener, event)) {
                                         delivered++
-                                    } catch (t: Throwable) {
-                                        listenerMap.remove(listener)
+                                    } else {
                                         consecutiveErrors += 1
-                                        Logger.warn("[SensorHook][StepPusher] active StepEventPusher listener failed and was removed: ${listener.javaClass.name}", t)
-                                        DomainGuard.reportCrash(DomainGuard.Domain.SENSOR, t)
                                         if (consecutiveErrors >= STEP_PUSH_ERROR_LIMIT) {
                                             DomainGuard.disableDomain(
                                                 DomainGuard.Domain.SENSOR,
-                                                "StepEventPusher listener failures >= $STEP_PUSH_ERROR_LIMIT",
+                                                "StepEventPusher delivery failures >= $STEP_PUSH_ERROR_LIMIT",
                                             )
                                             break
                                         }
@@ -1463,6 +1484,69 @@ object SystemSensorManagerHook {
                 "[SensorHook][StepPusher][Shape] createSensorEvent failed: ${it.javaClass.simpleName}:${it.message ?: ""}, sensor=${sensorSummary(sensor)}"
             }
         }.getOrNull()
+    }
+
+    private fun deliverSensorEvent(listener: SensorEventListener, event: SensorEvent): Boolean {
+        val handler = listenerDeliveryHandlers[listener] ?: mainDeliveryHandler()
+        if (handler == null) {
+            return invokeSensorListener(listener, event)
+        }
+        return runCatching {
+            handler.post {
+                invokeSensorListener(listener, event)
+            }
+        }.getOrElse {
+            Logger.warn("[SensorHook][StepPusher] active StepEventPusher failed to post listener event: ${listener.javaClass.name}", it)
+            false
+        }
+    }
+
+    private fun mainDeliveryHandler(): Handler? {
+        return mainSensorDeliveryHandler
+    }
+
+    private fun invokeSensorListener(listener: SensorEventListener, event: SensorEvent): Boolean {
+        return runCatching {
+            listener.onSensorChanged(event)
+            true
+        }.getOrElse {
+            listenerMap.remove(listener)
+            listenerDeliveryHandlers.remove(listener)
+            Logger.warn("[SensorHook][StepPusher] active StepEventPusher listener failed and was removed: ${listener.javaClass.name}", it)
+            DomainGuard.reportCrash(DomainGuard.Domain.SENSOR, it)
+            false
+        }
+    }
+
+    internal fun rememberDeliveryHandlerForTest(listener: SensorEventListener, handler: Handler?) {
+        if (handler == null) {
+            listenerDeliveryHandlers.remove(listener)
+        } else {
+            listenerDeliveryHandlers[listener] = handler
+        }
+    }
+
+    internal fun clearDeliveryHandlersForTest() {
+        listenerDeliveryHandlers.clear()
+    }
+
+    internal fun deliverSensorEventForTest(listener: SensorEventListener, event: SensorEvent): Boolean {
+        return deliverSensorEvent(listener, event)
+    }
+
+    internal fun resetStepCounterForTest(current: Long = 0L, goal: Long = current) {
+        mCurrentStepCount = current.coerceAtLeast(0L)
+        mStepGoalEnd = goal.coerceAtLeast(mCurrentStepCount)
+        mLastConfiguredStepCount = -1
+        mWasStepMockEnabled = false
+        stepAdvanceCarryMs = 0.0
+        lastStepAdvanceMs = 0L
+    }
+
+    internal fun replaceStepCounterValueForTest(realValue: Float): Float {
+        val values = floatArrayOf(realValue)
+        replaceStepCounterValue(values)
+        return values[0]
     }
 
     // ==================== Geo Sensor 解锁 ====================
