@@ -21,6 +21,8 @@ import tv.kyshu.ext.speed
 import tv.kyshu.service.MockServiceHelper
 import tv.kyshu.ui.mock.HistoricalLocation
 import tv.kyshu.ui.mock.HistoricalRoute
+import tv.kyshu.ui.mock.RouteFinishPolicy
+import tv.kyshu.ui.mock.RouteSmoother
 import tv.kyshu.ui.mock.Rocker
 import tv.kyshu.xposed.utils.FakeLoc
 import tv.kyshu.xposed.utils.Log as XLog
