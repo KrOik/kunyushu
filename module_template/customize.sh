@@ -7,7 +7,6 @@ SKIPUNZIP=0
 
 STATE_DIR="/data/adb/kyshu"
 PENDING_DIR="$STATE_DIR/pending_apk"
-APK_PATH="$MODDIR/portal.apk"
 
 ui_print() { echo "$1"; }
 
@@ -16,8 +15,32 @@ abort() {
     exit 1
 }
 
-# ---------- extract embedded APK ----------
-if [ ! -f "$APK_PATH" ]; then
+# ---------- locate the module directory (ksud sets MODDIR; be defensive) ----------
+if [ -z "$MODDIR" ] || [ ! -d "$MODDIR" ]; then
+    SCRIPT_PATH="$0"
+    case "$SCRIPT_PATH" in
+        */*) MODDIR="${SCRIPT_PATH%/*}" ;;
+        *)   MODDIR="$(pwd)" ;;
+    esac
+fi
+
+# ---------- extract embedded APK (search fallbacks: ksud may run us early) ----------
+APK_PATH=""
+for CAND in "$MODDIR/portal.apk" "$(pwd)/portal.apk" "/data/adb/modules_update/portal_ksu/portal.apk"; do
+    if [ -f "$CAND" ]; then
+        APK_PATH="$CAND"
+        break
+    fi
+done
+if [ -z "$APK_PATH" ]; then
+    # Last resort: unzip from the original zip passed by the installer (env KSU_ZIP)
+    if [ -n "$ZIPFILE" ] && [ -f "$ZIPFILE" ]; then
+        mkdir -p "$MODDIR"
+        unzip -o "$ZIPFILE" portal.apk -d "$MODDIR" >/dev/null 2>&1
+        [ -f "$MODDIR/portal.apk" ] && APK_PATH="$MODDIR/portal.apk"
+    fi
+fi
+if [ -z "$APK_PATH" ]; then
     abort "portal.apk missing from module zip"
 fi
 
