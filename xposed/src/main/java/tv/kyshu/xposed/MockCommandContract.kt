@@ -381,7 +381,7 @@ object MockCommandContract {
      */
     fun applyUidTargets(rely: Bundle): Int {
         if (rely.containsKey(Keys.UID_TARGETS_CLEAR) &&
-            Extract.booleanOrNull(rely, Keys.UID_TARGETS_CLEAR) == true
+            Extract.boolean(rely, Keys.UID_TARGETS_CLEAR)
         ) {
             UidPolicy.clearTargets()
             return 0
