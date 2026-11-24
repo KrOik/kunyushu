@@ -5,7 +5,7 @@ import android.content.Context
 import android.os.Build
 import android.os.Process
 import android.provider.Settings
-import android.util.Log
+import tv.kyshu.xposed.utils.Log as XLog
 
 object OverlayUtils {
     fun hasOverlayPermissions(context: Context): Boolean {
@@ -23,7 +23,7 @@ object OverlayUtils {
                 return Settings.canDrawOverlays(context)
             }
         }.onFailure {
-            Log.e("OverlayUtils", "hasOverlayPermissions: ", it)
+            XLog.e("OverlayUtils", "hasOverlayPermissions", it)
         }
         return false
     }

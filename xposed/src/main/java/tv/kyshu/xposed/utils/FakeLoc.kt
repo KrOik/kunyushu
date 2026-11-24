@@ -18,6 +18,9 @@ package tv.kyshu.xposed.utils
 import android.content.ContentValues
 import android.content.Context
 import android.location.Location
+import tv.kyshu.xposed.BuildConfig
+import tv.kyshu.xposed.config.BleDeviceProfile
+import tv.kyshu.xposed.config.CellTowerProfile
 import tv.kyshu.xposed.config.GaitData
 import tv.kyshu.xposed.config.LocationData
 import tv.kyshu.xposed.config.MockState
@@ -432,6 +435,9 @@ object FakeLoc {
     @Volatile
     var needDowngradeToCdma = true
 
+    @Volatile
+    var cellTowers: List<CellTowerProfile> = emptyList()
+
     /**
      * 反定位复原加强（启用后将导致部分应用在关闭Portal后需要重新启动才能重新获取定位）
      */
@@ -440,6 +446,12 @@ object FakeLoc {
 
     @Volatile
     var isSystemServerProcess = false
+
+    @Volatile
+    var enableBleMock = false
+
+    @Volatile
+    var bleDevices: List<BleDeviceProfile> = emptyList()
 
     // 速度相关辅助参数
     @Volatile
@@ -504,7 +516,14 @@ object FakeLoc {
         locationData.updateFromMap(map)
         mockState.updateFromMap(map)
         sensorData.updateFromMap(map)
-        wifiData.updateFromMap(map)
+        if (BuildConfig.ENABLE_WIFI_MOCK) {
+            wifiData.updateFromMap(map)
+        } else {
+            wifiData.enableMockWifi = false
+            wifiData.disableWifiScan = false
+            wifiData.hookWifi = false
+            wifiData.mockWifiList = emptyList()
+        }
         gaitData.updateFromMap(map)
 
         // 2) 保留字段（未迁移到子对象）
@@ -530,16 +549,21 @@ object FakeLoc {
         hideBaseStation = map.getAnyVal(hideBaseStation, "hideBaseStation", "hide_base_station")
 
         // 3) Mock WiFi 列表（需 parse，由本层处理）
-        when {
-            map.containsKey("mockWifiList") -> wifiData.mockWifiList = parseMockWifiList(map["mockWifiList"])
-            map.containsKey("mock_wifi_list") -> wifiData.mockWifiList = parseMockWifiList(map["mock_wifi_list"])
+        if (BuildConfig.ENABLE_WIFI_MOCK) {
+            when {
+                map.containsKey("mockWifiList") -> wifiData.mockWifiList = parseMockWifiList(map["mockWifiList"])
+                map.containsKey("mock_wifi_list") -> wifiData.mockWifiList = parseMockWifiList(map["mock_wifi_list"])
+            }
         }
 
         // 4) 交叉后处理
-        wifiData.normalizeMockWifi()
+        if (BuildConfig.ENABLE_WIFI_MOCK) {
+            wifiData.normalizeMockWifi()
+        }
 
-        Logger.info("[FakeLoc] config applied: enable=$enable, mockGnss=$enableMockGnss, NMEA=$enableNMEA, mockWifi=$enableMockWifi, hookSensor=$hookSensor, stepMock=$enableStepCountMock, motionMock=${sensorData.enableMotionMock}, shakeMock=$enableShakeMock, keepWalking=$keepWalkingWaveform, rinex=${rinexPath ?: ""}")
-        MockAuditTrail.config("FakeLoc", "reload: enable=$enable gnss=$enableMockGnss nmea=$enableNMEA wifi=$enableMockWifi sensor=$hookSensor step=$enableStepCountMock motion=${sensorData.enableMotionMock} shake=$enableShakeMock forceDisable=$forceDisable")
+        val versionSummary = PortalIdentity.runtimeVersionSummary(getContext())
+        Logger.info("[FakeLoc] config applied: $versionSummary, enable=$enable, mockGnss=$enableMockGnss, NMEA=$enableNMEA, mockWifi=$enableMockWifi, hookSensor=$hookSensor, stepMock=$enableStepCountMock, motionMock=${sensorData.enableMotionMock}, shakeMock=$enableShakeMock, keepWalking=$keepWalkingWaveform, rinex=${rinexPath ?: ""}")
+        MockAuditTrail.config("FakeLoc", "reload: $versionSummary enable=$enable gnss=$enableMockGnss nmea=$enableNMEA wifi=$enableMockWifi sensor=$hookSensor step=$enableStepCountMock motion=${sensorData.enableMotionMock} shake=$enableShakeMock forceDisable=$forceDisable")
     }
 
     // ==================== Provider 读写 ====================
@@ -605,13 +629,13 @@ object FakeLoc {
 
     // ==================== 内部工具方法 ====================
 
-    private fun logRootModeIfNeeded(loaderName: String) {
-        val status = "rootAvailable=$rootAvailable, rootMode=$rootMode, rinexPath=${rinexPath ?: ""}, loader=$loaderName"
+    private fun logRootModeIfNeeded(@Suppress("UNUSED_PARAMETER") loaderName: String) {
+        val status = "rootAvailable=$rootAvailable, rootMode=$rootMode, rinexConfigured=${!rinexPath.isNullOrBlank()}"
         val now = System.currentTimeMillis()
         if (status != lastRootStatus || now - lastRootLogAt > 60000L) {
             lastRootStatus = status
             lastRootLogAt = now
-            Logger.info("FakeLoc: $status")
+            Logger.debug("FakeLoc: $status")
         }
     }
 
@@ -756,7 +780,7 @@ object FakeLoc {
     fun jitterLocation(
         lat: Double = locationData.latitude,
         lon: Double = locationData.longitude,
-        n: Double = Random.nextDouble(0.0, locationData.accuracy.toDouble()),
+        n: Double = randomDistanceWithin(locationData.accuracy.toDouble()),
         angle: Double = locationData.bearing
     ): Pair<Double, Double> {
         val earthRadius = 6371000.0
@@ -768,6 +792,14 @@ object FakeLoc {
         val newLon = lon + radiusInDegrees * sin(Math.toRadians(jitterAngle)) / cos(Math.toRadians(lat))
 
         return Pair(newLat, newLon)
+    }
+
+    private fun randomDistanceWithin(accuracy: Double): Double {
+        return if (accuracy.isFinite() && accuracy > 0.0) {
+            Random.nextDouble(0.0, accuracy)
+        } else {
+            0.0
+        }
     }
 
     fun moveLocation(

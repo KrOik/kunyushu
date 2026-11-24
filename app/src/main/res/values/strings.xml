@@ -9,13 +9,13 @@
     <string name="action_search">搜索</string>
     <string name="action_info">信息</string>
 
-    <string name="menu_home">Home</string>
-    <string name="menu_mock">Location Mock</string>
-    <string name="menu_route_mock">Route Mock</string>
-    <string name="menu_gnss_mock">Gnss Mock</string>
-    <string name="menu_sensor_mock">Sensor Mock</string>
-    <string name="menu_route_mock_edit">Route Mock Edit</string>
-    <string name="menu_setting">Setting</string>
+    <string name="menu_home">地图首页</string>
+    <string name="menu_mock">位置模拟</string>
+    <string name="menu_route_mock">路线模拟</string>
+    <string name="menu_gnss_mock">GNSS 模拟</string>
+    <string name="menu_sensor_mock">传感器模拟</string>
+    <string name="menu_route_mock_edit">编辑路线</string>
+    <string name="menu_setting">设置</string>
     <string name="request_permission">能否给我一个权限呢？</string>
     <string name="follow_location">镜头跟随</string>
     <string name="add_route">创建路线</string>
@@ -71,6 +71,25 @@
     <string name="zero">0 G</string>
     <string name="in_view_left_item">可用卫星数量</string>
     <string name="in_use_satellite">在用卫星数量</string>
+
+    <!-- 控制面 -->
+    <string name="control_plane_title">控制面</string>
+    <string name="control_plane_status_placeholder">正在读取控制面状态</string>
+    <string name="domain_location">Location</string>
+    <string name="domain_gnss_nmea">GNSS/NMEA</string>
+    <string name="domain_sensor">Sensor</string>
+    <string name="domain_wlan">WLAN</string>
+    <string name="domain_cell">Cell</string>
+    <string name="domain_ble">BLE</string>
+    <string name="domain_nfc">NFC</string>
+    <string name="domain_diagnostics">Diagnostics</string>
+    <string name="domain_status_enabled">启用</string>
+    <string name="domain_status_disabled">关闭</string>
+    <string name="domain_status_planned">待实现</string>
+    <string name="domain_status_unavailable">不可用</string>
+    <string name="domain_panel_pending">该域面板仍在 TODO 队列中</string>
+    <string name="export_domain_config">导出配置</string>
+    <string name="import_domain_config">导入配置</string>
 
     <!-- WiFi模拟参数 -->
     <string name="section_wifi">WiFi模拟参数</string>
@@ -140,7 +159,6 @@
     <string name="gait_analysis_loaded_summary">已载入步态参数: %1$.2f Hz</string>
     <string name="gait_analysis_export_path">数据目录: %s</string>
     <string name="gait_import_analyzing">正在导入并拟合步态数据...</string>
-    <string name="gait_import_auto_loading">自动载入步态数据:\n%s</string>
     <string name="gait_import_path_empty">请输入 IMU 数据目录</string>
     <string name="sensor_status_title">传感器状态</string>
     <string name="real_step_count">真实步数: %d</string>
@@ -184,4 +202,11 @@
     <string name="min_speed_desc">模拟移动的最小速度(m/s)</string>
     <string name="max_speed">最大速度</string>
     <string name="max_speed_desc">模拟移动的最大速度(m/s)</string>
+    <string name="map_settings">地图与路线服务</string>
+    <string name="map_engine_title">首选地图引擎</string>
+    <string name="amap_api_key">高德 Web 服务 Key</string>
+    <string name="baidu_api_key">百度地图 AK</string>
+    <string name="google_maps_api_key">Google Maps API Key</string>
+    <string name="save_map_settings">保存地图配置</string>
+    <string name="map_key_security_hint">密钥使用 Android Keystore 加密保存。自动模式会按可用密钥回退；当前未打包的显示 SDK 会回退到百度底图，但仍可用于路线规划。</string>
 </resources>

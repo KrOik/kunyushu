@@ -4,9 +4,6 @@ package tv.kyshu.xposed.utils
 import android.content.Context
 import android.os.Binder
 import android.os.Build
-import de.robv.android.xposed.XposedBridge
-
-
 object BinderUtils {
     private val TRUSTED_SYSTEM_LOCATION_PACKAGES = setOf(
         "com.android.location.fused",
@@ -48,7 +45,7 @@ object BinderUtils {
                 .invoke(null) ?: return null
             return (cActivityThread.getMethod("getSystemContext").invoke(activityThread) as? Context) ?: getActivityContext()
         } catch (e: Throwable) {
-            e.printStackTrace()
+            Logger.warn("getSystemContext failed", e)
         }
         return null
     }
@@ -83,14 +80,14 @@ object BinderUtils {
                     return false
                 }
                 if (isAllowedControlPackage(packageNames)) {
-                    Logger.debug("isLocationProviderEnabled: uid=$uid ${packageNames.joinToString()} allowed")
+                    Logger.debug("isLocationProviderEnabled: uid=$uid package_count=${packageNames.size} allowed")
                     return true
                 }
                 if (isTrustedSystemLocationPackage(packageNames)) {
-                    Logger.debug("isLocationProviderEnabled: uid=$uid trusted location service ${packageNames.joinToString()} allowed")
+                    Logger.debug("isLocationProviderEnabled: uid=$uid package_count=${packageNames.size} trusted location service allowed")
                     return true
                 }
-                Logger.warn("isLocationProviderEnabled: uid=$uid ${packageNames.joinToString()} denied")
+                Logger.warn("isLocationProviderEnabled: uid=$uid package_count=${packageNames.size} denied")
                 return false
             }
             else -> {

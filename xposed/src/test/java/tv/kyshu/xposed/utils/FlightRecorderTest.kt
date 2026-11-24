@@ -3,6 +3,7 @@ package tv.kyshu.xposed.utils
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.json.JSONObject
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
@@ -70,5 +71,38 @@ class FlightRecorderTest {
         val dump = FlightRecorder.dump(lastN = 10)
         assertTrue("Should contain GATE_PASS", dump.contains("\"e\":\"GATE_PASS\""))
         assertTrue("Should contain GATE_SKIP", dump.contains("\"e\":\"GATE_SKIP\""))
+    }
+
+    @Test
+    fun `hook install report aggregates installs skips metadata and fuse failures`() {
+        FlightRecorder.clearForTest()
+
+        DiagnosticAspect.hookInstall(String::class.java, "substring", unhookCount = 2, mode = "all")
+        DiagnosticAspect.hookInstall(String::class.java, "missing", unhookCount = 0, mode = "exact")
+        FlightRecorder.gateSkip(
+            stepId = "BOOT",
+            detail = "WLAN_HOOK_DISABLED",
+            extra = mapOf("reason" to "feature_disabled", "classloader_source" to "system"),
+        )
+        FlightRecorder.hookFail(
+            stepId = "BOOT",
+            detail = "LOCATION_HOOK_BLOCKED",
+            extra = mapOf("fault" to "Timeout", "message" to "blocked"),
+        )
+
+        val report = JSONObject(FlightRecorder.dumpHookInstallReport())
+        val skipReasons = report.getJSONObject("skip_reasons")
+        val events = report.getJSONArray("events")
+
+        assertEquals(2, report.getInt("installed_count"))
+        assertEquals(2, report.getInt("skipped_count"))
+        assertEquals(1, report.getInt("failure_count"))
+        assertEquals(1, report.getInt("fatal_fuse_count"))
+        assertEquals(33, report.getInt("sdk_int"))
+        assertTrue("fingerprint should be present", report.has("fingerprint"))
+        assertEquals(1, skipReasons.getInt("method_not_found_or_no_overload"))
+        assertEquals(1, skipReasons.getInt("feature_disabled"))
+        assertTrue("events should include classloader source", events.toString().contains("classloader_source"))
+        assertTrue("events should include fatal fuse flag", events.toString().contains("\"fatal_fuse\":true"))
     }
 }

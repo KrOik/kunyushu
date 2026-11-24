@@ -37,6 +37,8 @@
     <color name="portal_mini_title_color">#5F5F5F</color>
     <color name="portal_hint_color">#5F5F5F</color>
     <color name="portal_text_color">#373737</color>
+    <color name="portal_surface">#FFF9F9FF</color>
+    <color name="portal_surface_scrim">#E6FFFFFF</color>
     <color name="portal_nav_icon">#373737</color>
     <color name="portal_mock_off">#373737</color>
     <color name="portal_mock_on">#040404</color>

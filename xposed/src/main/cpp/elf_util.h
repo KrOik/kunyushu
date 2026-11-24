@@ -104,6 +104,7 @@ namespace SandHook {
 
         off_t size = 0;
         off_t bias = -4396;
+        bool mapped = false;
 
         ElfW(Ehdr) *header = nullptr;
         ElfW(Shdr) *sectionHeader = nullptr;
@@ -115,19 +116,24 @@ namespace SandHook {
         ElfW(Sym) *strtabStart = nullptr;
 
         ElfW(Off) symtabCount = 0;
+        ElfW(Off) dynsymCount = 0;
         ElfW(Off) symstrOffsetForSymtab = 0;
+        ElfW(Off) strtabSize = 0;
+        ElfW(Off) symstrSizeForSymtab = 0;
 
         uint32_t nbucket_{};
+        uint32_t nchain_{};
         uint32_t *bucket_ = nullptr;
         uint32_t *chain_ = nullptr;
 
         uint32_t gnu_nbucket_{};
         uint32_t gnu_symndx_{};
-        uint32_t gnu_bloom_size_;
-        uint32_t gnu_shift2_;
-        uintptr_t *gnu_bloom_filter_;
-        uint32_t *gnu_bucket_;
-        uint32_t *gnu_chain_;
+        uint32_t gnu_bloom_size_{};
+        uint32_t gnu_shift2_{};
+        uint32_t gnu_chain_count_{};
+        uintptr_t *gnu_bloom_filter_ = nullptr;
+        uint32_t *gnu_bucket_ = nullptr;
+        uint32_t *gnu_chain_ = nullptr;
 
         mutable std::map<std::string_view, ElfW(Sym) *> symtabs_;
     };

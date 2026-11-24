@@ -13,9 +13,14 @@ add_library(portal SHARED
         sensor_hook.cpp
         crash_recovery.cpp
         safety_gate.cpp
-        maps_filter.cpp
-        proc_maps_filter.cpp
+        csprng.cpp
         integrity.cpp)
+# maps_filter.cpp and proc_maps_filter.cpp are excluded from all builds per
+# risk model R4: their binary strings and hook capabilities increase the
+# DuckDetector Memory/LSPosed native maps probe surface.
+# To re-enable for local auditing, uncomment the next two lines.
+#        maps_filter.cpp
+#        proc_maps_filter.cpp
 target_compile_definitions(portal PRIVATE "$<$<CONFIG:Debug>:KUNYUSHU_DEBUG>")
 target_link_options(portal PRIVATE
     -Wl,--strip-all

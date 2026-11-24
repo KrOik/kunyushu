@@ -16,3 +16,58 @@ local.properties
 apk-keys
 app/google-services.json
 .env
+
+# Local agent/tooling state
+/.codegraph/
+/.github/
+/.kotlin/
+/.omx/
+/.tmp/
+/.mcp.json
+
+# Non-source reference dumps and diagnostics
+/refer/
+/refs/
+/docs/
+/log/
+/logs/
+/img/
+
+# Project-local prose and audit notes are intentionally not tracked here.
+*.md
+/LICENSE
+/NOTICE
+/SECURITY_MARKERS.md
+
+# Local screenshots, UI dumps, and scratch captures
+/screen*.png
+/screenshot*.png
+/ui*.xml
+
+# Signing keys and release packages
+*.jks
+*.keystore
+*.apk
+*.aab
+*.apks
+
+# Archives and diagnostic bundles
+*.zip
+*.tar
+*.tgz
+*.gz
+*.rar
+*.7z
+
+# Decompiled/build artifacts that should not enter source history
+*.class
+*.dex
+*.log
+*.csv
+*.db
+*.pb
+*.dmp
+*.hprof
+DebugProbesKt.bin
+start-jadx-mcp.bat
+!/compatibility/PHY110-android15.md

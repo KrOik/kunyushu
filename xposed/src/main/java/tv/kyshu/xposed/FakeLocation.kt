@@ -72,6 +72,7 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
          * provides defense-in-depth re-entry prevention.
          */
         private val injectedPkgs = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+        private val versionLoggedPkgs = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
         /**
          * Concurrency lock for startFakeLocHook — prevents double-install
@@ -314,8 +315,16 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
      */
     override fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam?) {
         val pkgName = lpparam?.packageName ?: return
+        if (versionLoggedPkgs.add(pkgName)) {
+            val message = "[FakeLocation] loading package=$pkgName ${PortalIdentity.runtimeVersionSummary(FakeLoc.getContext())}"
+            if (pkgName == "android" || pkgName in PortalIdentity.CONTROL_PACKAGES) {
+                Logger.info(message)
+            } else {
+                Logger.debug(message)
+            }
+        }
         if (pkgName !in TARGET_PACKAGES) {
-            Logger.info("[FakeLocation] Scoped app package: $pkgName, installing app-process hooks")
+            Logger.debug("[FakeLocation] scoped app process observed")
         }
 
         // Hardened two-phase re-entry guard:
@@ -459,6 +468,12 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                     runBootInitStep("BootStateStore") {
                         BootStateStore.setContext(systemContext)
                     }
+                    runBootInitStep("SafeModeRecovery") {
+                        if (BootStateStore.load().safeMode) {
+                            tv.kyshu.xposed.stability.SafeModeRecovery.tryApply(systemContext)
+                        }
+                    }
+                    Logger.info("[FakeLocation] system context ready ${PortalIdentity.runtimeVersionSummary(systemContext)}")
                     FlightRecorder.bootstrapState("system_server")
                     val nativeReady = ensureNativeLoaded("system_server")
                     if (nativeReady) {
@@ -484,6 +499,20 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                         }
                         if (!nativeSafetyInitialized) {
                             Logger.warn("[FakeLocation] Native safety cache unavailable; integrity failure lock cannot be persisted")
+                        } else {
+                            val nativeSensorInstalled = runCatching {
+                                Dobby.installNativeSensorHook()
+                            }.onFailure { e ->
+                                FlightRecorder.hookFail(
+                                    "BOOT",
+                                    "NATIVE_SENSOR_INSTALL",
+                                    mapOf("error" to e.javaClass.simpleName),
+                                )
+                            }.getOrDefault(false)
+                            if (!nativeSensorInstalled) {
+                                Logger.warn("[FakeLocation] Native sensor hook skipped by safety gate")
+                                FlightRecorder.gateSkip("BOOT", "NATIVE_SENSOR_INSTALL")
+                            }
                         }
                     }
 
@@ -511,12 +540,7 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                             FlightRecorder.hookFail("BOOT", "ART_VERSION_LOCK_WRITE",
                                 mapOf("error" to e.javaClass.simpleName))
                         }
-                        runCatching {
-                            Dobby.installProcMapsHooks()
-                        }.onFailure { e ->
-                            FlightRecorder.hookFail("BOOT", "PROC_MAPS_HOOK_INSTALL",
-                                mapOf("error" to e.javaClass.simpleName))
-                        }
+                        Logger.warn("[FakeLocation] Native proc maps hook disabled; reducing hook/runtime exposure")
                     }
                 }
                 // Start DelayedCommandPoller for ContentProvider fallback command channel
@@ -673,27 +697,35 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                         }
                     }
 
-                    // WlanHook（最长允许10秒）
-                    val wlanResult = SafeFaultHarness.run("install:WlanHook",
-                        timeoutMs = 10_000L) {
-                        WlanHook(systemClassLoader)
-                    }
-                    when (wlanResult) {
-                        is SafeFaultResult.Completed -> {}
-                        is SafeFaultResult.Blocked -> {
-                            Logger.error("[FakeLocation] WlanHook BLOCKED: ${wlanResult.message}")
-                            DomainGuard.disableDomain(Domain.WLAN,
-                                "install blocked: ${wlanResult.faultClass.name}: ${wlanResult.message}")
-                            DomainGuard.reportCrash(Domain.WLAN,
-                                RuntimeException("SafeFaultHarness blocked: ${wlanResult.message}"))
+                    if (BuildConfig.ENABLE_WIFI_MOCK) {
+                        // WlanHook（最长允许10秒）
+                        val wlanResult = SafeFaultHarness.run("install:WlanHook",
+                            timeoutMs = 10_000L) {
+                            WlanHook(systemClassLoader)
                         }
-                        is SafeFaultResult.Recovered -> {
-                            Logger.warn("[FakeLocation] WlanHook RECOVERED: ${wlanResult.message}")
-                            DomainGuard.disableDomain(Domain.WLAN,
-                                "install recovered failure: ${wlanResult.faultClass.name}: ${wlanResult.message}")
-                            DomainGuard.reportCrash(Domain.WLAN,
-                                RuntimeException("SafeFaultHarness recovered: ${wlanResult.message}"))
+                        when (wlanResult) {
+                            is SafeFaultResult.Completed -> {}
+                            is SafeFaultResult.Blocked -> {
+                                Logger.error("[FakeLocation] WlanHook BLOCKED: ${wlanResult.message}")
+                                DomainGuard.disableDomain(Domain.WLAN,
+                                    "install blocked: ${wlanResult.faultClass.name}: ${wlanResult.message}")
+                                DomainGuard.reportCrash(Domain.WLAN,
+                                    RuntimeException("SafeFaultHarness blocked: ${wlanResult.message}"))
+                            }
+                            is SafeFaultResult.Recovered -> {
+                                Logger.warn("[FakeLocation] WlanHook RECOVERED: ${wlanResult.message}")
+                                DomainGuard.disableDomain(Domain.WLAN,
+                                    "install recovered failure: ${wlanResult.faultClass.name}: ${wlanResult.message}")
+                                DomainGuard.reportCrash(Domain.WLAN,
+                                    RuntimeException("SafeFaultHarness recovered: ${wlanResult.message}"))
+                            }
                         }
+                    } else {
+                        FakeLoc.hookWifi = false
+                        FakeLoc.enableMockWifi = false
+                        FlightRecorder.gateSkip("BOOT", "WLAN_HOOK_DISABLED",
+                            mapOf("package" to pkgName, "reason" to "feature_disabled"))
+                        Logger.info("[FakeLocation] WlanHook skipped: WiFi mock feature disabled")
                     }
 
                     // SystemSensorManagerHook（最长允许10秒）
@@ -731,12 +763,13 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
 
                     // Load complete: reset install guard + report status
                     DomainGuard.resetInstallCrashCount()
-                    val installedHooks = Domain.entries.filter { !DomainGuard.isDomainDisabled(it) }
+                    val activeDomains = Domain.entries.filter { !DomainGuard.isDomainDisabled(it) }
                         .joinToString(",") { it.label }
-                    Logger.info("[FakeLocation] load complete: hooks=$installedHooks")
+                    // Guard state is not proof that every hook was installed or exercised.
+                    Logger.info("[FakeLocation] load complete: activeDomains=$activeDomains")
                     FlightRecorder.gatePass("BOOT", "BOOT_GATE",
-                        mapOf("hooks" to installedHooks))
-                    LogRouter.info("BBN:BOOT", "load complete: hooks=$installedHooks")
+                        mapOf("active_domains" to activeDomains))
+                    LogRouter.info("BBN:BOOT", "load complete: activeDomains=$activeDomains")
                     } finally {
                         if (installLock.isHeldByCurrentThread) {
                             installLock.unlock()
@@ -897,9 +930,8 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                         if (contextAccepted && !synced) {
                             FakeLoc.reload()
                         }
-                        Logger.info(
-                            "[FakeLocation][SensorApp] Application.attach captured: package=$packageName, " +
-                                "process=$processName, hookSensor=${FakeLoc.hookSensor}, " +
+                        Logger.debug(
+                            "[FakeLocation][SensorApp] application context captured: hookSensor=${FakeLoc.hookSensor}, " +
                                 "motion=${FakeLoc.sensorData.enableMotionMock}, step=${FakeLoc.enableStepCountMock}, " +
                                 "shake=${FakeLoc.enableShakeMock}, context=${appContext.javaClass.name}, " +
                                 "contextAccepted=$contextAccepted, configSynced=$synced"
@@ -918,7 +950,7 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                                 "SystemSensorManagerHook",
                                 mapOf("package" to packageName, "process" to processName),
                             )
-                            Logger.info("[FakeLocation][SensorApp] SystemSensorManagerHook installed for $packageName/$processName")
+                            Logger.debug("[FakeLocation][SensorApp] app sensor runtime initialized")
                         }.onFailure { e ->
                             FlightRecorder.hookFail(
                                 "APP_SENSOR",
@@ -931,7 +963,7 @@ class FakeLocation: IXposedHookLoadPackage, IXposedHookZygoteInit {
                     }
                 },
             )
-            Logger.info("[FakeLocation][SensorApp] Application.attach hook queued for $packageName/$processName")
+            Logger.debug("[FakeLocation][SensorApp] app attach observer queued")
         }.onFailure { e ->
             FlightRecorder.hookFail(
                 "APP_SENSOR",

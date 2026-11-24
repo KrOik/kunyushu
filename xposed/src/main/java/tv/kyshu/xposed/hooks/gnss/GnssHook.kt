@@ -70,6 +70,7 @@ object GnssHook: BaseLocationHook() {
                             XposedHelpers.findAndHookMethod(classListener, "onNmeaReceived", Long::class.java, String::class.java, object: XC_MethodHook() {
                                 override fun beforeHookedMethod(param: MethodHookParam) {
                                     if (LocationNMEAHook.shouldSkipNmeaCallbackInstance(param.thisObject)) {
+                                        param.result = null
                                         return
                                     }
                                     if (FakeLoc.enableMockGnss && !FakeLoc.enableAGPS) {
@@ -79,8 +80,8 @@ object GnssHook: BaseLocationHook() {
                                         return
                                     }
 
-                                    val nmea = param.args[1] as String
-                                    param.args[1] = LocationNMEAHook.injectNMEA(nmea) ?: nmea
+                                    val nmea = param.args[1] as? String ?: return
+                                    param.args[1] = LocationNMEAHook.safeInjectNMEA(nmea) ?: nmea
                                 }
                             })
                         }.onFailure {

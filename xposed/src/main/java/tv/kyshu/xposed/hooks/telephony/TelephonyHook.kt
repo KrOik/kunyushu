@@ -8,14 +8,15 @@ import android.telephony.CellIdentity
 import android.telephony.CellIdentityCdma
 import android.telephony.CellInfo
 import android.telephony.CellInfoCdma
-import android.telephony.CellSignalStrengthCdma
-import android.telephony.NeighboringCellInfo
 import android.telephony.SignalStrength
 import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
+import tv.kyshu.xposed.factory.CellInfoFactory
 import tv.kyshu.xposed.utils.BinderUtils
 import tv.kyshu.xposed.utils.FakeLoc
 import tv.kyshu.xposed.stability.DomainGuard
+import tv.kyshu.xposed.stability.WirelessRuntime
+import tv.kyshu.xposed.stability.replaceOrPassthrough
 import tv.kyshu.xposed.utils.Logger
 import tv.kyshu.xposed.utils.afterHook
 import tv.kyshu.xposed.utils.beforeHook
@@ -26,74 +27,37 @@ import tv.kyshu.xposed.utils.onceHookBefore
 import tv.kyshu.xposed.utils.onceHookDoNothingMethod
 import tv.kyshu.xposed.utils.onceHookMethodBefore
 import java.lang.reflect.Modifier
-import kotlin.random.Random
 
+
+internal object TelephonyDowngradeGate {
+    fun shouldDowngradeToCdma(): Boolean = FakeLoc.enable && FakeLoc.needDowngradeToCdma &&
+        !DomainGuard.isDomainDisabled(DomainGuard.Domain.TELEPHONY)
+    fun shouldReplaceCellInfo(): Boolean = FakeLoc.enable && WirelessRuntime.snapshotOrLegacy().cellEnabled &&
+        !DomainGuard.isDomainDisabled(DomainGuard.Domain.TELEPHONY)
+}
 
 object TelephonyHook: BaseTelephonyHook() {
+    internal fun shouldDowngradeToCdma(): Boolean = TelephonyDowngradeGate.shouldDowngradeToCdma()
+    internal fun shouldReplaceCellInfo(): Boolean = TelephonyDowngradeGate.shouldReplaceCellInfo()
+
     internal fun fakeCellIdentityCdma(): CellIdentityCdma {
-        return CellIdentityCdma::class.java.getConstructor(
-            Int::class.java,
-            Int::class.java,
-            Int::class.java,
-            Int::class.java,
-            Int::class.java,
-            String::class.java,
-            String::class.java
-        ).newInstance(
-            Int.MAX_VALUE,
-            Int.MAX_VALUE,
-            Int.MAX_VALUE,
-            (FakeLoc.latitude * 14400.0).toInt(),
-            (FakeLoc.longitude * 14400.0).toInt(),
-            null,
-            null
-        )
+        return CellInfoFactory.createCdmaIdentity(FakeLoc.latitude, FakeLoc.longitude)
     }
 
     internal fun fakeCellInfoCdma(): CellInfoCdma {
-        return kotlin.runCatching {
-            CellInfoCdma::class.java.getConstructor().newInstance().also {
-                XposedHelpers.callMethod(it, "setRegistered", true)
-                XposedHelpers.callMethod(it, "setTimeStamp", System.nanoTime())
-                XposedHelpers.callMethod(it, "setCellConnectionStatus", 0)
-            }
-        }.getOrElse {
-            CellInfoCdma::class.java.getConstructor(
-                Int::class.java,
-                Boolean::class.java,
-                Long::class.java,
-                CellIdentityCdma::class.java,
-                CellSignalStrengthCdma::class.java
-            ).newInstance(
-                0,
-                true,
-                System.nanoTime(),
-                fakeCellIdentityCdma(),
-                CellSignalStrengthCdma::class.java.newInstance()
-            )
-        }
+        return CellInfoFactory.createCdmaInfo(FakeLoc.latitude, FakeLoc.longitude)
     }
 
     internal fun fakeCellLocationBundle(): Bundle {
-        return Bundle().apply {
-            putInt("cid", Random.nextInt(100000, 999999))
-            putInt("lac", Random.nextInt(1000, 65535))
-            putInt("psc", 0)
-            putInt("baseStationLatitude", (FakeLoc.latitude * 14400.0).toInt())
-            putInt("baseStationLongitude", (FakeLoc.longitude * 14400.0).toInt())
-            putBoolean("empty", false)
-            putBoolean("emptyParcel", false)
-            putInt("mFlags", 1536)
-            putBoolean("parcelled", false)
-            putInt("baseStationId", Random.nextInt(10000, 99999))
-            putInt("systemId", Random.nextInt(100, 1000))
-            putInt("networkId", Random.nextInt(10000, 65536))
-            putInt("size", 0)
-        }
+        return CellInfoFactory.createCellLocationBundle(FakeLoc.latitude, FakeLoc.longitude)
     }
 
     private fun fakeCellInfoList(): List<CellInfo> {
-        return runCatching { listOf<CellInfo>(fakeCellInfoCdma()) }
+        val snapshot = WirelessRuntime.snapshotOrLegacy()
+        if (snapshot.cellEnabled && snapshot.cellTowers.isNotEmpty()) {
+            return CellInfoFactory.createFromProfilesStrict(snapshot.cellTowers)
+        }
+        return runCatching { CellInfoFactory.createCdmaInfoList(FakeLoc.latitude, FakeLoc.longitude) }
             .onFailure { Logger.warn("[TelephonyHook] fake CellInfoCdma unavailable; keeping original value", it) }
             .getOrDefault(emptyList())
     }
@@ -160,8 +124,7 @@ object TelephonyHook: BaseTelephonyHook() {
 //        }
 
         if (!FakeLoc.needDowngradeToCdma) {
-            Logger.info("[TelephonyHook] CDMA downgrade disabled; skipping telephony downgrade hooks")
-            return
+            Logger.info("[TelephonyHook] CDMA downgrade disabled at install; installing dormant runtime-gated hooks")
         }
 
         val cPhoneInterfaceManager = XposedHelpers.findClassIfExists("com.android.phone.PhoneInterfaceManager", classLoader)
@@ -174,7 +137,7 @@ object TelephonyHook: BaseTelephonyHook() {
         hookServiceState(cPhoneInterfaceManager)
 
         val hookGetPhoneTyp = beforeHook {
-            if (FakeLoc.enable && FakeLoc.needDowngradeToCdma) {
+            if (shouldDowngradeToCdma()) {
                 if (FakeLoc.enableDebugLog) {
                     Logger.debug("getActivePhoneType: injected!")
                 }
@@ -196,9 +159,12 @@ object TelephonyHook: BaseTelephonyHook() {
                     Logger.debug("getAllCellInfo: injected! caller = ${BinderUtils.getCallerUid()}")
                 }
 
-                if (FakeLoc.enable) {
-                    val cResult = fakeCellInfoList()
-                    if (cResult.isNotEmpty()) result = cResult
+                if (shouldDowngradeToCdma() || shouldReplaceCellInfo()) {
+                    val original = result
+                    result = replaceOrPassthrough(DomainGuard.Domain.TELEPHONY, "getAllCellInfo", original) {
+                        fakeCellInfoList().takeIf { it.isNotEmpty() }
+                            ?: throw IllegalStateException("empty CellInfo replacement")
+                    }
                 }
 	            }
             if (runCatching { XposedBridge.hookMethod(it, hookGetAllCellInfo) }.getOrNull() == null) {
@@ -207,7 +173,7 @@ object TelephonyHook: BaseTelephonyHook() {
         }
 
         if(runCatching { XposedBridge.hookAllMethods(cPhoneInterfaceManager, "getCellLocation", afterHook {
-                if (!FakeLoc.enable) {
+                if (!shouldDowngradeToCdma()) {
                     return@afterHook
                 }
                 if (FakeLoc.enableDebugLog) {
@@ -226,7 +192,7 @@ object TelephonyHook: BaseTelephonyHook() {
         }
 
         beforeHook {
-            if (FakeLoc.enable && FakeLoc.needDowngradeToCdma) {
+            if (shouldDowngradeToCdma()) {
                 if (FakeLoc.enableDebugLog) {
                     Logger.debug("getDataNetworkType: injected!")
                 }
@@ -241,21 +207,11 @@ object TelephonyHook: BaseTelephonyHook() {
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             if (safeHookAll(cPhoneInterfaceManager, "getNeighboringCellInfo", beforeHook {
-                if (!FakeLoc.enable) {
+                if (!shouldDowngradeToCdma()) {
                     return@beforeHook
                 }
 
-                result = kotlin.runCatching {
-                    val nCellInfo = NeighboringCellInfo::class.java.getConstructor().newInstance()
-                    XposedHelpers.setIntField(nCellInfo, "mRssi", -46)
-                    XposedHelpers.setIntField(nCellInfo, "mCid", -1)
-                    XposedHelpers.setIntField(nCellInfo, "mLac", -1)
-                    XposedHelpers.setIntField(nCellInfo, "mPsc", -1)
-                    XposedHelpers.setIntField(nCellInfo, "mNetworkType", 3)
-                    listOf(nCellInfo)
-                }.getOrElse {
-                    arrayListOf()
-                }
+                result = CellInfoFactory.createNeighboringCellInfoList()
             }).isEmpty()) {
                 Logger.error("Hook PhoneInterfaceManager.getNeighboringCellInfo failed")
 	            }
@@ -284,7 +240,7 @@ object TelephonyHook: BaseTelephonyHook() {
 
     private fun hookServiceState(cPhoneInterfaceManager: Class<*>) {
         val hook = afterHook {
-            if (!FakeLoc.enable) return@afterHook
+            if (!shouldDowngradeToCdma()) return@afterHook
             val serviceState = result ?: return@afterHook
 
             runCatching { XposedHelpers.callMethod(serviceState, "setRoaming", false) }
@@ -323,7 +279,6 @@ object TelephonyHook: BaseTelephonyHook() {
             .forEach { method ->
                 runCatching {
                     XposedBridge.hookMethod(method, beforeHook {
-                        if (!FakeLoc.enable) return@beforeHook
                         hookCellInfoCallbacks(args.filterNotNull())
                     })
                 }.onFailure {
@@ -340,9 +295,13 @@ object TelephonyHook: BaseTelephonyHook() {
                     runCatching {
                         onCellInfoMethod.isAccessible = true
                         onCellInfoMethod.onceHookBefore {
-                            if (!FakeLoc.enable) return@onceHookBefore
-                            val fake = fakeCellInfoList()
-                            if (fake.isNotEmpty()) args[0] = fake
+                            if (!shouldDowngradeToCdma() && !shouldReplaceCellInfo()) return@onceHookBefore
+                            val original = args[0]
+                            args[0] = replaceOrPassthrough(DomainGuard.Domain.TELEPHONY,
+                                "requestCellInfoUpdate.onCellInfo", original) {
+                                fakeCellInfoList().takeIf { it.isNotEmpty() }
+                                    ?: throw IllegalStateException("empty CellInfo replacement")
+                            }
                         }
                     }.onFailure {
                         Logger.warn("[TelephonyHook] requestCellInfoUpdate callback hook failed", it)
@@ -351,7 +310,7 @@ object TelephonyHook: BaseTelephonyHook() {
         }
     }
 
-	    fun hookTelephonyRegistry(cTelephonyRegistry: Class<*>) {
+    fun hookTelephonyRegistry(cTelephonyRegistry: Class<*>) {
         cTelephonyRegistry.declaredMethods.filter { (it.name == "listen" || it.name == "listenWithEventList") && !Modifier.isAbstract(it.modifiers) }
             .map {
                 it to it.parameterTypes.indexOfFirst { typ -> typ.simpleName == "IPhoneStateListener" }
@@ -362,36 +321,32 @@ object TelephonyHook: BaseTelephonyHook() {
                     return@forEach
                 }
                 m.hookBefore {
-                    if (!FakeLoc.enable) {
-                        return@hookBefore
-                    }
-
                     val listener = args[idx] as Any
-	                    val hasHookOnCellLocationChanged = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-	                        listener.javaClass.onceHookMethodBefore("onCellLocationChanged", CellIdentity::class.java) {
-	                            if (FakeLoc.enable) {
-	                                result = fakeCellIdentityCdma()
-	                            }
-	                        }
-	                    } else {
-	                        listener.javaClass.onceHookMethodBefore("onCellLocationChanged", Bundle::class.java) {
-	                            if (FakeLoc.enable) {
-	                                result = fakeCellLocationBundle()
-	                            }
-	                        }
+                    val hasHookOnCellLocationChanged = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                        listener.javaClass.onceHookMethodBefore("onCellLocationChanged", CellIdentity::class.java) {
+                            if (shouldDowngradeToCdma()) {
+                                result = fakeCellIdentityCdma()
+                            }
+                        }
+                    } else {
+                        listener.javaClass.onceHookMethodBefore("onCellLocationChanged", Bundle::class.java) {
+                            if (shouldDowngradeToCdma()) {
+                                result = fakeCellLocationBundle()
+                            }
+                        }
                     } != null
                     if (!hasHookOnCellLocationChanged) {
                         Logger.error("Hook onCellLocationChanged failed")
                     }
                     listener.javaClass.onceHookDoNothingMethod("onSignalStrengthChanged", Int::class.java) {
-                        FakeLoc.enable
+                        shouldDowngradeToCdma()
                     }
-                    listener.javaClass.onceHookDoNothingMethod("onSignalStrengthsChanged", SignalStrength::class.java) { FakeLoc.enable }
+                    listener.javaClass.onceHookDoNothingMethod("onSignalStrengthsChanged", SignalStrength::class.java) { shouldDowngradeToCdma() }
                 }
             }
 
         cTelephonyRegistry.hookMethodBefore("notifyCellInfo", List::class.java) {
-            if (!FakeLoc.enable) {
+            if (!shouldDowngradeToCdma() && !shouldReplaceCellInfo()) {
                 return@hookMethodBefore
             }
 
@@ -399,12 +354,15 @@ object TelephonyHook: BaseTelephonyHook() {
                 Logger.debug("notifyCellInfo: injected!")
             }
 
-            val fake = fakeCellInfoList()
-            if (fake.isNotEmpty()) args[0] = fake
-	        }
+            val original = args[0]
+            args[0] = replaceOrPassthrough(DomainGuard.Domain.TELEPHONY, "notifyCellInfo", original) {
+                fakeCellInfoList().takeIf { it.isNotEmpty() }
+                    ?: throw IllegalStateException("empty CellInfo replacement")
+            }
+        }
 
         cTelephonyRegistry.hookMethodBefore("notifyCellInfoForSubscriber", Int::class.java, List::class.java) {
-            if (!FakeLoc.enable) {
+            if (!shouldDowngradeToCdma() && !shouldReplaceCellInfo()) {
                 return@hookMethodBefore
             }
 
@@ -412,12 +370,15 @@ object TelephonyHook: BaseTelephonyHook() {
                 Logger.debug("notifyCellInfoForSubscriber: injected!")
             }
 
-            val fake = fakeCellInfoList()
-            if (fake.isNotEmpty()) args[1] = fake
-	        }
+            val original = args[1]
+            args[1] = replaceOrPassthrough(DomainGuard.Domain.TELEPHONY, "notifyCellInfoForSubscriber", original) {
+                fakeCellInfoList().takeIf { it.isNotEmpty() }
+                    ?: throw IllegalStateException("empty CellInfo replacement")
+            }
+        }
 
         cTelephonyRegistry.hookMethodBefore("notifyCellLocation", Bundle::class.java) {
-            if (!FakeLoc.enable) {
+            if (!shouldDowngradeToCdma()) {
                 return@hookMethodBefore
             }
 
@@ -425,21 +386,21 @@ object TelephonyHook: BaseTelephonyHook() {
                 Logger.debug("notifyCellLocation: injected!")
             }
 
-	            args[0] = fakeCellLocationBundle()
-	        }
+            args[0] = fakeCellLocationBundle()
+        }
         cTelephonyRegistry.hookMethodBefore("notifyCellLocationForSubscriber", Int::class.java, Bundle::class.java) {
-            if (!FakeLoc.enable) {
+            if (!shouldDowngradeToCdma()) {
                 return@hookMethodBefore
             }
 
             if (FakeLoc.enableDebugLog) {
                 Logger.debug("notifyCellLocationForSubscriber: injected!")
             }
-	            args[1] = fakeCellLocationBundle()
-	        }
+            args[1] = fakeCellLocationBundle()
+        }
 
         hookRequestCellInfoUpdate(cTelephonyRegistry)
-	    }
+    }
 
     @Suppress("LocalVariableName")
     fun hookSubOnTransact(classLoader: ClassLoader) {
@@ -461,7 +422,7 @@ object TelephonyHook: BaseTelephonyHook() {
         val TRANSACTION_getSimStateForSlotIdx = kotlin.runCatching { XposedHelpers.getStaticIntField(cISub, "TRANSACTION_getSimStateForSlotIdx") }.getOrDefault(-1)
 
         val hookOnTransact = beforeHook {
-            if (!FakeLoc.enable || !FakeLoc.needDowngradeToCdma) {
+            if (!shouldDowngradeToCdma()) {
                 return@beforeHook
             }
 

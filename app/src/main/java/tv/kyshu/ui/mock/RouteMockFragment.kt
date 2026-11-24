@@ -1,114 +1,79 @@
 package tv.kyshu.ui.mock
 
-import android.animation.Animator
-import android.animation.AnimatorListenerAdapter
-import android.animation.AnimatorSet
-import android.animation.ObjectAnimator
+import dagger.hilt.android.AndroidEntryPoint
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
-import android.view.animation.DecelerateInterpolator
-import android.widget.CheckedTextView
 import android.widget.Toast
-import androidx.core.content.ContextCompat
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.activityViewModels
-import androidx.fragment.app.viewModels
 import androidx.lifecycle.lifecycleScope
-import androidx.navigation.Navigation
-import androidx.recyclerview.widget.ItemTouchHelper
-import androidx.recyclerview.widget.LinearLayoutManager
-import androidx.recyclerview.widget.RecyclerView
 import com.alibaba.fastjson2.JSON
-import com.google.android.material.button.MaterialButton
-import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import tv.kyshu.MainActivity
 import tv.kyshu.R
-import tv.kyshu.android.root.ShellUtils
 import tv.kyshu.android.widget.RockerView
 import tv.kyshu.android.window.OverlayUtils
-import tv.kyshu.databinding.FragmentRouteMockBinding
 import tv.kyshu.ext.altitude
 import tv.kyshu.ext.drawOverOtherAppsEnabled
-import tv.kyshu.ext.hookSensor
 import tv.kyshu.ext.jsonHistoricalRoutes
 import tv.kyshu.ext.selectRoute
 import tv.kyshu.ext.speed
+import tv.kyshu.map.RoutePlanningClient
 import tv.kyshu.service.MockServiceHelper
-import tv.kyshu.ui.viewmodel.HomeViewModel
+import tv.kyshu.ui.compose.portalComposeView
 import tv.kyshu.ui.viewmodel.MockServiceViewModel
 import tv.kyshu.xposed.utils.FakeLoc
-import androidx.navigation.findNavController
 
+@AndroidEntryPoint
 class RouteMockFragment : Fragment() {
-    private var _binding: FragmentRouteMockBinding? = null
-    private val binding get() = _binding!!
-
-    private val routeMockViewModel by viewModels<HomeViewModel>()
     private val mockServiceViewModel by activityViewModels<MockServiceViewModel>()
+    private var routes: List<HistoricalRoute> = emptyList()
 
     override fun onCreateView(
         inflater: LayoutInflater,
         container: ViewGroup?,
-        savedInstanceState: Bundle?
+        savedInstanceState: Bundle?,
     ): View {
-        _binding = FragmentRouteMockBinding.inflate(inflater, container, false)
+        configureRocker()
+        routes = loadRoutes()
+        return portalComposeView { RouteMockScreen() }
+    }
 
-        if (mockServiceViewModel.isServiceStart()) {
-            binding.switchMock.text = "停止模拟"
-            ContextCompat.getDrawable(requireContext(), R.drawable.rounded_play_disabled_24)?.let {
-                binding.switchMock.icon = it
-            }
-        }
-
-        binding.switchMock.setOnClickListener {
-            if (mockServiceViewModel.isServiceStart()) {
-                showToast("正在停止路线模拟")
-                tryCloseService(it as MaterialButton)
-            } else {
-                showToast("正在启动路线模拟")
-                tryOpenService(it as MaterialButton)
-            }
-        }
-
+    private fun configureRocker() {
         with(mockServiceViewModel) {
-            if (rocker.isStart) {
-                binding.rocker.toggle()
-            }
-            binding.rocker.setOnClickListener {
-                if (locationManager == null) {
-                    Toast.makeText(requireContext(), "定位服务加载异常", Toast.LENGTH_SHORT).show()
-                    return@setOnClickListener
-                }
-                if (!isServiceStart()) {
-                    Toast.makeText(requireContext(), "请先启动模拟", Toast.LENGTH_SHORT).show()
-                    return@setOnClickListener
-                }
-                val checkedTextView = it as CheckedTextView
-                checkedTextView.toggle()
-
-                if (!requireContext().drawOverOtherAppsEnabled()) {
-                    Toast.makeText(requireContext(), "请授权悬浮窗权限", Toast.LENGTH_SHORT).show()
-                    return@setOnClickListener
-                }
-
-                lifecycleScope.launch(Dispatchers.Main) {
-                    if (checkedTextView.isChecked) {
-                        rocker.show()
-                        Toast.makeText(requireContext(), "摇杆已显示", Toast.LENGTH_SHORT).show()
-                    } else {
-                        rocker.hide()
-                        rockerCoroutineController.pause()
-                        Toast.makeText(requireContext(), "摇杆已隐藏", Toast.LENGTH_SHORT).show()
-                    }
-                }
-            }
             rocker.setRockerListener(object : RockerView.Companion.OnMoveListener {
                 override fun onAngle(angle: Double) {
-                    MockServiceHelper.setBearing(locationManager ?: return@onAngle, angle)
+                    MockServiceHelper.setBearing(locationManager ?: return, angle)
                     FakeLoc.bearing = angle
                     FakeLoc.hasBearings = true
                 }
@@ -118,9 +83,7 @@ class RouteMockFragment : Fragment() {
                 }
 
                 override fun onFinished() {
-                    if (!isRockerLocked) {
-                        rockerCoroutineController.pause()
-                    }
+                    if (!isRockerLocked) rockerCoroutineController.pause()
                 }
 
                 override fun onStarted() {
@@ -129,294 +92,346 @@ class RouteMockFragment : Fragment() {
             })
             rocker.setRockerAutoListener(object : Rocker.Companion.OnAutoListener {
                 override fun onAutoPlay(isPlay: Boolean) {
-                    if (isPlay) {
-                        routeMockCoroutine.resume()
-                    } else {
-                        routeMockCoroutine.pause()
-                    }
+                    if (isPlay) routeMockCoroutine.resume() else routeMockCoroutine.pause()
                 }
 
-                override fun onAutoLock(isLock: Boolean) {
-
-                }
+                override fun onAutoLock(isLock: Boolean) = Unit
             })
         }
-
-        requireContext().selectRoute?.let {
-            binding.mockRouteName.text = it.name
-            mockServiceViewModel.selectedRoute = it
-        }
-
-
-        binding.fab.setOnClickListener { view ->
-            val subFabList = arrayOf(
-                binding.fabAddRoute
-            )
-
-            if (!routeMockViewModel.mFabOpened) {
-                routeMockViewModel.mFabOpened = true
-
-                val rotateMainFab = ObjectAnimator.ofFloat(view, "rotation", 0f, 90f)
-                rotateMainFab.duration = 200
-
-                val animators = arrayListOf<ObjectAnimator>()
-                animators.add(rotateMainFab)
-                subFabList.forEachIndexed { index, fab ->
-                    fab.visibility = View.VISIBLE
-                    fab.alpha = 1f
-                    fab.scaleX = 1f
-                    fab.scaleY = 1f
-                    val translationX =
-                        ObjectAnimator.ofFloat(fab, "translationX", 0f, 20f + index * 8f)
-                    translationX.duration = 200
-                    animators.add(translationX)
-                }
-
-                val animatorSet = AnimatorSet()
-                animatorSet.playTogether(animators.toList())
-                animatorSet.interpolator = DecelerateInterpolator()
-                animatorSet.addListener(object : AnimatorListenerAdapter() {
-                    override fun onAnimationEnd(animation: Animator) {
-                        view.isClickable = true
-                    }
-                })
-                view.isClickable = false
-                animatorSet.start()
-            } else {
-                routeMockViewModel.mFabOpened = false
-
-                val rotateMainFab = ObjectAnimator.ofFloat(view, "rotation", 90f, 0f)
-                rotateMainFab.duration = 200
-
-                val animators = arrayListOf<ObjectAnimator>()
-                animators.add(rotateMainFab)
-                subFabList.forEachIndexed { index, fab ->
-                    val transX = ObjectAnimator.ofFloat(fab, "translationX", 0f, -20f - index * 8f)
-                    transX.duration = 150
-                    val scaleX = ObjectAnimator.ofFloat(fab, "scaleX", 1f, 0f)
-                    scaleX.duration = 200
-                    val scaleY = ObjectAnimator.ofFloat(fab, "scaleY", 1f, 0f)
-                    scaleY.duration = 200
-                    val alpha = ObjectAnimator.ofFloat(fab, "alpha", 1f, 0f)
-                    alpha.duration = 200
-                    animators.add(transX)
-                    animators.add(scaleX)
-                    animators.add(scaleY)
-                    animators.add(alpha)
-                }
-
-                val animatorSet = AnimatorSet()
-                animatorSet.playTogether(animators.toList())
-                animatorSet.interpolator = DecelerateInterpolator()
-                animatorSet.addListener(object : AnimatorListenerAdapter() {
-                    override fun onAnimationEnd(animation: Animator) {
-                        subFabList.forEach { it.visibility = View.GONE }
-                        view.isClickable = true
-                    }
-                })
-                view.isClickable = false
-                animatorSet.start()
-            }
-        }
-
-        binding.fabAddRoute.setOnClickListener {
-            activity?.findNavController(R.id.nav_host_fragment_content_main)?.navigate(R.id.nav_route_edit)
-        }
-
-        var locations = requireContext().jsonHistoricalRoutes
-//        val routes = Json.decodeFromString<List<HistoricalRoute>>(locations)
-        // 如果locations是空字符串，则创建默认
-        if (locations.isEmpty()) {
-            val defaultRoute = HistoricalRoute(
-                "默认路线",
-                mutableListOf(Pair(39.908822, 116.397465), Pair(39.907951, 116.397500))
-            )
-            val defaultRoutes = mutableListOf(defaultRoute)
-            requireContext().jsonHistoricalRoutes = JSON.toJSONString(defaultRoutes)
-            locations = requireContext().jsonHistoricalRoutes
-        }
-        val routes = JSON.parseArray(locations, HistoricalRoute::class.java)
-
-        val historicalRouteAdapter = HistoricalRouteAdapter(routes.sortedBy { it.name }
-            .toMutableList()) { route, isLongClick ->
-            if (isLongClick) {
-                Toast.makeText(requireContext(), "长按", Toast.LENGTH_SHORT).show()
-            } else {
-                binding.mockRouteName.text = route.name
-                mockServiceViewModel.selectedRoute = route
-                requireContext().selectRoute = route
-
-                mockServiceViewModel.locationManager?.let { mgr ->
-                    if (MockServiceHelper.isMockStart(mgr)) {
-                        val first = route.route[0]
-                        if (MockServiceHelper.setLocation(mgr, first.first, first.second)) {
-                            Toast.makeText(requireContext(), "位置更新成功", Toast.LENGTH_SHORT).show()
-                        } else {
-                            Toast.makeText(requireContext(), "更新位置失败", Toast.LENGTH_SHORT).show()
-                        }
-                    }
-                }
-            }
-        }
-
-
-        val recyclerView = binding.historicalRouteList
-        recyclerView.layoutManager = LinearLayoutManager(requireContext())
-        recyclerView.adapter = historicalRouteAdapter
-
-        ItemTouchHelper(object :
-            ItemTouchHelper.SimpleCallback(0, ItemTouchHelper.LEFT or ItemTouchHelper.RIGHT) {
-            override fun onMove(
-                recyclerView: RecyclerView,
-                viewHolder: RecyclerView.ViewHolder,
-                target: RecyclerView.ViewHolder
-            ): Boolean {
-                return false
-            }
-
-            override fun onSwiped(viewHolder: RecyclerView.ViewHolder, direction: Int) {
-                val position = viewHolder.adapterPosition
-                val location = historicalRouteAdapter[position]
-                with(requireContext()) {
-                    MaterialAlertDialogBuilder(this)
-                        .setTitle("删除路线")
-                        .setMessage("确定要删除路线(${location.name})吗？")
-                        .setPositiveButton("删除") { _, _ ->
-                            historicalRouteAdapter.removeItem(position)
-                            JSON.parseArray(jsonHistoricalRoutes, HistoricalRoute::class.java)
-                                .toMutableList().apply {
-                                    removeIf { it.name == location.name }
-                                }.let {
-                                    jsonHistoricalRoutes = JSON.toJSONString(it)
-                                }
-                            showToast("已删除路线")
-                        }
-                        .setNegativeButton("取消", { _, _ ->
-                            historicalRouteAdapter.notifyItemChanged(position)
-                        })
-                        .show()
-                }
-            }
-        }).attachToRecyclerView(recyclerView)
-
-        return binding.root
     }
 
+    private fun loadRoutes(): List<HistoricalRoute> {
+        var raw = requireContext().jsonHistoricalRoutes
+        if (raw.isBlank()) {
+            val defaultRoute = HistoricalRoute(
+                name = "默认路线",
+                route = listOf(39.908822 to 116.397465, 39.907951 to 116.397500),
+            )
+            requireContext().jsonHistoricalRoutes = JSON.toJSONString(listOf(defaultRoute))
+            raw = requireContext().jsonHistoricalRoutes
+        }
+        return runCatching {
+            JSON.parseArray(raw, HistoricalRoute::class.java).sortedBy { it.name }
+        }.getOrDefault(emptyList())
+    }
 
-    private fun tryOpenService(button: MaterialButton) {
+    @Composable
+    private fun RouteMockScreen() {
+        val context = requireContext()
+        var query by remember { mutableStateOf("") }
+        var selected by remember { mutableStateOf(mockServiceViewModel.selectedRoute ?: context.selectRoute) }
+        var visibleRoutes by remember { mutableStateOf(routes) }
+        var mocking by remember { mutableStateOf(mockServiceViewModel.isServiceStart()) }
+        var rockerVisible by remember { mutableStateOf(mockServiceViewModel.rocker.isStart) }
+        var busy by remember { mutableStateOf(false) }
+        var deleteRoute by remember { mutableStateOf<HistoricalRoute?>(null) }
+        val filteredRoutes = visibleRoutes.filter { it.name.contains(query, ignoreCase = true) }
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Text("路线模拟", style = MaterialTheme.typography.headlineSmall)
+            Text(
+                "选择路线后启动模拟；浮动摇杆中的自动按钮可控制沿路线移动。",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+                Column(
+                    modifier = Modifier.padding(18.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Text("目标路线", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        selected?.name ?: "请选择一条路线",
+                        style = MaterialTheme.typography.titleLarge,
+                    )
+                    Text(
+                        selected?.let {
+                            "${routeSummary(it)}\n${it.route.size} 个途经点"
+                        } ?: "从历史路线列表中选择目标",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Button(
+                            enabled = !busy,
+                            onClick = {
+                                busy = true
+                                if (mocking) {
+                                    tryCloseService { success ->
+                                        if (success) {
+                                            mocking = false
+                                            rockerVisible = mockServiceViewModel.rocker.isStart
+                                        }
+                                        busy = false
+                                    }
+                                } else {
+                                    tryOpenService { success ->
+                                        if (success) mocking = true
+                                        busy = false
+                                    }
+                                }
+                            },
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Text(if (mocking) "停止模拟" else "启动模拟")
+                        }
+                        OutlinedButton(
+                            enabled = !busy,
+                            onClick = { (activity as? MainActivity)?.openRouteEditor() },
+                            modifier = Modifier.weight(1f),
+                        ) { Text("创建路线") }
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("移动摇杆", style = MaterialTheme.typography.bodyLarge)
+                            Text(
+                                "需要先启动模拟并授予悬浮窗权限",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(
+                            checked = rockerVisible,
+                            onCheckedChange = { visible ->
+                                if (!mocking) {
+                                    showToast("请先启动模拟")
+                                } else if (!context.drawOverOtherAppsEnabled()) {
+                                    showToast("请授权悬浮窗权限")
+                                } else {
+                                    setRockerVisible(visible)
+                                    rockerVisible = visible
+                                }
+                            },
+                        )
+                    }
+                }
+            }
+
+            Text("历史路线", style = MaterialTheme.typography.titleMedium)
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("搜索路线") },
+                singleLine = true,
+            )
+            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp),
+                ) {
+                    filteredRoutes.forEach { route ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(route.name, style = MaterialTheme.typography.bodyLarge)
+                                Text(
+                                    "${routeSummary(route)} · ${route.route.size} 个点",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Column(horizontalAlignment = Alignment.End) {
+                                OutlinedButton(onClick = {
+                                    selectRoute(route)
+                                    selected = route
+                                }) { Text("选择") }
+                                TextButton(onClick = { deleteRoute = route }) { Text("删除") }
+                            }
+                        }
+                    }
+                    if (filteredRoutes.isEmpty()) {
+                        Text("没有匹配的路线", modifier = Modifier.padding(16.dp))
+                    }
+                }
+            }
+        }
+
+        deleteRoute?.let { route ->
+            AlertDialog(
+                onDismissRequest = { deleteRoute = null },
+                title = { Text("删除路线") },
+                text = { Text("确定要删除路线“${route.name}”吗？") },
+                dismissButton = {
+                    TextButton(onClick = { deleteRoute = null }) { Text("取消") }
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        val remaining = visibleRoutes.filterNot { it.name == route.name }
+                        context.jsonHistoricalRoutes = JSON.toJSONString(remaining)
+                        visibleRoutes = remaining
+                        if (selected?.name == route.name) {
+                            selected = null
+                            mockServiceViewModel.selectedRoute = null
+                            context.selectRoute = null
+                        }
+                        deleteRoute = null
+                        showToast("已删除路线")
+                    }) { Text("删除") }
+                },
+            )
+        }
+    }
+
+    private fun selectRoute(route: HistoricalRoute) {
+        mockServiceViewModel.selectedRoute = route
+        requireContext().selectRoute = route
+        mockServiceViewModel.locationManager?.let { manager ->
+            if (MockServiceHelper.isMockStart(manager) && route.route.isNotEmpty()) {
+                val first = route.route.first()
+                lifecycleScope.launch(Dispatchers.IO) {
+                    val success = mockServiceViewModel.setLocationAndReplay(
+                        manager,
+                        first.first,
+                        first.second,
+                        forceReplay = true,
+                    )
+                    showToast(if (success) "位置更新成功" else "更新位置失败")
+                }
+            }
+        }
+    }
+
+    private data class RouteActionResult(val success: Boolean, val message: String)
+
+    private fun tryOpenService(onResult: (Boolean) -> Unit) {
         if (!OverlayUtils.hasOverlayPermissions(requireContext())) {
             showToast("请授权悬浮窗权限")
+            onResult(false)
             return
         }
-
         val selectedRoute = mockServiceViewModel.selectedRoute ?: run {
-            showToast("请选择一个路线")
+            showToast("请选择一条路线")
+            onResult(false)
             return
         }
-
-        if (mockServiceViewModel.locationManager == null) {
+        val manager = mockServiceViewModel.locationManager ?: run {
             showToast("定位服务加载异常")
+            onResult(false)
             return
         }
-
         if (!MockServiceHelper.isServiceInit()) {
             showToast("系统服务注入失败")
+            onResult(false)
             return
         }
 
         lifecycleScope.launch {
-            val context = requireContext()
-            val speed = context.speed
-            val altitude = context.altitude
-            val accuracy = FakeLoc.accuracy
-
-            button.isClickable = false
-            try {
-                withContext(Dispatchers.IO) {
-                    val mgr = mockServiceViewModel.locationManager ?: run {
-                        showToast("定位服务加载异常")
-                        return@withContext
-                    }
-                    if (MockServiceHelper.tryOpenMock(mgr, speed, altitude, accuracy)) {
-                        updateMockButtonState(button, "停止模拟", R.drawable.rounded_play_disabled_24)
+            val result = withContext(Dispatchers.IO) {
+                var routeToRun = selectedRoute
+                var routeNotice: String? = null
+                if (selectedRoute.useRoadRoute) {
+                    val planned = RoutePlanningClient(requireContext()).plan(selectedRoute)
+                    if (planned.isSuccess) {
+                        val value = planned.getOrThrow()
+                        routeToRun = selectedRoute.copy(
+                            route = value.points,
+                            waypointWaitSeconds = value.waits,
+                        )
+                        mockServiceViewModel.selectedRoute = routeToRun
+                        routeNotice = "已使用 ${value.engine.name} 规划真实道路"
                     } else {
-                        showToast("模拟服务启动失败")
-                        return@withContext
-                    }
-
-                    val first = selectedRoute.route[0]
-                    if (MockServiceHelper.setLocation(mgr, first.first, first.second)) {
-                        showToast("更新路线起点位置成功")
-                    } else {
-                        showToast("更新位置失败")
+                        routeNotice = "道路规划不可用，继续使用手绘路线：${planned.exceptionOrNull()?.message.orEmpty()}"
                     }
                 }
-            } finally {
-                button.isClickable = true
+                if (routeToRun.route.isEmpty()) {
+                    return@withContext RouteActionResult(false, "路线没有可用的途经点")
+                }
+                if (!MockServiceHelper.tryOpenMock(
+                        manager,
+                        requireContext().speed,
+                        requireContext().altitude,
+                        FakeLoc.accuracy,
+                    )
+                ) {
+                    return@withContext RouteActionResult(false, "模拟服务启动失败")
+                }
+                MockServiceHelper.setSpeed(manager, routeToRun.speedMetersPerSecond().toFloat())
+                val first = routeToRun.route.first()
+                val positioned = mockServiceViewModel.setLocationAndReplay(
+                    manager,
+                    first.first,
+                    first.second,
+                    forceReplay = true,
+                )
+                RouteActionResult(
+                    positioned,
+                    routeNotice ?: if (positioned) "路线起点位置已更新" else "更新位置失败",
+                )
             }
+            showToast(result.message)
+            onResult(result.success)
         }
-
-
     }
 
-    private fun tryCloseService(button: MaterialButton) {
-        if (mockServiceViewModel.locationManager == null) {
+    private fun tryCloseService(onResult: (Boolean) -> Unit) {
+        val manager = mockServiceViewModel.locationManager ?: run {
             showToast("定位服务加载异常")
+            onResult(false)
             return
         }
-
         if (!MockServiceHelper.isServiceInit()) {
             showToast("系统服务注入失败")
+            onResult(false)
             return
         }
 
         lifecycleScope.launch {
-            button.isClickable = false
-            try {
-                val isClosed = withContext(Dispatchers.IO) {
-                    val mgr = mockServiceViewModel.locationManager ?: return@withContext false
-                    if (!MockServiceHelper.isMockStart(mgr)) {
-                        showToast("模拟服务未启动")
-                        return@withContext false
-                    }
-
-                    if (MockServiceHelper.tryCloseMock(mgr)) {
-                        updateMockButtonState(button, "开始模拟", R.drawable.rounded_play_arrow_24)
-                        return@withContext true
-                    } else {
-                        showToast("模拟服务停止失败")
-                        return@withContext false
-                    }
+            val result = withContext(Dispatchers.IO) {
+                if (!MockServiceHelper.isMockStart(manager)) {
+                    RouteActionResult(false, "模拟服务未启动")
+                } else if (MockServiceHelper.tryCloseMock(manager)) {
+                    RouteActionResult(true, "路线模拟已停止")
+                } else {
+                    RouteActionResult(false, "模拟服务停止失败")
                 }
-                if (isClosed && mockServiceViewModel.rocker.isStart) {
-                    binding.rocker.isClickable = false
-                    binding.rocker.toggle()
-                    mockServiceViewModel.rocker.hide()
-                    mockServiceViewModel.rockerCoroutineController.pause()
-                    binding.rocker.isClickable = true
-                }
-                if (isClosed) showToast("模拟服务已停止")
-            } finally {
-                button.isClickable = true
             }
+            if (result.success && mockServiceViewModel.rocker.isStart) {
+                setRockerVisible(false)
+                mockServiceViewModel.rockerCoroutineController.pause()
+            }
+            showToast(result.message)
+            onResult(result.success)
         }
     }
 
+    private fun setRockerVisible(visible: Boolean) {
+        if (visible) {
+            mockServiceViewModel.rocker.show()
+            showToast("摇杆已显示")
+        } else {
+            runCatching { mockServiceViewModel.rocker.hide() }
+            mockServiceViewModel.rockerCoroutineController.pause()
+            showToast("摇杆已隐藏")
+        }
+    }
 
     private fun showToast(message: String) {
-        val ctx = requireContext().applicationContext
         lifecycleScope.launch(Dispatchers.Main) {
-            Toast.makeText(ctx, message, Toast.LENGTH_SHORT).show()
+            Toast.makeText(requireContext().applicationContext, message, Toast.LENGTH_SHORT).show()
         }
     }
 
-    private fun updateMockButtonState(button: MaterialButton, text: String, iconRes: Int) {
-        val ctx = requireContext().applicationContext
-        lifecycleScope.launch(Dispatchers.Main) {
-            button.text = text
-            ContextCompat.getDrawable(ctx, iconRes)?.let {
-                button.icon = it
-            }
-        }
-    }
+    private fun routeSummary(route: HistoricalRoute): String =
+        "${route.travelMode.name} · ${"%.1f".format(route.speedMetersPerSecond())} m/s" +
+            if (route.useRoadRoute) " · 道路规划" else " · 手绘"
 }
+

@@ -17,6 +17,9 @@ import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
 import tv.kyshu.xposed.BaseLocationHook
 import tv.kyshu.xposed.RemoteCommandHandler
+import tv.kyshu.xposed.factory.GnssSatelliteStatus
+import tv.kyshu.xposed.factory.GnssStatusFactory
+import tv.kyshu.xposed.factory.MockGnssData
 import tv.kyshu.xposed.hooks.gnss.GnssHook
 import tv.kyshu.xposed.hooks.miui.MiuiBlurLocationProviderHook
 import tv.kyshu.xposed.hooks.miui.MiuiLocationManagerHook
@@ -25,7 +28,6 @@ import tv.kyshu.xposed.hooks.nmea.LocationNMEAHook
 import tv.kyshu.xposed.hooks.provider.LocationProviderManagerHook
 import tv.kyshu.xposed.stability.DomainGuard
 import tv.kyshu.xposed.utils.FakeLoc
-import tv.kyshu.xposed.utils.GnssFlags
 import tv.kyshu.xposed.utils.BinderUtils
 import tv.kyshu.xposed.utils.ChannelIdentity
 import tv.kyshu.xposed.utils.Logger
@@ -87,15 +89,6 @@ private const val GALILEO_E5b_FREQ = 1207.140f
 private const val QZSS_L1_FREQ = 1575.420f
 private const val QZSS_L5_FREQ = 1176.450f
 
-data class MockGnssData(
-    val svCount: Int,
-    val svidWithFlags: IntArray,
-    val cn0s: FloatArray,
-    val elevations: FloatArray,
-    val azimuths: FloatArray,
-    val carrierFreqs: FloatArray
-)
-
 internal object LocationServiceHook: BaseLocationHook() {
 
     val locationListeners = LinkedBlockingQueue<Triple<String, IInterface, IBinder.DeathRecipient>>()
@@ -122,7 +115,9 @@ internal object LocationServiceHook: BaseLocationHook() {
 
     val satelliteStates = ConcurrentHashMap<String, SatelliteState>()
     private var ephemerisMap = ConcurrentHashMap<String, Ephemeris>()
+    private val hookShapeWarnings = ConcurrentHashMap.newKeySet<String>()
     private val rinexLoadLock = Any()
+    private val rinexProviderFetchLock = Any()
     private var lastRinexLoadKey: RinexLoadKey? = null
     private var lastFailedRinexLoadKey: RinexLoadKey? = null
     @Volatile private var cachedProviderRinexSourcePath: String? = null
@@ -381,20 +376,35 @@ internal object LocationServiceHook: BaseLocationHook() {
             }
             return null
         }
+        return synchronized(rinexProviderFetchLock) {
+            fetchRinexFromProviderLocked(context, cacheDir, sourcePath)
+        }
+    }
+
+    private fun fetchRinexFromProviderLocked(
+        context: android.content.Context,
+        cacheDir: File,
+        sourcePath: String,
+    ): File? {
         val outFile = File(cacheDir, RINEX_CACHE_FILE)
-        val tempFile = File(cacheDir, "$RINEX_CACHE_FILE.tmp")
+        val tempFile = File(cacheDir, "$RINEX_CACHE_FILE.${Thread.currentThread().id}.tmp")
         return runCatching {
             if (tempFile.exists()) tempFile.delete()
-            context.contentResolver.openInputStream(Uri.parse(RINEX_PROVIDER_URI))?.use { input ->
-                if (!copyRinexBounded(input, tempFile)) {
-                    Logger.warn(
-                        "[LocationServiceHook] RINEX provider fetch exceeded size limit: " +
-                            "cache=${tempFile.absolutePath}, limit=$MAX_RINEX_FILE_BYTES"
-                    )
-                    tempFile.delete()
-                    return@runCatching null
-                }
-            } ?: return@runCatching null
+            val identity = Binder.clearCallingIdentity()
+            try {
+                context.contentResolver.openInputStream(Uri.parse(RINEX_PROVIDER_URI))?.use { input ->
+                    if (!copyRinexBounded(input, tempFile)) {
+                        Logger.warn(
+                            "[LocationServiceHook] RINEX provider fetch exceeded size limit: " +
+                                "cache=${tempFile.absolutePath}, limit=$MAX_RINEX_FILE_BYTES"
+                        )
+                        tempFile.delete()
+                        return@runCatching null
+                    }
+                } ?: return@runCatching null
+            } finally {
+                Binder.restoreCallingIdentity(identity)
+            }
             if (!tempFile.isFile ||
                 !tempFile.canRead() ||
                 tempFile.length() !in MIN_RINEX_FILE_BYTES..MAX_RINEX_FILE_BYTES ||
@@ -475,6 +485,12 @@ internal object LocationServiceHook: BaseLocationHook() {
             }
         }
         return !exceeded
+    }
+
+    private fun warnHookShapeOnce(key: String, message: String) {
+        if (hookShapeWarnings.add(key)) {
+            Logger.warn(message)
+        }
     }
 
     private fun hasRinexHeader(file: File): Boolean {
@@ -715,7 +731,15 @@ internal object LocationServiceHook: BaseLocationHook() {
             Logger.debug("ILocationManager.Stub: class = $cILocationManager")
         }
 
-        cILocationManager.classLoader!!.let {
+        val serviceClassLoader = cILocationManager.classLoader ?: run {
+            warnHookShapeOnce(
+                "location.service.nullClassLoader",
+                "[LocationServiceHook] ILocationManager classLoader unavailable; nested hooks skipped"
+            )
+            return
+        }
+
+        serviceClassLoader.let {
             BasicLocationHook(it)
             GnssHook(it)
             LocationProviderManagerHook(it)
@@ -917,7 +941,13 @@ internal object LocationServiceHook: BaseLocationHook() {
                         Logger.debug("onLocationBatch: injected!")
                     }
 
-                    val location = (args[0] ?: return@onLocationBatch) as Location
+                    val location = args[0] as? Location ?: run {
+                        warnHookShapeOnce(
+                            "location.batch.badArg",
+                            "[LocationServiceHook] onLocationBatch skipped: arg0=${args.getOrNull(0)?.javaClass?.name ?: "null"}"
+                        )
+                        return@onLocationBatch
+                    }
                     args[0] = injectLocation(location)
                 })
             })
@@ -1018,90 +1048,38 @@ internal object LocationServiceHook: BaseLocationHook() {
                         }
 
                         val selectedSatellites = selectSatellitesForMock(ephemerisSatellites)
-                        val svCount = selectedSatellites.size
 
-                        val mockGps = MockGnssData(
-                            svCount = svCount,
-                            svidWithFlags = IntArray(svCount),
-                            cn0s = FloatArray(svCount),
-                            elevations = FloatArray(svCount),
-                            azimuths = FloatArray(svCount),
-                            carrierFreqs = FloatArray(svCount)
-                        ).apply {
-                            selectedSatellites.forEachIndexed { index, sat ->
+                        val mockGps = GnssStatusFactory.createData(
+                            selectedSatellites.map { sat ->
                                 val state = getOrCreateState(sat)
-                                val hasEphemeris = state.hasEphemeris
-                                val hasAlmanac = state.hasAlmanac
-                                val usedInFix = state.usedInFix
-                                val hasCarrierFreq = true
-                                val hasBasebandCn0 = true
-
-                                var flags = GnssFlags.SVID_FLAGS_NONE
-
-                                if (hasEphemeris) flags = flags or GnssFlags.SVID_FLAGS_HAS_EPHEMERIS_DATA
-                                if (hasAlmanac) flags = flags or GnssFlags.SVID_FLAGS_HAS_ALMANAC_DATA
-                                if (usedInFix) flags = flags or GnssFlags.SVID_FLAGS_USED_IN_FIX
-                                if (hasCarrierFreq) flags = flags or GnssFlags.SVID_FLAGS_HAS_CARRIER_FREQUENCY
-                                if (hasBasebandCn0) flags = flags or GnssFlags.SVID_FLAGS_HAS_BASEBAND_CN0
-
-                                svidWithFlags[index] = (sat.prn shl GnssFlags.SVID_SHIFT_WIDTH) or
-                                        ((sat.constellation and GnssFlags.CONSTELLATION_TYPE_MASK) shl GnssFlags.CONSTELLATION_TYPE_SHIFT_WIDTH) or
-                                        flags
-
-                                cn0s[index] = state.cn0
-                                elevations[index] = state.elevation
-                                azimuths[index] = state.azimuth
-                                // Android GnssStatus.getCarrierFrequencyHz() 返回 Hz，需将 MHz 转 Hz
-                                carrierFreqs[index] = state.carrierFreq * 1e6f
+                                GnssSatelliteStatus(
+                                    svid = sat.prn,
+                                    constellation = sat.constellation,
+                                    cn0 = state.cn0,
+                                    elevation = state.elevation,
+                                    azimuth = state.azimuth,
+                                    carrierFrequencyMhz = state.carrierFreq,
+                                    hasEphemeris = state.hasEphemeris,
+                                    hasAlmanac = state.hasAlmanac,
+                                    usedInFix = state.usedInFix,
+                                )
                             }
-                        }
+                        )
 
                         lastMockGnssData = mockGps
                         lastMockGnssDataTime = now
 
                         if (args[0] is Int) {
-                            args[0] = svCount
-                            args[1] = mockGps.svidWithFlags
-                            args[2] = mockGps.cn0s
-                            args[3] = mockGps.elevations
-                            args[4] = mockGps.azimuths
-                            if (args.size > 5) {
-                                args[5] = mockGps.carrierFreqs
-                            }
-
-                            if (args.size > 6) {
-                                args[6] = FloatArray(svCount) {
-                                    mockGps.cn0s[it] - Random.nextFloat(2f, 5f)
-                                }
-                            }
+                            GnssStatusFactory.applyLegacyCallbackArgs(args, mockGps)
                             return@beforeHook
                         }
 
                         if (args[0] != null && args[0].javaClass.name == "android.location.GnssStatus") {
-                            runCatching {
-                                val mConstructor = args[0].javaClass.declaredConstructors.firstOrNull {
-                                    it.parameterTypes.size == 7
-                                }.also {
-                                    it?.isAccessible = true
-                                }
-
-                                if (mConstructor != null) {
-                                    args[0] = mConstructor.newInstance(
-                                        svCount,
-                                        mockGps.svidWithFlags,
-                                        mockGps.cn0s,
-                                        mockGps.elevations,
-                                        mockGps.azimuths,
-                                        mockGps.carrierFreqs,
-                                        FloatArray(svCount) {
-                                            mockGps.cn0s[it] - Random.nextFloat(2f, 5f)
-                                        }
-                                    )
-                                } else {
-                                    Logger.error("onSvStatusChanged: unsupported version: ${method}, constructor not found")
-                                }
-                            }.onFailure {
-                                XposedBridge.log(it)
+                            val status = GnssStatusFactory.createStatusFromPlaceholder(args[0]!!, mockGps)
+                            if (status != null) {
+                                args[0] = status
+                            } else {
+                                Logger.error("onSvStatusChanged: unsupported version: ${method}, constructor not found")
                             }
                             return@beforeHook
                         }
@@ -1120,7 +1098,7 @@ internal object LocationServiceHook: BaseLocationHook() {
                     })
                 }
             }).isEmpty()) {
-            XposedBridge.log("[PTL] hook registerGnssStatusCallback failed")
+            Logger.warn("hook registerGnssStatusCallback failed")
         }
         // android 11+
         // @EnforcePermission("LOCATION_HARDWARE")
@@ -1248,8 +1226,20 @@ internal object LocationServiceHook: BaseLocationHook() {
         cILocationManager.hookAllMethods("sendExtraCommand", beforeHook {
             if (args.size < 3) return@beforeHook
 
-            val provider = args[0] as String
-            val command = args[1] as String
+            val provider = args[0] as? String ?: run {
+                warnHookShapeOnce(
+                    "sendExtraCommand.badProvider",
+                    "[LocationServiceHook] sendExtraCommand skipped: provider=${args.getOrNull(0)?.javaClass?.name ?: "null"}"
+                )
+                return@beforeHook
+            }
+            val command = args[1] as? String ?: run {
+                warnHookShapeOnce(
+                    "sendExtraCommand.badCommand",
+                    "[LocationServiceHook] sendExtraCommand skipped: command=${args.getOrNull(1)?.javaClass?.name ?: "null"}"
+                )
+                return@beforeHook
+            }
             val outResult = args[2] as? Bundle
 
             if (FakeLoc.disableFusedLocation && provider == "fused") {
@@ -1288,8 +1278,20 @@ internal object LocationServiceHook: BaseLocationHook() {
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam?) {
                         if (param == null || param.args.size < 2 || param.args[0] == null) return
-                        val provider = param.args[0] as String
-                        var userId = param.args[1] as Int
+                        val provider = param.args[0] as? String ?: run {
+                            warnHookShapeOnce(
+                                "isProviderEnabledForUser.badProvider",
+                                "[LocationServiceHook] isProviderEnabledForUser skipped: provider=${param.args.getOrNull(0)?.javaClass?.name ?: "null"}"
+                            )
+                            return
+                        }
+                        var userId = param.args[1] as? Int ?: run {
+                            warnHookShapeOnce(
+                                "isProviderEnabledForUser.badUserId",
+                                "[LocationServiceHook] isProviderEnabledForUser skipped: userId=${param.args.getOrNull(1)?.javaClass?.name ?: "null"}"
+                            )
+                            return
+                        }
                         if (provider == ChannelIdentity.providerName) {
                             if (userId == 0) {
                                 userId = BinderUtils.getCallerUid()
@@ -1315,7 +1317,13 @@ internal object LocationServiceHook: BaseLocationHook() {
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam?) {
                         if (param == null || param.args.isEmpty() || param.args[0] == null) return
-                        val provider = param.args[0] as String
+                        val provider = param.args[0] as? String ?: run {
+                            warnHookShapeOnce(
+                                "isProviderEnabled.badProvider",
+                                "[LocationServiceHook] isProviderEnabled skipped: provider=${param.args.getOrNull(0)?.javaClass?.name ?: "null"}"
+                            )
+                            return
+                        }
                         val userId = BinderUtils.getCallerUid()
                         if (provider == ChannelIdentity.providerName && BinderUtils.isLocationProviderEnabled(userId)) {
                             param.result = true
@@ -1375,8 +1383,15 @@ internal object LocationServiceHook: BaseLocationHook() {
                         }
 
                         is List<*> -> {
-                            val locations = param.args[0] as List<*>
-                            param.args[0] = locations.map { injectLocation(it as Location) }
+                            val locations = param.args[0] as? List<*> ?: return
+                            if (locations.any { it !is Location }) {
+                                warnHookShapeOnce(
+                                    "onLocationChanged.badList",
+                                    "[LocationServiceHook] onLocationChanged skipped: list contains non-Location entries"
+                                )
+                                return
+                            }
+                            param.args[0] = locations.filterIsInstance<Location>().map(::injectLocation)
                         }
                         else -> Logger.error("onLocationChanged args is not `Location`")
                     }
@@ -1502,7 +1517,8 @@ internal object LocationServiceHook: BaseLocationHook() {
             }
 
             if (!called) {
-                Logger.error("callOnLocationChanged failed: " + error?.stackTraceToString())
+                error?.let { Logger.error("callOnLocationChanged failed", it) }
+                    ?: Logger.error("callOnLocationChanged failed")
                 Logger.error("The listener all methods: " + listener.javaClass.declaredMethods.joinToString { it.name })
             }
         }

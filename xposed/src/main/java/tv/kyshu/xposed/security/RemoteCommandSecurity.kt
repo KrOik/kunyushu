@@ -68,6 +68,7 @@ object RemoteCommandSecurity {
         "mock_bssid",
         "mock_mac",
         "mock_ip",
+        "mock_domain_config_json",
         "gait_freq",
         "gait_amp_scale",
         "gait_params_json",
@@ -78,6 +79,8 @@ object RemoteCommandSecurity {
         "caps",
         "standards",
         "widths",
+        "export_consent_token",
+        "export_path",
     )
     private val sensitiveStringListKeys = setOf("ssids", "bssids", "caps")
     private val sensitiveIntListKeys = setOf("rssis", "freqs", "standards", "widths")

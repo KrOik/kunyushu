@@ -129,9 +129,16 @@ class HookLifecycleController(
             }
 
             "start_wifi_mock" -> {
-                store.enableMockWifi = true
-                Logger.info("[HookLifecycle] start_wifi_mock enableMockWifi=${store.enableMockWifi}")
-                true
+                if (!BuildConfig.ENABLE_WIFI_MOCK) {
+                    store.enableMockWifi = false
+                    rely.putBoolean("is_wifi_mock_start", false)
+                    Logger.warn("[HookLifecycle] start_wifi_mock ignored: WiFi mock feature disabled")
+                    false
+                } else {
+                    store.enableMockWifi = true
+                    Logger.info("[HookLifecycle] start_wifi_mock enableMockWifi=${store.enableMockWifi}")
+                    true
+                }
             }
 
             "stop_wifi_mock" -> {
@@ -141,8 +148,8 @@ class HookLifecycleController(
             }
 
             "is_wifi_mock_start" -> {
-                rely.putBoolean("is_wifi_mock_start", store.enableMockWifi)
-                Logger.info("[HookLifecycle] is_wifi_mock_start=${store.enableMockWifi}")
+                rely.putBoolean("is_wifi_mock_start", BuildConfig.ENABLE_WIFI_MOCK && store.enableMockWifi)
+                Logger.info("[HookLifecycle] is_wifi_mock_start=${BuildConfig.ENABLE_WIFI_MOCK && store.enableMockWifi}")
                 true
             }
 
@@ -179,7 +186,7 @@ class HookLifecycleController(
         var count = 0
         if (store.enable) count++
         if (store.enableMockGnss) count++
-        if (store.enableMockWifi) count++
+        if (BuildConfig.ENABLE_WIFI_MOCK && store.enableMockWifi) count++
         return count
     }
 

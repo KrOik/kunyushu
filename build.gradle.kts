@@ -5,6 +5,41 @@ plugins {
     alias(libs.plugins.android.library) apply false
     alias(libs.plugins.jetbrains.kotlin.jvm) apply false
     alias(libs.plugins.kotlin.serialization) apply false
+    alias(libs.plugins.hilt.android) apply false
+    alias(libs.plugins.ksp) apply false
+}
+
+// ==========================================================================
+// 验证门禁（自 VoxLoction 移植）
+// 一次命令跑完所有编译/单测/lint 检查：gradlew verificationGate
+// ==========================================================================
+tasks.register("typecheck") {
+    dependsOn(
+        ":app:compileAppDebugKotlin",
+        ":app:compileArm64DebugKotlin",
+        ":app:compileX64DebugKotlin",
+        ":xposed:compileDebugKotlin",
+        ":system-api:compileDebugKotlin",
+        ":nmea:compileKotlin"
+    )
+}
+
+tasks.register("hostRegression") {
+    dependsOn(
+        ":app:testAppDebugUnitTest",
+        ":xposed:testDebugUnitTest",
+        ":system-api:testDebugUnitTest"
+    )
+}
+
+tasks.register("verificationGate") {
+    dependsOn(
+        "typecheck",
+        "hostRegression",
+        ":app:lintAppDebug",
+        ":xposed:lintDebug",
+        ":system-api:lintDebug"
+    )
 }
 
 // ==========================================================================

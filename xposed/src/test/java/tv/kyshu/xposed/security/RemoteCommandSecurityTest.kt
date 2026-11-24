@@ -165,6 +165,7 @@ class RemoteCommandSecurityTest {
             putDouble("latitude", 39.9)
             putFloat("accuracy", 4.5f)
             putString("mock_ssid", "PrivateWifi")
+            putString("mock_domain_config_json", """{"schema_version":2,"location":{"latitude":39.9}}""")
         }
 
         assertTrue(guard.registerSession(key))
@@ -173,15 +174,21 @@ class RemoteCommandSecurityTest {
         assertFalse(bundle.containsKey("latitude"))
         assertFalse(bundle.containsKey("accuracy"))
         assertFalse(bundle.containsKey("mock_ssid"))
+        assertFalse(bundle.containsKey("mock_domain_config_json"))
         assertTrue(bundle.containsKey("p_latitude"))
         assertTrue(bundle.containsKey("p_accuracy"))
         assertTrue(bundle.containsKey("p_mock_ssid"))
+        assertTrue(bundle.containsKey("p_mock_domain_config_json"))
         assertTrue(guard.accept(key, bundle))
         assertTrue(RemoteCommandSecurity.decryptSensitivePayload(bundle, key))
 
         assertEquals(39.9, bundle.getDouble("latitude"), 0.0)
         assertEquals(4.5f, bundle.getFloat("accuracy"), 0f)
         assertEquals("PrivateWifi", bundle.getString("mock_ssid"))
+        assertEquals(
+            """{"schema_version":2,"location":{"latitude":39.9}}""",
+            bundle.getString("mock_domain_config_json"),
+        )
     }
 
     @Test

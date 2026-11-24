@@ -1,5 +1,7 @@
 package tv.kyshu.ui.viewmodel
 
+import dagger.hilt.android.lifecycle.HiltViewModel
+import javax.inject.Inject
 import android.app.Notification
 import androidx.lifecycle.ViewModel
 import com.baidu.location.LocationClient
@@ -11,7 +13,8 @@ import tv.kyshu.R
 import com.baidu.mapapi.search.geocode.GeoCoder
 import tv.kyshu.bdmap.setMapConfig
 
-class BaiduMapViewModel: ViewModel() {
+@HiltViewModel
+class BaiduMapViewModel @Inject constructor() : ViewModel() {
     var isExists = false
     lateinit var baiduMap: BaiduMap
     lateinit var mLocationClient: LocationClient

@@ -4,6 +4,8 @@
 #include <unistd.h>
 #include <dobby.h>
 #include <sys/mman.h>
+#include <cstdint>
+#include "logging.h"
 
 #define uintval(p)              reinterpret_cast<uintptr_t>(p)
 #define ptr(p)                  (reinterpret_cast<void *>(p))
@@ -18,8 +20,20 @@
                                             PROT_READ | PROT_WRITE | PROT_EXEC)
 
 inline void* InlineHook(void* target, void* hooker) {
-    make_rwx(target, page_size);
-    void* origin_call;
+    if (target == nullptr || hooker == nullptr) {
+        LOGE("InlineHook skipped: null target or hooker");
+        return nullptr;
+    }
+    const int ps = page_size;
+    if (ps <= 0) {
+        LOGE("InlineHook skipped: invalid page size");
+        return nullptr;
+    }
+    if (make_rwx(target, ps) != 0) {
+        LOGE("InlineHook skipped: mprotect failed");
+        return nullptr;
+    }
+    void* origin_call = nullptr;
     if (DobbyHook(target, hooker, &origin_call) == RS_SUCCESS) {
         return origin_call;
     } else {

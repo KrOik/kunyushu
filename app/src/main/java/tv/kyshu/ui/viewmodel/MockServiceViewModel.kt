@@ -1,8 +1,9 @@
 package tv.kyshu.ui.viewmodel
 
+import dagger.hilt.android.lifecycle.HiltViewModel
+import javax.inject.Inject
 import android.app.Activity
 import android.location.LocationManager
-import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Job
@@ -11,6 +12,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import tv.kyshu.android.coro.CoroutineController
 import tv.kyshu.android.coro.CoroutineRouteMock
+import tv.kyshu.environment.EnvironmentReplayCoordinator
 import tv.kyshu.ext.Loc4j
 import tv.kyshu.ext.accuracy
 import tv.kyshu.ext.altitude
@@ -21,14 +23,19 @@ import tv.kyshu.ui.mock.HistoricalLocation
 import tv.kyshu.ui.mock.HistoricalRoute
 import tv.kyshu.ui.mock.Rocker
 import tv.kyshu.xposed.utils.FakeLoc
+import tv.kyshu.xposed.utils.Log as XLog
 import net.sf.geographiclib.Geodesic
 
-class MockServiceViewModel : ViewModel() {
+@HiltViewModel
+class MockServiceViewModel @Inject constructor() : ViewModel() {
     lateinit var rocker: Rocker
     private var rockerJob: Job? = null
     private var routeMockJob: Job? = null
+    private var environmentReplay: EnvironmentReplayCoordinator? = null
+    private var lastReplayCheckAt = 0L
     var isRockerLocked = false
     var routeStage = 0
+    private var routeWaitUntilMillis = 0L
     val rockerCoroutineController = CoroutineController()
     val routeMockCoroutine = CoroutineRouteMock()
 
@@ -50,6 +57,9 @@ class MockServiceViewModel : ViewModel() {
     }
 
     fun initRocker(activity: Activity): Rocker {
+        if (environmentReplay == null) {
+            environmentReplay = EnvironmentReplayCoordinator(activity.applicationContext)
+        }
         if (!::rocker.isInitialized) {
             rocker = Rocker(activity)
         }
@@ -62,10 +72,11 @@ class MockServiceViewModel : ViewModel() {
                     rockerCoroutineController.controlledCoroutine()
                     delay(delayTime)
 
-                    if (!isServiceStart()) continue
                     locationManager?.let { mgr ->
                         if (!MockServiceHelper.move(mgr, distancePerTick(FakeLoc.speed, delayTime), FakeLoc.bearing)) {
-                            Log.e("MockServiceViewModel", "Failed to move")
+                            XLog.e("MockServiceViewModel", "Failed to move")
+                        } else {
+                            replayCurrentLocation(mgr)
                         }
                     } ?: break
                 }
@@ -83,14 +94,17 @@ class MockServiceViewModel : ViewModel() {
                 while (isActive) {
                     routeMockCoroutine.routeMockCoroutine()
                     delay(delayTime)
-                    if (!isServiceStart()) continue
+                    if (System.currentTimeMillis() < routeWaitUntilMillis) continue
                     // 如果是第0阶段，定位到第一个点
                     if (routeStage == 0) {
                         val route0 = selectedRoute?.route?.get(0) ?: break
                         locationManager?.let { mgr ->
-                            MockServiceHelper.setLocation(mgr, route0.first, route0.second)
+                            setLocationAndReplay(mgr, route0.first, route0.second, forceReplay = true)
                         } ?: break
+                        routeWaitUntilMillis = System.currentTimeMillis() +
+                            (selectedRoute?.waitSecondsAt(0) ?: 0) * 1_000L
                         routeStage++
+                        if (System.currentTimeMillis() < routeWaitUntilMillis) continue
                     }
                     val route = selectedRoute?.route ?: break
                     var transitionsThisTick = 0
@@ -110,17 +124,23 @@ class MockServiceViewModel : ViewModel() {
                         if (inverse.s12 < 1.0) {
                             // 精确设置位置到目标点并进入下一阶段
                             locationManager?.let { mgr ->
-                                MockServiceHelper.setLocation(mgr, target.first, target.second)
+                                setLocationAndReplay(mgr, target.first, target.second)
                             } ?: break
                             routeStage++
+                            routeWaitUntilMillis = System.currentTimeMillis() +
+                                (selectedRoute?.waitSecondsAt(routeStage - 1) ?: 0) * 1_000L
                             transitionsThisTick++
-                        } else if (inverse.s12 < distancePerTick(FakeLoc.speed, delayTime)) {
+                            if (System.currentTimeMillis() < routeWaitUntilMillis) break
+                        } else if (inverse.s12 < distancePerTick(selectedRoute?.speedMetersPerSecond() ?: FakeLoc.speed, delayTime)) {
                             // 如果距离小于速度，直接移动到目标点
                             locationManager?.let { mgr ->
-                                MockServiceHelper.setLocation(mgr, target.first, target.second)
+                                setLocationAndReplay(mgr, target.first, target.second)
                             } ?: break
                             routeStage++
+                            routeWaitUntilMillis = System.currentTimeMillis() +
+                                (selectedRoute?.waitSecondsAt(routeStage - 1) ?: 0) * 1_000L
                             transitionsThisTick++
+                            if (System.currentTimeMillis() < routeWaitUntilMillis) break
 
                         } else {
                             break
@@ -133,7 +153,8 @@ class MockServiceViewModel : ViewModel() {
                         rocker.autoStatus = false
                         // 重设阶段
                         routeStage = 0
-                        break // 退出循环
+                        routeWaitUntilMillis = 0L
+                        continue
                     }
 
                     // 处理当前目标点的移动
@@ -153,10 +174,13 @@ class MockServiceViewModel : ViewModel() {
                         azimuth += 360
                     }
 
-                    Log.d("MockServiceViewModel", "从 $currentLat, $currentLon 移动到 ${target.first}, ${target.second}, 方位角: $azimuth")
+                    XLog.d("MockServiceViewModel", "route tick move bearing=$azimuth")
                     locationManager?.let { mgr ->
-                        if (!MockServiceHelper.move(mgr, distancePerTick(FakeLoc.speed, delayTime), azimuth)) {
-                            Log.e("MockServiceViewModel", "移动失败")
+                        val routeSpeed = selectedRoute?.speedMetersPerSecond() ?: FakeLoc.speed
+                        if (!MockServiceHelper.move(mgr, distancePerTick(routeSpeed, delayTime), azimuth)) {
+                            XLog.e("MockServiceViewModel", "move failed")
+                        } else {
+                            replayCurrentLocation(mgr)
                         }
                     } ?: break
                 }
@@ -164,6 +188,25 @@ class MockServiceViewModel : ViewModel() {
         }
 
         return rocker
+    }
+
+    suspend fun setLocationAndReplay(
+        manager: LocationManager,
+        latitude: Double,
+        longitude: Double,
+        forceReplay: Boolean = false,
+    ): Boolean {
+        if (!MockServiceHelper.setLocation(manager, latitude, longitude)) return false
+        environmentReplay?.resolveAndApply(manager, latitude, longitude, forceReplay)
+        return true
+    }
+
+    private suspend fun replayCurrentLocation(manager: LocationManager) {
+        val now = System.currentTimeMillis()
+        if (now - lastReplayCheckAt < 2_000) return
+        lastReplayCheckAt = now
+        val location = MockServiceHelper.getLocation(manager) ?: return
+        environmentReplay?.resolveAndApply(manager, location.first, location.second)
     }
 
     fun isServiceStart(): Boolean {

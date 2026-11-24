@@ -13,6 +13,24 @@ import java.util.Locale
 
 class LocationNMEAHookTest {
     @Test
+    fun `registered system consumer is isolated only while mock is enabled`() {
+        val callback = GenericNmeaProxy()
+        val other = GenericNmeaProxy()
+        LocationNMEAHook.rememberSkippedNmeaRegistration(callback, arrayOf(callback, "android", null, "listener"))
+        assertTrue(LocationNMEAHook.shouldSkipNmeaCallbackInstance(callback))
+        assertFalse(LocationNMEAHook.shouldSkipNmeaCallbackInstance(other))
+        val oldEnable = FakeLoc.enable
+        try {
+            FakeLoc.enable = true
+            assertEquals(NmeaCallbackContract.Action.SUPPRESS, LocationNMEAHook.callbackAction(callback))
+            FakeLoc.enable = false
+            assertEquals(NmeaCallbackContract.Action.PASSTHROUGH, LocationNMEAHook.callbackAction(callback))
+        } finally { FakeLoc.enable = oldEnable }
+        LocationNMEAHook.rememberSkippedNmeaRegistration(callback, arrayOf(callback, "com.example.app", null, "listener"))
+        assertFalse(LocationNMEAHook.shouldSkipNmeaCallbackInstance(callback))
+    }
+
+    @Test
     fun `generated GSV sentences keep callback line boundary`() {
         withFakeLocEnabled {
             val first = LocationNMEAHook.injectNMEA(nmea("GPGSV,3,1,12,01,10,010,20"))
@@ -87,6 +105,14 @@ class LocationNMEAHookTest {
         withFakeLocEnabled {
             assertNull(LocationNMEAHook.injectNMEA("\$GPGSV,3,1,12,01,10,010,20*00"))
             assertNull(LocationNMEAHook.injectNMEA("\$GPGSV,1,1,04,01,10,010,20*00\$GPGSV,1,1,04,02,20,020,30*00"))
+        }
+    }
+
+    @Test
+    fun `safe NMEA injection fails closed for malformed concatenated input`() {
+        withFakeLocEnabled {
+            assertNull(LocationNMEAHook.safeInjectNMEA("29*73\$GPGSV"))
+            assertNull(LocationNMEAHook.safeInjectNMEA("\$GPGSV,1,1,04,01,10,010,20*00\$GPGSV,1,1,04,02,20,020,30*00"))
         }
     }
 

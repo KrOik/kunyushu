@@ -4,7 +4,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.withTimeoutOrNull
 
 class CoroutineController {
-    private val controlChannel = Channel<ControlCommand>(Channel.CONFLATED)
+    private val controlChannel = Channel<ControlCommand>(Channel.UNLIMITED)
     var isPaused = false
 
     suspend fun controlledCoroutine() {

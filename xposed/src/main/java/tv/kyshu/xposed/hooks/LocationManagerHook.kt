@@ -111,7 +111,7 @@ object LocationManagerHook: BaseLocationHook() {
         }.onSuccess {
             it.onceHookAllMethod("onLocation", hookOnLocation)
         }.onFailure {
-            XposedBridge.log(it)
+            Logger.warn("Hook GetCurrentLocationTransport failed", it)
         }
 
         kotlin.runCatching {
@@ -119,7 +119,7 @@ object LocationManagerHook: BaseLocationHook() {
         }.onSuccess {
             it.onceHookAllMethod("onLocationChanged", hookOnLocation)
         }.onFailure {
-            XposedBridge.log(it)
+            Logger.warn("Hook BatchedLocationCallbackWrapper failed", it)
         }
 
         kotlin.runCatching {
@@ -127,7 +127,7 @@ object LocationManagerHook: BaseLocationHook() {
         }.onSuccess {
             it.onceHookAllMethod("onLocationChanged", hookOnLocation)
         }.onFailure {
-            XposedBridge.log(it)
+            Logger.warn("Hook LocationListenerTransport failed", it)
         }
     }
 }

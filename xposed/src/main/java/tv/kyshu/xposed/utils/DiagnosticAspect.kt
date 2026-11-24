@@ -27,8 +27,22 @@ object DiagnosticAspect {
     fun hookInstall(owner: Class<*>, methodName: String, unhookCount: Int, mode: String) {
         val label = "${owner.name}#$methodName"
         if (unhookCount == 0) {
+            HookInstallReporter.recordInstall(
+                label = label,
+                installed = 0,
+                mode = mode,
+                classLoader = owner.classLoader,
+                extra = mapOf("owner" to owner.name, "method" to methodName),
+            )
             logLimited("install.miss.$label.$mode", "[install-miss] $mode $label")
         } else {
+            HookInstallReporter.recordInstall(
+                label = label,
+                installed = unhookCount,
+                mode = mode,
+                classLoader = owner.classLoader,
+                extra = mapOf("owner" to owner.name, "method" to methodName),
+            )
             logLimited("install.hit.$label.$mode", "[install] $mode $label overloads=$unhookCount")
         }
     }
@@ -36,8 +50,22 @@ object DiagnosticAspect {
     fun hookInstall(method: Member, installed: Boolean, mode: String) {
         val label = methodLabel(method)
         if (installed) {
+            HookInstallReporter.recordInstall(
+                label = label,
+                installed = 1,
+                mode = mode,
+                classLoader = method.declaringClass.classLoader,
+                extra = mapOf("owner" to method.declaringClass.name, "method" to method.name),
+            )
             logLimited("install.hit.$label.$mode", "[install] $mode $label")
         } else {
+            HookInstallReporter.recordInstall(
+                label = label,
+                installed = 0,
+                mode = mode,
+                classLoader = method.declaringClass.classLoader,
+                extra = mapOf("owner" to method.declaringClass.name, "method" to method.name),
+            )
             logLimited("install.miss.$label.$mode", "[install-miss] $mode $label")
         }
     }

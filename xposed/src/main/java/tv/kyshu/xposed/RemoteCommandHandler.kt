@@ -33,7 +33,13 @@ import tv.kyshu.xposed.utils.CrashForensics
 import tv.kyshu.xposed.utils.DiagnosticAspect
 import tv.kyshu.xposed.utils.FlightRecorder
 import tv.kyshu.xposed.utils.Logger
+import tv.kyshu.xposed.utils.LogRedactor
 import tv.kyshu.xposed.utils.MockAuditTrail
+import org.json.JSONArray
+import tv.kyshu.xposed.config.BleDeviceProfile
+import tv.kyshu.xposed.config.MockDomain
+import tv.kyshu.xposed.config.MockDomainConfig
+import tv.kyshu.xposed.config.MockDomainConfigJson
 import tv.kyshu.xposed.config.MockWifiData
 import tv.kyshu.xposed.utils.MockProbeLog
 import java.util.Collections
@@ -52,13 +58,24 @@ object RemoteCommandHandler {
     private const val FIELD_FROM_PACKAGE = "from_package"
     private const val FIELD_FROM_PROCESS = "from_process"
     const val SCOPE_SENSOR_APP = "sensor_app"
+    private const val FIELD_EXPORT_CONSENT_TOKEN = "export_consent_token"
+    private const val EXPORT_CONSENT_WINDOW_MS = 2L * 60L * 1000L
+    private const val MAX_EXPORT_BYTES = 512 * 1024
+    private const val MAX_EXPORT_FILES = 8
+    private const val MAX_EXPORT_TOTAL_BYTES = 2L * 1024L * 1024L
+    private const val MAX_EXPORT_AGE_MS = 7L * 24L * 60L * 60L * 1000L
 
     enum class SessionScope {
         CONTROL,
         SYNC_ONLY,
     }
 
-    private data class ProxyBinderSession(
+    private data class ExportConsent(
+        val sessionKey: String,
+        val expiresAtMs: Long,
+    )
+
+    private class ProxyBinderSession(
         val binder: IBinder,
         val sessionKey: String,
     )
@@ -69,6 +86,7 @@ object RemoteCommandHandler {
         get() = activeSessionKey
     private val replayGuard = RemoteCommandSecurity.ReplayGuard()
     private val sessionScopes = ConcurrentHashMap<String, SessionScope>()
+    private val exportConsents = ConcurrentHashMap<String, ExportConsent>()
     private val proxyBinders by lazy { Collections.synchronizedList(arrayListOf<ProxyBinderSession>()) }
     private val proxyRelayDropCount = java.util.concurrent.atomic.AtomicLong()
     private val proxyRelayExecutor by lazy {
@@ -82,25 +100,27 @@ object RemoteCommandHandler {
             ThreadPoolExecutor.AbortPolicy(),
         )
     }
-    private val proxyCommandIds = setOf(
+    private val proxyCommandIds = mutableSetOf(
         MockCommandContract.Commands.PUT_CONFIG,
-        MockCommandContract.Commands.UPDATE_WIFI,
         MockCommandContract.Commands.START,
         MockCommandContract.Commands.STOP,
         MockCommandContract.Commands.START_GNSS_MOCK,
         MockCommandContract.Commands.STOP_GNSS_MOCK,
-        MockCommandContract.Commands.START_WIFI_MOCK,
-        MockCommandContract.Commands.STOP_WIFI_MOCK,
         "set_speed_amp",
         "set_altitude",
         "set_speed",
         "set_bearing",
         "move",
         "update_location",
-    )
+    ).apply {
+        if (BuildConfig.ENABLE_WIFI_MOCK) {
+            add(MockCommandContract.Commands.UPDATE_WIFI)
+            add(MockCommandContract.Commands.START_WIFI_MOCK)
+            add(MockCommandContract.Commands.STOP_WIFI_MOCK)
+        }
+    }
     private val syncOnlyCommandIds = setOf(
         MockCommandContract.Commands.SYNC_CONFIG,
-        "set_proxy",
     )
 
     private object LiveHookRuntimeState : HookRuntimeStateStore {
@@ -119,7 +139,7 @@ object RemoteCommandHandler {
             set(value) { FakeLoc.enableMockGnss = value }
         override var enableMockWifi: Boolean
             get() = FakeLoc.enableMockWifi
-            set(value) { FakeLoc.enableMockWifi = value }
+            set(value) { FakeLoc.enableMockWifi = BuildConfig.ENABLE_WIFI_MOCK && value }
         override var latitude: Double
             get() = FakeLoc.latitude
             set(value) { FakeLoc.latitude = value }
@@ -275,31 +295,7 @@ object RemoteCommandHandler {
         replayGuard: RemoteCommandSecurity.ReplayGuard,
     ): Boolean {
         // Bundle size cap: use total serialized size estimate to prevent OOM DoS
-        val estimatedByteSize = try {
-            var size = 0
-            for (key in rely.keySet()) {
-                size += key.length * 2 // key chars * 2 bytes
-                val value = rely.get(key)
-                when (value) {
-                    is String -> size += value.length * 2
-                    is ByteArray -> size += value.size
-                    is IntArray -> size += value.size * 4
-                    is LongArray -> size += value.size * 8
-                    is FloatArray -> size += value.size * 4
-                    is DoubleArray -> size += value.size * 8
-                    is Boolean -> size += 1
-                    is Int -> size += 4
-                    is Long -> size += 8
-                    is Float -> size += 4
-                    is Double -> size += 8
-                    is java.util.ArrayList<*> -> {
-                        value.forEach { if (it is String) size += it.length * 2 else size += 4 }
-                    }
-                    else -> size += 64
-                }
-            }
-            size
-        } catch (_: Exception) { 0 }
+        val estimatedByteSize = MockCommandContract.estimateBundleByteSize(rely)
         if (estimatedByteSize > 256_000) {
             Logger.warn("[RemoteCommandHandler] oversized bundle: estimated ${estimatedByteSize} bytes, rejecting")
             return false
@@ -315,6 +311,16 @@ object RemoteCommandHandler {
         }
         if (!RemoteCommandSecurity.decryptSensitivePayload(rely, sessionKey)) {
             Logger.warn("[RemoteCommandHandler] rejected command with invalid encrypted payload: $commandId")
+            return false
+        }
+        try {
+            MockCommandContract.validateDomainCommand(commandId, rely)
+        } catch (e: IllegalArgumentException) {
+            val failure = domainValidationFailureSummary(e)
+            structuredLog("error", commandId, "invalid command payload: $failure", rely)
+            if (MockCommandContract.isDomainCommand(commandId)) {
+                MockAuditTrail.skip("domain.validation", "$commandId rejected: $failure")
+            }
             return false
         }
         val proxyRelay = if (commandId in proxyCommandIds) Bundle(rely) else null
@@ -358,13 +364,27 @@ object RemoteCommandHandler {
                 true
             }
             MockCommandContract.Commands.SYNC_CONFIG -> {
-                MockCommandContract.populateSyncReply(rely)
+                MockCommandContract.populateSyncReply(rely, includeSensitive = scope == SessionScope.CONTROL)
                 Logger.info("[RemoteCommandHandler] sync_config populated")
                 true
             }
             MockCommandContract.Commands.UPDATE_WIFI -> {
-                handleUpdateWifi(rely)
+                if (BuildConfig.ENABLE_WIFI_MOCK) {
+                    handleUpdateWifi(rely)
+                } else {
+                    FakeLoc.mockWifiList = emptyList()
+                    Logger.warn("[RemoteCommandHandler] update_wifi ignored: WiFi mock feature disabled")
+                    false
+                }
             }
+            MockCommandContract.Commands.LOCATION_UPDATE -> handleLocationUpdate(rely)
+            MockCommandContract.Commands.GNSS_UPDATE_STATUS -> handleGnssUpdateStatus(rely)
+            MockCommandContract.Commands.NMEA_UPDATE_STREAM -> handleNmeaUpdateStream(rely)
+            MockCommandContract.Commands.WIFI_UPDATE_CONNECTED -> handleWifiUpdateConnected(rely)
+            MockCommandContract.Commands.WIFI_UPDATE_SCAN -> handleWifiUpdateScan(rely)
+            MockCommandContract.Commands.CELL_UPDATE -> handleCellUpdate(rely)
+            MockCommandContract.Commands.BLE_UPDATE -> handleBleUpdate(rely)
+            MockCommandContract.Commands.NFC_REPLAY -> handleDisabledDomainCommand(commandId, "NFC")
             MockCommandContract.Commands.START,
             MockCommandContract.Commands.STOP,
             MockCommandContract.Commands.IS_START,
@@ -386,7 +406,7 @@ object RemoteCommandHandler {
             }
             MockCommandContract.Commands.TELEMETRY_DUMP -> {
                 val lastN = rely.getInt("last_n", 256)
-                val includePreviousBoot = rely.getBoolean("include_previous_boot", true)
+                val includePreviousBoot = rely.getBoolean("include_previous_boot", false)
                 val dump = FlightRecorder.dump(lastN, includePreviousBoot)
                 rely.putString(MockCommandContract.Keys.TELEMETRY_JSONL, dump)
                 FlightRecorder.state(
@@ -397,8 +417,11 @@ object RemoteCommandHandler {
                 Logger.info("[RemoteCommandHandler] telemetry dump requested, ${dump.lines().size} lines")
                 true
             }
+            MockCommandContract.Commands.GRANT_LOG_EXPORT -> {
+                handleGrantLogExport(sessionKey, rely)
+            }
             MockCommandContract.Commands.EXPORT_LOGS -> {
-                val result = handleExportLogs(rely)
+                val result = handleExportLogs(sessionKey, rely)
                 Logger.info("[RemoteCommandHandler] export_logs completed, result=$result")
                 result
             }
@@ -410,9 +433,7 @@ object RemoteCommandHandler {
                 rely.putFloat("bearing", FakeLoc.bearing.toFloat())
                 true
             }
-            MockCommandContract.Commands.LOAD_LIBRARY -> {
-                handleLoadLibrary(rely)
-            }
+
             MockCommandContract.Commands.UPDATE_RINEX -> {
                 val rinexPath = rely.getString("rinex_path") ?: run {
                     Logger.warn("[RemoteCommandHandler] update_rinex: missing rinex_path")
@@ -550,8 +571,13 @@ object RemoteCommandHandler {
             }
             }
         } catch (e: IllegalArgumentException) {
-            structuredLog("error", commandId, "invalid command payload: ${e.message}", rely)
+            val failure = domainValidationFailureSummary(e)
+            structuredLog("error", commandId, "invalid command payload: $failure", rely)
+            auditDomainCommandFailure(commandId, rely, "handler_exception:$failure")
             false
+        }
+        if (!handled) {
+            auditDomainCommandFailure(commandId, rely, "handler_false")
         }
         if (handled) {
             if (!RemoteCommandSecurity.encryptSensitivePayload(rely, sessionKey)) {
@@ -564,6 +590,22 @@ object RemoteCommandHandler {
 
     private fun isCommandAllowedForScope(scope: SessionScope, commandId: String): Boolean {
         return scope == SessionScope.CONTROL || commandId in syncOnlyCommandIds
+    }
+
+    private fun domainValidationFailureSummary(error: IllegalArgumentException): String {
+        return error.message
+            ?.substringBefore(':')
+            ?.take(120)
+            ?.takeIf { it.isNotBlank() }
+            ?: error.javaClass.simpleName
+    }
+
+    private fun auditDomainCommandFailure(commandId: String, rely: Bundle, reason: String) {
+        if (!MockCommandContract.isDomainCommand(commandId)) return
+        MockAuditTrail.skip(
+            "domain.failure",
+            "$commandId failed reason=$reason fields=${domainPayloadFieldCount(rely)} bytes=${domainPayloadSize(rely)}",
+        )
     }
 
     private fun isSensorAppSyncExchangeAllowed(uid: Int, rely: Bundle): Boolean {
@@ -598,39 +640,11 @@ object RemoteCommandHandler {
         return isSafePackageChar(char) || char == ':'
     }
 
-    private fun handleLoadLibrary(rely: Bundle): Boolean {
-        val path = rely.getString("path") ?: run {
-            rely.putString("result", "missing_path")
-            return true
-        }
-        val result = runCatching {
-            val allowedDir = File("/data/local/portal-lib").canonicalFile
-            val target = File(path).canonicalFile
-            val parent = target.parentFile?.canonicalFile
-            if (target.name != "libportal.so" || parent?.path != allowedDir.path) {
-                Logger.warn("[RemoteCommandHandler] load_library denied: $path")
-                return@runCatching "denied"
-            }
-            if (!target.isFile || !target.canRead()) {
-                Logger.warn("[RemoteCommandHandler] load_library missing or unreadable: ${target.path}")
-                return@runCatching "missing"
-            }
-            if (Dobby.load(target.path)) {
-                "success"
-            } else {
-                "failed:${Dobby.unavailableReason}"
-            }
-        }.getOrElse { e ->
-            Logger.error("[RemoteCommandHandler] load_library failed", e)
-            "failed:${e.javaClass.simpleName}"
-        }
-        rely.putString("result", result)
-        return true
-    }
+
 
     private fun relayToProxyBinders(commandId: String, relay: Bundle?) {
-        if (relay == null || proxyBinders.isEmpty()) return
-        val sessions = snapshotLiveProxyBinders()
+        if (relay == null) return
+        val sessions = snapshotProxyBinders()
         sessions.forEach { proxy ->
             val proxyRelay = Bundle(relay)
             try {
@@ -645,9 +659,9 @@ object RemoteCommandHandler {
 
     private fun registerProxyBinder(binder: IBinder, sessionKey: String): Int {
         synchronized(proxyBinders) {
-            proxyBinders.removeIf { proxy ->
-                proxy.binder == binder || !proxy.binder.isBinderAlive || !proxy.binder.pingBinder()
-            }
+            // No Binder calls under this lock: a frozen peer can exhaust system_server's
+            // Binder pool even when the eventual relay uses FLAG_ONEWAY.
+            proxyBinders.removeIf { proxy -> proxy.binder === binder }
             while (proxyBinders.size >= MAX_PROXY_BINDERS) {
                 proxyBinders.removeAt(0)
             }
@@ -656,19 +670,16 @@ object RemoteCommandHandler {
         }
     }
 
-    private fun snapshotLiveProxyBinders(): List<ProxyBinderSession> {
+    private fun snapshotProxyBinders(): List<ProxyBinderSession> {
         synchronized(proxyBinders) {
-            proxyBinders.removeIf { proxy -> !proxy.binder.isBinderAlive || !proxy.binder.pingBinder() }
             return proxyBinders.toList()
         }
     }
 
     private fun relayToProxyBinder(commandId: String, proxy: ProxyBinderSession, proxyRelay: Bundle) {
         val binder = proxy.binder
-        if (!binder.isBinderAlive || !binder.pingBinder()) {
-            removeProxyBinder(proxy)
-            return
-        }
+        // Drop work queued for a replaced/evicted session without probing the peer.
+        if (synchronized(proxyBinders) { proxyBinders.none { it === proxy } }) return
         if (!RemoteCommandSecurity.attachEnvelope(
                 bundle = proxyRelay,
                 sessionKey = proxy.sessionKey,
@@ -682,14 +693,24 @@ object RemoteCommandHandler {
         val data = Parcel.obtain()
         val startedAt = SystemClock.elapsedRealtime()
         try {
+            // isBinderAlive is a local cached check for BinderProxy. Never pingBinder:
+            // ping is synchronous IPC, including for frozen processes.
+            if (!binder.isBinderAlive) {
+                removeProxyBinder(proxy)
+                return
+            }
             data.writeString(proxy.sessionKey)
             data.writeBundle(proxyRelay)
-            binder.transact(1, data, null, IBinder.FLAG_ONEWAY)
+            if (!binder.transact(1, data, null, IBinder.FLAG_ONEWAY)) {
+                removeProxyBinder(proxy)
+                return
+            }
             val costMs = SystemClock.elapsedRealtime() - startedAt
             if (costMs > SLOW_PROXY_RELAY_MS) {
                 Logger.warn("[RemoteCommandHandler] slow proxy relay command=$commandId cost=${costMs}ms")
             }
         } catch (t: Throwable) {
+            if (t is VirtualMachineError || t is ThreadDeath) throw t
             Logger.error("[RemoteCommandHandler] failed to relay $commandId to proxy binder", t)
             removeProxyBinder(proxy)
         } finally {
@@ -711,9 +732,11 @@ object RemoteCommandHandler {
     }
 
     internal fun clearProxyBindersForTest() {
+        proxyRelayExecutor.queue.clear()
         synchronized(proxyBinders) {
             proxyBinders.clear()
         }
+        exportConsents.clear()
     }
 
     private fun handleUpdateWifi(rely: Bundle): Boolean {
@@ -759,17 +782,248 @@ object RemoteCommandHandler {
         return true
     }
 
+    private fun handleLocationUpdate(rely: Bundle): Boolean {
+        synchronized(FakeLoc) {
+            with(MockCommandContract) {
+                val keys = MockCommandContract.Keys
+                val extract = MockCommandContract.Extract
+                if (rely.containsKey(keys.ENABLE)) FakeLoc.enable = rely.getBoolean(keys.ENABLE)
+                if (rely.containsKey(keys.LATITUDE)) {
+                    FakeLoc.latitude = requireLatitude(extract.requireDouble(rely, keys.LATITUDE))
+                }
+                if (rely.containsKey(keys.LONGITUDE)) {
+                    FakeLoc.longitude = requireLongitude(extract.requireDouble(rely, keys.LONGITUDE))
+                }
+                if (rely.containsKey(keys.ALTITUDE)) {
+                    FakeLoc.altitude = requireAltitude(extract.requireDouble(rely, keys.ALTITUDE))
+                }
+                if (rely.containsKey(keys.SPEED)) {
+                    FakeLoc.speed = requireSpeed(extract.requireDouble(rely, keys.SPEED))
+                }
+                if (rely.containsKey(keys.ACCURACY)) {
+                    FakeLoc.accuracy = requireAccuracy(extract.requireFloat(rely, keys.ACCURACY))
+                }
+                if (rely.containsKey(keys.BEARING)) {
+                    FakeLoc.bearing = requireBearing(extract.requireDouble(rely, keys.BEARING))
+                    FakeLoc.locationData.hasBearings = true
+                }
+            }
+        }
+        rely.putString("domain_state", if (FakeLoc.enable) "active" else "configured")
+        MockAuditTrail.config("domain.location", "updated fields=${domainPayloadFieldCount(rely)}")
+        return true
+    }
+
+    private fun handleGnssUpdateStatus(rely: Bundle): Boolean {
+        if (!BuildConfig.ENABLE_GNSS_MOCK) return handleDisabledDomainCommand(rely.getString("command_id") ?: "gnss", "GNSS")
+        if (rely.containsKey(MockCommandContract.Keys.ENABLE_MOCK_GNSS)) {
+            FakeLoc.enableMockGnss = rely.getBoolean(MockCommandContract.Keys.ENABLE_MOCK_GNSS)
+        } else {
+            FakeLoc.enableMockGnss = true
+        }
+        if (rely.containsKey(MockCommandContract.Keys.MIN_SATELLITES)) {
+            FakeLoc.minSatellites = rely.getInt(MockCommandContract.Keys.MIN_SATELLITES)
+        }
+        rely.putBoolean("enable_mock_gnss", FakeLoc.enableMockGnss)
+        rely.putInt("min_satellites", FakeLoc.minSatellites)
+        rely.putString("domain_state", if (FakeLoc.enableMockGnss) "active" else "configured")
+        MockAuditTrail.config("domain.gnss", "updated minSatellites=${FakeLoc.minSatellites}")
+        return true
+    }
+
+    private fun handleNmeaUpdateStream(rely: Bundle): Boolean {
+        if (!BuildConfig.ENABLE_NMEA_MOCK) return handleDisabledDomainCommand(rely.getString("command_id") ?: "nmea", "NMEA")
+        if (rely.containsKey(MockCommandContract.Keys.ENABLE_NMEA)) {
+            FakeLoc.enableNMEA = rely.getBoolean(MockCommandContract.Keys.ENABLE_NMEA)
+        } else if (rely.containsKey(MockCommandContract.Keys.PAYLOAD_HEX) || rely.containsKey(MockCommandContract.Keys.PAYLOAD_JSON)) {
+            FakeLoc.enableNMEA = true
+        }
+        rely.putBoolean("enable_nmea", FakeLoc.enableNMEA)
+        rely.putString("domain_state", if (FakeLoc.enableNMEA) "active" else "configured")
+        MockAuditTrail.config("domain.nmea", "updated payloadBytes=${domainPayloadSize(rely)}")
+        return true
+    }
+
+    private fun handleWifiUpdateConnected(rely: Bundle): Boolean {
+        if (!BuildConfig.ENABLE_WIFI_MOCK) {
+            FakeLoc.enableMockWifi = false
+            return handleDisabledDomainCommand(MockCommandContract.Commands.WIFI_UPDATE_CONNECTED, "WLAN_CONNECTED")
+        }
+        val keys = MockCommandContract.Keys
+        if (rely.containsKey(keys.ENABLE_MOCK_WIFI)) FakeLoc.enableMockWifi = rely.getBoolean(keys.ENABLE_MOCK_WIFI) else FakeLoc.enableMockWifi = true
+        if (rely.containsKey(keys.HOOK_WIFI)) FakeLoc.hookWifi = rely.getBoolean(keys.HOOK_WIFI)
+        if (rely.containsKey(keys.MOCK_SSID)) FakeLoc.mockSSID = rely.getString(keys.MOCK_SSID).orEmpty()
+        if (rely.containsKey(keys.MOCK_BSSID)) FakeLoc.mockBSSID = rely.getString(keys.MOCK_BSSID).orEmpty()
+        if (rely.containsKey(keys.MOCK_MAC)) FakeLoc.mockMac = rely.getString(keys.MOCK_MAC).orEmpty()
+        if (rely.containsKey(keys.MOCK_IP)) FakeLoc.mockIp = rely.getString(keys.MOCK_IP).orEmpty()
+        rely.putString("domain_state", if (FakeLoc.enableMockWifi) "active" else "configured")
+        MockAuditTrail.config("domain.wifi.connected", "updated ssidLen=${FakeLoc.mockSSID.length}")
+        return true
+    }
+
+    private fun handleWifiUpdateScan(rely: Bundle): Boolean {
+        if (!BuildConfig.ENABLE_WIFI_MOCK) {
+            FakeLoc.mockWifiList = emptyList()
+            return handleDisabledDomainCommand(MockCommandContract.Commands.WIFI_UPDATE_SCAN, "WLAN_SCAN")
+        }
+        if (rely.containsKey(MockCommandContract.Keys.PAYLOAD_JSON)) {
+            FakeLoc.mockWifiList = parseWifiScanPayload(rely.getString(MockCommandContract.Keys.PAYLOAD_JSON).orEmpty())
+            FakeLoc.mockWifiScanCount = FakeLoc.mockWifiList.size.coerceAtLeast(1)
+            FakeLoc.enableMockWifi = true
+            rely.putInt("applied_count", FakeLoc.mockWifiList.size)
+            rely.putString("domain_state", "active")
+            MockAuditTrail.config("domain.wifi.scan", "updated count=${FakeLoc.mockWifiList.size}")
+            return true
+        }
+        val updated = handleUpdateWifi(rely)
+        if (updated) {
+            FakeLoc.enableMockWifi = true
+            rely.putInt("applied_count", FakeLoc.mockWifiList.size)
+            rely.putString("domain_state", "active")
+        }
+        return updated
+    }
+
+    private fun handleCellUpdate(rely: Bundle): Boolean {
+        if (!BuildConfig.ENABLE_CELL_MOCK) return handleDisabledDomainCommand(MockCommandContract.Commands.CELL_UPDATE, "CELL")
+        when (rely.getString(MockCommandContract.Keys.DOMAIN_MODE)) {
+            "mask_real" -> {
+                FakeLoc.hideBaseStation = true
+                FakeLoc.needDowngradeToCdma = false
+            }
+            "replace_with_profile" -> {
+                FakeLoc.hideBaseStation = false
+                FakeLoc.needDowngradeToCdma = false
+            }
+            "off" -> {
+                FakeLoc.hideBaseStation = false
+                FakeLoc.needDowngradeToCdma = false
+            }
+        }
+        rely.putBoolean(MockCommandContract.Keys.HIDE_BASE_STATION, FakeLoc.hideBaseStation)
+        rely.putString("domain_state", if (FakeLoc.hideBaseStation) "active" else "configured")
+        MockAuditTrail.config("domain.cell", "updated mode=${rely.getString(MockCommandContract.Keys.DOMAIN_MODE) ?: "default"}")
+        return true
+    }
+
+    private fun handleBleUpdate(rely: Bundle): Boolean {
+        if (!BuildConfig.ENABLE_BLE_MOCK) {
+            FakeLoc.enableBleMock = false
+            FakeLoc.bleDevices = emptyList()
+            return handleDisabledDomainCommand(MockCommandContract.Commands.BLE_UPDATE, "BLE")
+        }
+
+        val profiles = if (rely.containsKey(MockCommandContract.Keys.PAYLOAD_JSON)) {
+            parseBleDevicePayload(rely.getString(MockCommandContract.Keys.PAYLOAD_JSON).orEmpty())
+        } else {
+            emptyList()
+        }
+        val enabled = rely.getBoolean(MockCommandContract.Keys.ENABLE, profiles.isNotEmpty())
+        FakeLoc.enableBleMock = enabled
+        FakeLoc.bleDevices = if (enabled) profiles else emptyList()
+
+        rely.putInt("applied_count", FakeLoc.bleDevices.size)
+        rely.putString("domain_state", if (FakeLoc.enableBleMock) "active" else "configured")
+        MockAuditTrail.config("domain.ble", "updated count=${FakeLoc.bleDevices.size}")
+        return true
+    }
+
+    private fun handleDisabledDomainCommand(commandId: String, domain: String): Boolean {
+        Logger.warn("[RemoteCommandHandler] $commandId ignored: $domain mock feature disabled")
+        MockAuditTrail.skip("domain.$domain", "$commandId disabled by build-time feature flag")
+        return false
+    }
+
+    private fun parseWifiScanPayload(payloadJson: String): List<MockWifiData> {
+        if (payloadJson.isBlank()) return emptyList()
+        val array = JSONArray(payloadJson)
+        val result = ArrayList<MockWifiData>(array.length().coerceAtMost(32))
+        for (index in 0 until array.length().coerceAtMost(32)) {
+            val item = array.optJSONObject(index) ?: continue
+            result += MockWifiData(
+                ssid = item.optString("ssid", ""),
+                bssid = item.optString("bssid", FakeLoc.DEFAULT_MAC),
+                rssi = item.optInt("rssi", item.optInt("rssiDbm", -65)),
+                frequency = item.optInt("frequency", item.optInt("frequencyMhz", 2412)),
+                channelWidth = item.optInt("channelWidth", 0),
+                capabilities = item.optString("capabilities", ""),
+                standard = item.optInt("standard", 0),
+            )
+        }
+        return result
+    }
+
+    private fun parseBleDevicePayload(payloadJson: String): List<BleDeviceProfile> {
+        val trimmed = payloadJson.trim()
+        if (trimmed.isEmpty()) return emptyList()
+        val configJson = if (trimmed.startsWith("[")) {
+            """{"schema_version":${MockDomainConfig.CURRENT_SCHEMA_VERSION},"ble_devices":$trimmed}"""
+        } else {
+            trimmed
+        }
+        val config = MockDomainConfigJson.importJson(configJson, legalize = true)
+        val issues = config.validate().filter { it.domain == MockDomain.BLE }
+        if (issues.isNotEmpty()) {
+            throw IllegalArgumentException("Invalid BLE payload: ${issues.first().field} ${issues.first().reason}")
+        }
+        return config.bleDevices.take(MockCommandContract.MAX_BLE_PROFILES)
+    }
+
+    private fun domainPayloadFieldCount(rely: Bundle): Int =
+        rely.keySet().count { !it.startsWith("__") && it != "command_id" }
+
+    private fun domainPayloadSize(rely: Bundle): Int =
+        MockCommandContract.estimateBundleByteSize(rely)
+
     private fun clearMalformedWifiPayload(): Boolean {
         FakeLoc.mockWifiList = emptyList()
         return false
     }
 
-    private fun handleExportLogs(rely: Bundle): Boolean {
+    private fun handleGrantLogExport(sessionKey: String, rely: Bundle): Boolean {
+        if (!rely.getBoolean("user_authorized", false)) {
+            Logger.warn("[RemoteCommandHandler] grant_log_export denied: user_authorized=false")
+            rely.putString("export_error", "user_authorized flag required")
+            return false
+        }
+        pruneExportConsents()
+        val token = RemoteCommandSecurity.newNonce()
+        exportConsents[token] = ExportConsent(
+            sessionKey = sessionKey,
+            expiresAtMs = System.currentTimeMillis() + EXPORT_CONSENT_WINDOW_MS,
+        )
+        rely.putString(FIELD_EXPORT_CONSENT_TOKEN, token)
+        rely.putLong("export_consent_expires_ms", EXPORT_CONSENT_WINDOW_MS)
+        tv.kyshu.xposed.utils.Log.audit("EXPORT", "grantLogExport", "consent_granted ttl_ms=$EXPORT_CONSENT_WINDOW_MS")
+        return true
+    }
+
+    private fun consumeExportConsent(sessionKey: String, rely: Bundle): Boolean {
+        pruneExportConsents()
+        val token = rely.getString(FIELD_EXPORT_CONSENT_TOKEN)?.takeIf { it.isNotBlank() } ?: return false
+        val consent = exportConsents.remove(token) ?: return false
+        val now = System.currentTimeMillis()
+        return consent.sessionKey == sessionKey && consent.expiresAtMs >= now
+    }
+
+    private fun pruneExportConsents() {
+        val now = System.currentTimeMillis()
+        exportConsents.entries.removeIf { it.value.expiresAtMs < now }
+    }
+
+    private fun handleExportLogs(sessionKey: String, rely: Bundle): Boolean {
         return kotlin.runCatching {
-            // Authorization gate: client must explicitly opt-in
+            // Authorization gate: client must explicitly opt-in and present a
+            // short-lived, one-time consent token issued over an authenticated
+            // CONTROL session.
             if (!rely.getBoolean("user_authorized", false)) {
                 Logger.warn("[RemoteCommandHandler] export_logs denied: user_authorized=false")
                 rely.putString("export_error", "user_authorized flag required")
+                return@runCatching false
+            }
+            if (!consumeExportConsent(sessionKey, rely)) {
+                Logger.warn("[RemoteCommandHandler] export_logs denied: invalid consent token")
+                rely.putString("export_error", "valid export consent token required")
                 return@runCatching false
             }
 
@@ -790,22 +1044,27 @@ object RemoteCommandHandler {
             // 1) FlightRecorder telemetry (include previous boot)
             sb.appendLine("=== FlightRecorder Telemetry ===")
             val telemetry = FlightRecorder.dump(lastN = 256, includePreviousBoot = true)
-            sb.appendLine(telemetry.ifEmpty { "(no telemetry)" })
+            sb.appendLine(LogRedactor.redactForExport(telemetry.ifEmpty { "(no telemetry)" }))
             sb.appendLine()
 
-            // 2) MockAuditTrail
+            // 2) Hook install report
+            sb.appendLine("=== HookInstallReport ===")
+            sb.appendLine(LogRedactor.redactForExport(FlightRecorder.dumpHookInstallReport()))
+            sb.appendLine()
+
+            // 3) MockAuditTrail
             sb.appendLine("=== MockAuditTrail ===")
             val audit = MockAuditTrail.dump()
-            sb.appendLine(audit.ifEmpty { "(no audit events)" })
+            sb.appendLine(LogRedactor.redactForExport(audit.ifEmpty { "(no audit events)" }))
             sb.appendLine()
 
-            // 3) CrashForensics
+            // 4) CrashForensics
             sb.appendLine("=== CrashForensics ===")
             val crash = CrashForensics.readCrashLog()
-            sb.appendLine(crash.ifEmpty { "(no crash log)" })
+            sb.appendLine(LogRedactor.redactForExport(crash.ifEmpty { "(no crash log)" }))
             sb.appendLine()
 
-            // 4) LogRouter files (latest 3)
+            // 5) LogRouter files (latest 3)
             sb.appendLine("=== LogRouter Files ===")
             val logDir = context.filesDir.resolve("logs")
             if (logDir.isDirectory) {
@@ -826,9 +1085,9 @@ object RemoteCommandHandler {
                             } else {
                                 file.readText(Charsets.UTF_8)
                             }
-                            sb.appendLine(content)
+                            sb.appendLine(LogRedactor.redactForExport(content))
                         } catch (e: Exception) {
-                            sb.appendLine("(read error: ${e.message})")
+                            sb.appendLine("(read error: ${LogRedactor.throwableSummary(e)})")
                         }
                         sb.appendLine()
                     }
@@ -839,26 +1098,71 @@ object RemoteCommandHandler {
 
             // Write export file
             val exportDir = context.filesDir.resolve("logs/export").also { it.mkdirs() }
+            cleanupExportDir(exportDir)
             val exportFile = File(exportDir, "export_$ts.log")
-            exportFile.writeText(sb.toString(), Charsets.UTF_8)
+            val safeExport = boundedExportText(LogRedactor.redactForExport(sb.toString()))
+            exportFile.writeText(safeExport, Charsets.UTF_8)
+            cleanupExportDir(exportDir)
 
             val summary = mapOf(
                 "telemetry_lines" to telemetry.lines().size,
                 "audit_lines" to audit.lines().size,
                 "crash_lines" to crash.lines().size,
-                "total_bytes" to sb.length,
+                "total_bytes" to safeExport.toByteArray(Charsets.UTF_8).size,
             ).entries.joinToString(", ") { "${it.key}=${it.value}" }
 
-            rely.putString("export_path", exportFile.absolutePath)
+            rely.putString("export_id", exportFile.name)
+            rely.putString("export_path", "logs/export/${exportFile.name}")
             rely.putString("export_summary", summary)
-            rely.putInt("export_size_bytes", sb.length)
+            rely.putInt("export_size_bytes", safeExport.toByteArray(Charsets.UTF_8).size)
             Logger.info("[RemoteCommandHandler] export_logs: $summary")
             // Record export in audit trail for accountability
             tv.kyshu.xposed.utils.Log.audit("EXPORT", "handleExportLogs", summary)
             true
         }.onFailure { e ->
             Logger.error("[RemoteCommandHandler] export_logs failed", e)
-            rely.putString("export_error", e.message ?: e.javaClass.simpleName)
+            rely.putString("export_error", LogRedactor.throwableSummary(e))
         }.getOrDefault(false)
+    }
+
+    private fun boundedExportText(text: String): String {
+        val bytes = text.toByteArray(Charsets.UTF_8)
+        if (bytes.size <= MAX_EXPORT_BYTES) return text
+        val prefix = "(export truncated to last ${MAX_EXPORT_BYTES / 1024}KB)\n"
+        val prefixBytes = prefix.toByteArray(Charsets.UTF_8)
+        val tailBudget = (MAX_EXPORT_BYTES - prefixBytes.size).coerceAtLeast(0)
+        if (tailBudget == 0) return prefix.take(MAX_EXPORT_BYTES)
+        var start = bytes.size - tailBudget
+        while (start < bytes.size && (bytes[start].toInt() and 0xC0) == 0x80) {
+            start += 1
+        }
+        val tail = if (start < bytes.size) {
+            String(bytes, start, bytes.size - start, Charsets.UTF_8)
+        } else {
+            ""
+        }
+        return prefix + tail
+    }
+
+    private fun cleanupExportDir(exportDir: File) {
+        val cutoff = System.currentTimeMillis() - MAX_EXPORT_AGE_MS
+        exportDir.listFiles { file -> file.isFile && file.name.startsWith("export_") && file.name.endsWith(".log") }
+            ?.forEach { file ->
+                if (file.lastModified() < cutoff) {
+                    file.delete()
+                }
+            }
+        val files = exportDir.listFiles { file -> file.isFile && file.name.startsWith("export_") && file.name.endsWith(".log") }
+            ?.sortedByDescending { it.lastModified() }
+            ?.toMutableList() ?: return
+        while (files.size > MAX_EXPORT_FILES) {
+            files.removeLastOrNull()?.delete()
+        }
+        var totalBytes = files.sumOf { it.length() }
+        while (totalBytes > MAX_EXPORT_TOTAL_BYTES && files.isNotEmpty()) {
+            val removed = files.removeLast()
+            totalBytes -= removed.length()
+            removed.delete()
+        }
     }
 }

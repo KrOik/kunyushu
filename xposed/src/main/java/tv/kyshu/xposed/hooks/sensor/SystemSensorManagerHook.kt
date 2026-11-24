@@ -109,7 +109,7 @@ object SystemSensorManagerHook {
     private val cachedEuler = FloatArray(3)
 
     operator fun invoke(classLoader: ClassLoader) {
-        Logger.info("[SensorHook] install start: hookSensor=${FakeLoc.sensorData.hookSensor}, motion=${FakeLoc.sensorData.enableMotionMock}, step=${FakeLoc.sensorData.enableStepCountMock}, shake=${FakeLoc.sensorData.enableShakeMock}, keepWalking=${FakeLoc.sensorData.keepWalkingWaveform}, classLoader=$classLoader")
+        Logger.debug("[SensorHook] install start: hookSensor=${FakeLoc.sensorData.hookSensor}, motion=${FakeLoc.sensorData.enableMotionMock}, step=${FakeLoc.sensorData.enableStepCountMock}, shake=${FakeLoc.sensorData.enableShakeMock}, keepWalking=${FakeLoc.sensorData.keepWalkingWaveform}")
         loadStepCount()
         ensureGaitSimulator()
         unlockGeoSensor(classLoader)

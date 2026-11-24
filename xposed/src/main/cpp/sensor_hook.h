@@ -15,5 +15,6 @@ typedef int64_t (*OriginalSensorEventQueueWriteType)(void*, void*, int64_t);
 typedef void (*OriginalConvertToSensorEventType)(void*, void*);
 
 void doSensorHook();
+bool isNativeSensorHookFailed();
 
 #endif //PORTAL_SENSOR_HOOK_H

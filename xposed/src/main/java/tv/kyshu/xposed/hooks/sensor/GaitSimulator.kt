@@ -358,7 +358,7 @@ class GaitSimulator(private val params: GaitModelParams) {
                         loader.getResourceAsStream(name)?.bufferedReader()?.use { it.readText() }
                     }.getOrNull()
                     if (!text.isNullOrBlank()) {
-                        Logger.info("GaitSimulator: loaded $ASSET_NAME via classloader resource=$name loader=$loader")
+                        Logger.debug("GaitSimulator: loaded default gait profile via classloader")
                         return text
                     }
                 }

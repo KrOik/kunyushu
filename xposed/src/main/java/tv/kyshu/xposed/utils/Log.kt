@@ -42,6 +42,7 @@ import android.os.Build
 import android.util.Log as AndroidLog
 import de.robv.android.xposed.XposedBridge
 import org.json.JSONObject
+import tv.kyshu.xposed.BuildConfig
 import java.io.File
 import java.security.MessageDigest
 import java.time.LocalDate
@@ -96,19 +97,19 @@ object Log {
 
     /** INFO 级别 */
     fun i(tag: String, msg: String) = write(tag, Level.INFO, msg)
-    fun i(tag: String, msg: String, e: Throwable) = write(tag, Level.INFO, "$msg: ${e.stackTraceToString()}")
+    fun i(tag: String, msg: String, e: Throwable) = write(tag, Level.INFO, "$msg: ${LogRedactor.throwableSummary(e)}")
 
     /** DEBUG 级别 */
     fun d(tag: String, msg: String) = write(tag, Level.DEBUG, msg)
-    fun d(tag: String, msg: String, e: Throwable) = write(tag, Level.DEBUG, "$msg: ${e.stackTraceToString()}")
+    fun d(tag: String, msg: String, e: Throwable) = write(tag, Level.DEBUG, "$msg: ${LogRedactor.throwableSummary(e)}")
 
     /** WARN 级别 */
     fun w(tag: String, msg: String) = write(tag, Level.WARN, msg)
-    fun w(tag: String, msg: String, e: Throwable) = write(tag, Level.WARN, "$msg: ${e.stackTraceToString()}")
+    fun w(tag: String, msg: String, e: Throwable) = write(tag, Level.WARN, "$msg: ${LogRedactor.throwableSummary(e)}")
 
     /** ERROR 级别 */
     fun e(tag: String, msg: String) = write(tag, Level.ERROR, msg)
-    fun e(tag: String, msg: String, e: Throwable) = write(tag, Level.ERROR, "$msg: ${e.stackTraceToString()}")
+    fun e(tag: String, msg: String, e: Throwable) = write(tag, Level.ERROR, "$msg: ${LogRedactor.throwableSummary(e)}")
 
     /** 限速 DEBUG — 热路径用，相同 key 在 intervalMs 内只输出一次 */
     fun rl(tag: String, key: String, msg: String, intervalMs: Long = 5000) {
@@ -131,15 +132,17 @@ object Log {
             bootHash = bootHash,
             stepId = source,
             eventType = event,
-            detail = detail,
-            extra = extra,
+            detail = LogRedactor.redactForLog(detail),
+            extra = LogRedactor.redactMapForLog(extra),
         )
         telemetryLock.withLock {
             telemetryBuf.addLast(ev)
             while (telemetryBuf.size > 256) telemetryBuf.removeFirst()
         }
         if (event in persistTypes) {
-            telemetryFile?.appendText(ev.toJson() + "\n")
+            persistDiagnostic(onFailure = { telemetryFile = null }) {
+                telemetryFile?.appendText(ev.toJson() + "\n")
+            }
         }
         write("TELEM", Level.INFO, "[$event] $source: $detail")
     }
@@ -147,60 +150,71 @@ object Log {
     /** Audit: mock 决策审计 (注入/跳过/配置变更) */
     fun audit(category: String, tag: String, message: String) {
         if (!LogConfig.isAllowed("AUDIT", Level.INFO, Channel.RING)) return
-        val ev = AuditEvent(seq.incrementAndGet(), System.currentTimeMillis(), category, tag, message)
+        val safeCategory = LogRedactor.redactForLog(category)
+        val safeTag = LogRedactor.redactForLog(tag)
+        val ev = AuditEvent(seq.incrementAndGet(), System.currentTimeMillis(), safeCategory, safeTag, LogRedactor.redactForLog(message))
         auditBuf.add(ev)
         while (auditBuf.size > 256) auditBuf.poll()
-        write("AUDIT", Level.INFO, "[$category] [$tag] $message")
+        write("AUDIT", Level.INFO, "[$category] [$tag] ${ev.message}")
     }
 
     /** User: 用户操作日志 (UI 交互记录) */
     fun user(source: String, action: String, detail: String = "") {
         if (!LogConfig.isAllowed("USER", Level.INFO, Channel.RING)) return
-        val ev = UserEvent(seq.incrementAndGet(), System.currentTimeMillis(), source, action, detail)
+        val ev = UserEvent(
+            seq.incrementAndGet(),
+            System.currentTimeMillis(),
+            LogRedactor.redactForLog(source),
+            LogRedactor.redactForLog(action),
+            LogRedactor.redactForLog(detail),
+        )
         userBuf.add(ev)
         while (userBuf.size > 512) userBuf.poll()
-        AndroidLog.d("UserOp", "[$source] $action: $detail")
     }
 
     /** Crash: 崩溃标记 */
     fun crash(scope: String, reason: String, error: Throwable? = null) {
         if (!LogConfig.isAllowed("CRASH", Level.ERROR, Channel.CRASH)) return
+        val safeScope = LogRedactor.redactForLog(scope)
+        val safeReason = LogRedactor.redactForLog(reason)
         val extra = JSONObject().apply {
             put("error", error?.javaClass?.simpleName ?: "unknown")
-            put("message", error?.message ?: "")
+            put("message", error?.message?.let(LogRedactor::redactForLog) ?: "")
         }
-        crashAppend("CRASH:$scope:$reason:${resolveBootHashShort()}:${System.currentTimeMillis()}:$extra")
-        write("CRASH", Level.ERROR, "[$scope] $reason")
+        crashAppend("CRASH:$safeScope:$safeReason:${resolveBootHashShort()}:${System.currentTimeMillis()}:$extra")
+        write("CRASH", Level.ERROR, "[$safeScope] $safeReason")
     }
 
     /** Crash: 安全门跳过记录 */
     fun skip(scope: String, gate: String) {
         if (!LogConfig.isAllowed("CRASH", Level.WARN, Channel.CRASH)) return
-        crashAppend("SKIP:$scope:$gate:${resolveBootHashShort()}:${System.currentTimeMillis()}")
-        write("CRASH", Level.WARN, "[$scope] gate skip: $gate")
+        val safeScope = LogRedactor.redactForLog(scope)
+        val safeGate = LogRedactor.redactForLog(gate)
+        crashAppend("SKIP:$safeScope:$safeGate:${resolveBootHashShort()}:${System.currentTimeMillis()}")
+        write("CRASH", Level.WARN, "[$safeScope] gate skip: $safeGate")
     }
 
     // ---------- 初始化 ----------
 
     fun init(context: Context?) {
         runCatching { FileSink.setContext(context) }
-            .onFailure { AndroidLog.w("PTL.Log", "File sink init skipped: ${it.message}") }
+            .onFailure { AndroidLog.w("PTL.Log", LogRedactor.redactForLog("File sink init skipped: ${it.message}")) }
         runCatching { TelemetrySink.setContext(context) }
-            .onFailure { AndroidLog.w("PTL.Log", "Telemetry sink init skipped: ${it.message}") }
+            .onFailure { AndroidLog.w("PTL.Log", LogRedactor.redactForLog("Telemetry sink init skipped: ${it.message}")) }
         runCatching { CrashSink.setContext(context) }
-            .onFailure { AndroidLog.w("PTL.Log", "Crash sink init skipped: ${it.message}") }
+            .onFailure { AndroidLog.w("PTL.Log", LogRedactor.redactForLog("Crash sink init skipped: ${it.message}")) }
         runCatching { LogConfig.setContext(context) }
-            .onFailure { AndroidLog.w("PTL.Log", "Log config init skipped: ${it.message}") }
+            .onFailure { AndroidLog.w("PTL.Log", LogRedactor.redactForLog("Log config init skipped: ${it.message}")) }
     }
 
     // ---------- 导出 ----------
 
-    fun dumpTelemetry(lastN: Int = 256): String {
+    fun dumpTelemetry(lastN: Int = 256, includePreviousBoot: Boolean = true): String {
         val limit = lastN.coerceAtMost(256)
         return telemetryLock.withLock {
             val current = telemetryEvents().takeLast(limit).map { it.toJson() }
-            val previous = previousTelemetryLines
-            (previous + current).joinToString("\n")
+            val previous = if (includePreviousBoot) previousTelemetryLines else emptyList()
+            (previous + current).joinToString("\n") { LogRedactor.redactForExport(it) }
         }
     }
 
@@ -211,7 +225,8 @@ object Log {
     }
 
     fun dumpAudit(category: String): String {
-        val list = auditBuf.toList().filter { it.category == category }
+        val safeCategory = LogRedactor.redactForLog(category)
+        val list = auditBuf.toList().filter { it.category == safeCategory }
         if (list.isEmpty()) return "[Log.Audit] 无 $category 审计记录"
         return list.joinToString("\n") { it.toString() }
     }
@@ -225,7 +240,7 @@ object Log {
     fun dumpCrash(): String = crashRead()
 
     /** 全量导出 (Telemetry + Audit + User + Crash 合并) */
-    fun exportAll(): String = buildString {
+    fun exportAll(): String = LogRedactor.redactForExport(buildString {
         appendLine("=== Telemetry ===")
         appendLine(dumpTelemetry())
         appendLine()
@@ -237,7 +252,7 @@ object Log {
         appendLine()
         appendLine("=== Crash ===")
         appendLine(dumpCrash())
-    }
+    })
 
     // ---------- 快捷便利方法 (兼容旧 API 命名) ----------
 
@@ -265,12 +280,26 @@ object Log {
     private fun write(tag: String, level: Int, msg: String) {
         val channels = LogConfig.resolveChannels(tag, level)
         if (channels == 0) return
+        val safeMsg = LogRedactor.redactForLog(msg)
 
         if (channels and Channel.CAT != 0) {
-            CatSink.write(tag, level, msg)
+            CatSink.write(tag, level, safeMsg)
         }
         if (channels and Channel.FILE != 0) {
-            FileSink.write(tag, level, msg)
+            persistDiagnostic(onFailure = { FileSink.disable() }) {
+                FileSink.write(tag, level, safeMsg)
+            }
+        }
+    }
+
+    private inline fun persistDiagnostic(onFailure: () -> Unit, write: () -> Unit) {
+        try {
+            write()
+        } catch (error: Exception) {
+            if (error !is java.io.IOException && error !is SecurityException) throw error
+            onFailure()
+            // Do not route this warning back to the failing file sink.
+            runCatching { AndroidLog.w("PTL.Log", "Diagnostic file sink disabled: ${error.javaClass.simpleName}") }
         }
     }
 
@@ -406,8 +435,10 @@ object Log {
             // XposedBridge.log 只在 xposed 环境中可用
             try {
                 XposedBridge.log(line)
-            } catch (_: NoClassDefFoundError) {
-                // 回退到 android.util.Log
+            } catch (error: Throwable) {
+                if (error is VirtualMachineError || error is ThreadDeath) throw error
+                // A present API stub or an uninitialized bridge can also throw at runtime.
+                // Diagnostics must not break the command/fuse they are reporting.
                 val alogLevel = when (level) {
                     Level.ERROR -> AndroidLog.ERROR
                     Level.WARN -> AndroidLog.WARN
@@ -426,13 +457,17 @@ object Log {
         private val LEGACY_FILE_PREFIX = asciiName(0x70, 0x6f, 0x72, 0x74, 0x61, 0x6c, 0x5f)
         private var logDir: File? = null
         private var enabled = false
+        fun disable() { enabled = false }
         private const val MAX_FILE_SIZE = 512L * 1024L
         private const val MAX_FILES = 28
         private val dateFormat = DateTimeFormatter.ofPattern("yyyyMMdd")
         private val tsFormat = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS")
 
         fun setContext(context: Context?) {
-            logDir = context?.safeFilesDir()?.resolve("logs")?.also { it.mkdirs() }
+            logDir = context?.safeFilesDir()?.resolve("logs")?.also {
+                it.mkdirs()
+                cleanup(it)
+            }
             enabled = logDir?.exists() == true
         }
 
@@ -456,6 +491,7 @@ object Log {
             val label = levelLabels[level] ?: "INFO"
             val ts = LocalDate.now().atTime(LocalTime.now()).format(tsFormat)
             file.appendText("$ts [$label] [$tag] $msg\n")
+            cleanup(dir)
         }
 
         private fun cleanup(dir: File) {
@@ -503,7 +539,9 @@ object Log {
 
     private fun crashAppend(line: String) {
         CrashSink.lock.withLock {
-            CrashSink.crashFile?.appendText(line + "\n")
+            persistDiagnostic(onFailure = { CrashSink.crashFile = null }) {
+                CrashSink.crashFile?.appendText(line + "\n")
+            }
         }
     }
 
@@ -564,12 +602,13 @@ object Log {
  *
  * ## 默认规则
  *
- * - `*` (所有标签): CAT + FILE, INFO|WARN|ERROR
+ * - `*` (所有标签): FILE only, INFO|WARN|ERROR
  * - `USER`: RING only, INFO
  * - `AUDIT`: RING only, INFO  
  * - `TELEM`: RING only, INFO
  * - `CRASH`: CRASH only, ERROR|WARN
  * - `DEBUG` 级别默认只在 TAG 以 `DEV_` 或 `TEST_` 开头时开启
+ * - release 构建强制剥离 CAT 通道，避免 XposedBridge/logcat 成为探针证据面
  */
 object LogConfig {
 
@@ -592,16 +631,19 @@ object LogConfig {
         val levels: Int,
     )
 
-    // 路由表：按 tag 前缀匹配，第一条命中即停止
-    private val routes = mutableListOf(
+    private fun defaultRoutes(): List<Route> = listOf(
         Route("DEV_", channels = CAT or FILE, levels = INFO or DEBUG or WARN or ERROR),
         Route("TEST_", channels = CAT or FILE, levels = INFO or DEBUG or WARN or ERROR),
         Route("USER", channels = RING, levels = INFO),
         Route("AUDIT", channels = RING, levels = INFO),
         Route("TELEM", channels = RING, levels = INFO),
         Route("CRASH", channels = CRASH, levels = ERROR or WARN),
-        Route("*",   channels = CAT or FILE, levels = INFO or WARN or ERROR),
+        Route("*", channels = FILE, levels = INFO or WARN or ERROR),
     )
+
+    // 路由表：按 tag 前缀匹配，第一条命中即停止。
+    // 默认不上 CAT；日志留存在 app-private files/logs、ring buffer 与 crash sink。
+    private val routes = defaultRoutes().toMutableList()
 
     /** 运行时动态添加路由 */
     fun addRoute(prefix: String, channels: Int, levels: Int) {
@@ -626,14 +668,21 @@ object LogConfig {
     fun resolveChannels(tag: String, level: Int): Int {
         synchronized(routes) {
             for (route in routes) {
-                if (route.tagPrefix == "*") return route.channels.takeIf { route.levels and level != 0 } ?: 0
+                if (route.tagPrefix == "*") {
+                    val channels = route.channels.takeIf { route.levels and level != 0 } ?: 0
+                    return stripConsoleInRelease(channels)
+                }
                 if (tag.startsWith(route.tagPrefix)) {
                     if (route.levels and level == 0) return 0
-                    return route.channels
+                    return stripConsoleInRelease(route.channels)
                 }
             }
         }
-        return CAT or FILE  // 默认
+        return stripConsoleInRelease(FILE)
+    }
+
+    private fun stripConsoleInRelease(channels: Int): Int {
+        return if (BuildConfig.DEBUG) channels else channels and CAT.inv()
     }
 
     // ---------- 持久化 ----------
@@ -651,17 +700,21 @@ object LogConfig {
         try {
             val json = JSONObject(file.readText())
             val arr = json.optJSONArray("routes") ?: return
+            val loadedRoutes = mutableListOf<Route>()
+            for (i in 0 until arr.length()) {
+                val obj = arr.getJSONObject(i)
+                loadedRoutes.add(Route(
+                    tagPrefix = obj.getString("prefix"),
+                    channels = obj.getInt("channels"),
+                    levels = obj.getInt("levels"),
+                ))
+            }
             synchronized(routes) {
+                val effectiveLoadedRoutes = loadedRoutes.distinctBy { it.tagPrefix }
+                val loadedPrefixes = effectiveLoadedRoutes.map { it.tagPrefix }.toSet()
                 routes.clear()
-                routes.add(Route("", CAT or FILE, INFO or WARN or ERROR))
-                for (i in 0 until arr.length()) {
-                    val obj = arr.getJSONObject(i)
-                    routes.add(Route(
-                        tagPrefix = obj.getString("prefix"),
-                        channels = obj.getInt("channels"),
-                        levels = obj.getInt("levels"),
-                    ))
-                }
+                routes.addAll(effectiveLoadedRoutes)
+                routes.addAll(defaultRoutes().filterNot { it.tagPrefix in loadedPrefixes })
             }
         } catch (_: Exception) {}
     }
@@ -685,5 +738,12 @@ object LogConfig {
     /** 当前路由表快照 (调试用) */
     fun dumpRoutes(): String = synchronized(routes) {
         routes.joinToString("\n") { "  [${it.tagPrefix}] ch=${it.channels} lv=${it.levels}" }
+    }
+
+    internal fun resetForTest() {
+        synchronized(routes) {
+            routes.clear()
+            routes.addAll(defaultRoutes())
+        }
     }
 }

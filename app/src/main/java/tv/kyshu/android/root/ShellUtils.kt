@@ -1,14 +1,16 @@
 package tv.kyshu.android.root
 
-import android.util.Log
+import tv.kyshu.xposed.utils.Log as XLog
 
 object ShellUtils {
     private const val TAG = "ShellUtils"
 
-    // Whitelist of allowed root command prefixes
+    // Whitelist of allowed root command prefixes.
+    // Narrowed per risk model R6: only `echo` survives for hasRoot() check.
+    // Previously allowed: cp, mv, rm, chmod, mkdir, sha256sum, head, cat, ls.
+    // These were removed because loadPortalLibrary (the sole user) was deprecated.
     private val ALLOWED_ROOT_COMMANDS = setOf(
-        "cp ", "mv ", "rm ", "chmod ", "mkdir ", "sha256sum ",
-        "head ", "cat ", "ls ", "echo ",
+        "echo ",
     )
 
     /**
@@ -18,21 +20,21 @@ object ShellUtils {
     private fun isCommandAllowed(command: String): Boolean {
         // Block NUL byte injection
         if (command.contains('\u0000')) {
-            Log.w(TAG, "Blocked command with NUL byte: $command")
+            XLog.w(TAG, "Blocked root command: nul_byte")
             return false
         }
         // Block shell metacharacters that enable multi-command execution
         val blocked = setOf(';', '|', '`', '$', '(', ')', '{', '}', '<', '>', '&', '\n', '\r')
         for (c in command) {
             if (c in blocked) {
-                Log.w(TAG, "Blocked command with shell metacharacter '$c': $command")
+                XLog.w(TAG, "Blocked root command: metacharacter")
                 return false
             }
         }
         // Check command prefix is whitelisted
         val prefix = ALLOWED_ROOT_COMMANDS.firstOrNull { command.startsWith(it) }
         if (prefix == null) {
-            Log.w(TAG, "Blocked command not in whitelist: $command")
+            XLog.w(TAG, "Blocked root command: not_whitelisted")
             return false
         }
         return true
@@ -72,17 +74,17 @@ object ShellUtils {
     }
 
 
-    fun executeCommand(command: String): String {
+    private fun executeCommand(command: String): String {
         if (!isCommandAllowed(command)) return ""
         return try {
             execAsRoot(command).second
         } catch (e: Exception) {
-            Log.e(TAG, "executeCommand failed", e)
+            XLog.e(TAG, "executeCommand failed", e)
             ""
         }
     }
 
-    fun executeCommandToBytes(command: String): ByteArray {
+    private fun executeCommandToBytes(command: String): ByteArray {
         if (!isCommandAllowed(command)) return ByteArray(0)
         val runtime = Runtime.getRuntime()
         return try {
@@ -97,7 +99,7 @@ object ShellUtils {
                 process.inputStream.use { it.readBytes() }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "executeCommandToBytes failed", e)
+            XLog.e(TAG, "executeCommandToBytes failed", e)
             ByteArray(0)
         }
     }

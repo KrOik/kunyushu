@@ -4,9 +4,11 @@ import android.content.ContentValues
 import android.content.Context
 import android.content.pm.ProviderInfo
 import android.net.Uri
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
 import org.junit.Assert.assertThrows
 import org.junit.Before
 import org.junit.Test
@@ -16,10 +18,13 @@ import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 import org.robolectric.shadows.ShadowBinder
 import tv.kyshu.service.MockServiceHelper
+import tv.kyshu.xposed.MockCommandContract
+import tv.kyshu.xposed.config.MockDomainConfig
 import java.io.File
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [33])
+// manifest=NONE + 普通 Application：避免实例化 @HiltAndroidApp 的 Portal（Hilt 测试环境未接入）
+@Config(sdk = [33], manifest = Config.NONE, application = android.app.Application::class)
 class ConfigProviderAccessTest {
     private lateinit var context: Context
     private lateinit var provider: ConfigProvider
@@ -47,7 +52,7 @@ class ConfigProviderAccessTest {
     }
 
     @Test
-    fun `external hook process can read non sensitive config`() {
+    fun `external hook process reads only non sensitive config shape`() {
         val rinexFile = File(context.filesDir, "brdc.rnx")
         val gaitJson = """{"frequency":1.8,"humanizeIntensity":0.04}"""
         context.getSharedPreferences(MockServiceHelper.PROVIDER_NAME, Context.MODE_PRIVATE)
@@ -61,14 +66,32 @@ class ConfigProviderAccessTest {
         val rows = queryConfigRows()
 
         assertEquals("true", rows["enable"])
-        assertEquals(rinexFile.absolutePath, rows["rinex_path"])
-        assertEquals(gaitJson, rows["gait_params_json"])
+        assertFalse(rows.containsKey("rinex_path"))
+        assertFalse(rows.containsKey("gait_params_json"))
         assertFalse(rows.containsKey("latitude"))
         assertFalse(rows.containsKey("longitude"))
+        assertFalse(rows.containsKey(MockCommandContract.Keys.MOCK_DOMAIN_CONFIG_JSON))
     }
 
     @Test
-    fun `external hook process can read rinex stream`() {
+    fun `system server can read versioned domain config json`() {
+        context.getSharedPreferences(MockServiceHelper.PROVIDER_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean("enable", true)
+            .putInt("minSatelliteCount", 18)
+            .commit()
+        ShadowBinder.setCallingUid(1000)
+
+        val rows = queryConfigRows()
+        val json = JSONObject(rows.getValue(MockCommandContract.Keys.MOCK_DOMAIN_CONFIG_JSON))
+
+        assertEquals(MockDomainConfig.CURRENT_SCHEMA_VERSION, json.getInt("schema_version"))
+        assertTrue(json.getJSONObject("switches").has("LOCATION"))
+        assertEquals(18, json.getJSONObject("gnss").getInt("min_satellite_count"))
+    }
+
+    @Test
+    fun `external hook process cannot read rinex stream`() {
         val rinexFile = File(context.filesDir, "brdc.rnx")
         rinexFile.writeText(validRinexContent(), Charsets.US_ASCII)
         context.getSharedPreferences(MockServiceHelper.PROVIDER_NAME, Context.MODE_PRIVATE)
@@ -76,6 +99,21 @@ class ConfigProviderAccessTest {
             .putString("rinexPath", rinexFile.absolutePath)
             .commit()
         ShadowBinder.setCallingUid(10_441)
+
+        assertThrows(SecurityException::class.java) {
+            provider.openFile(rinexUri, "r")
+        }
+    }
+
+    @Test
+    fun `system server can read rinex stream`() {
+        val rinexFile = File(context.filesDir, "brdc.rnx")
+        rinexFile.writeText(validRinexContent(), Charsets.US_ASCII)
+        context.getSharedPreferences(MockServiceHelper.PROVIDER_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString("rinexPath", rinexFile.absolutePath)
+            .commit()
+        ShadowBinder.setCallingUid(1000)
 
         val descriptor = provider.openFile(rinexUri, "r")
 

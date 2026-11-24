@@ -3,24 +3,20 @@ package tv.kyshu.xposed
 import android.location.Location
 import android.location.LocationManager
 import android.os.Build
-import android.os.Bundle
-import de.robv.android.xposed.XposedHelpers
+import tv.kyshu.xposed.factory.LocationFactory
+import tv.kyshu.xposed.factory.NmeaSentenceFactory
 import tv.kyshu.xposed.utils.FakeLoc
+import tv.kyshu.xposed.utils.CoordinateTransforms
 import tv.kyshu.xposed.utils.Logger
-import moe.microbios.nmea.NMEA
-import moe.microbios.nmea.NmeaValue
+import tv.kyshu.xposed.stability.DomainGuard
 import java.util.concurrent.ConcurrentHashMap
-import kotlin.random.Random
 
 abstract class BaseLocationHook: BaseDivineService() {
     private companion object {
-        const val INJECTED_EXTRA = "_inj"
-        val LEGACY_INJECTED_EXTRA = asciiName(0x5f, 0x70, 0x6f, 0x72, 0x74, 0x61, 0x6c, 0x5f, 0x69, 0x6e, 0x6a, 0x65, 0x63, 0x74, 0x65, 0x64)
         val diagnosticKeys = ConcurrentHashMap.newKeySet<String>()
-
-        fun asciiName(vararg bytes: Int): String {
-            return ByteArray(bytes.size) { index -> bytes[index].toByte() }.toString(Charsets.UTF_8)
-        }
+        // Location(Location) calls the hooked Location.set(). Shared across hook
+        // instances, but never across threads: nested copies must pass through.
+        val injectionInProgress = ThreadLocal<Boolean>()
 
         fun logOnce(key: String, message: String) {
             if (diagnosticKeys.add(key)) {
@@ -30,6 +26,25 @@ abstract class BaseLocationHook: BaseDivineService() {
     }
 
     fun injectLocation(originLocation: Location, realLocation: Boolean = true): Location {
+        if (injectionInProgress.get() == true ||
+            DomainGuard.isDomainDisabled(DomainGuard.Domain.LOCATION_INJECTION)) {
+            return originLocation
+        }
+        injectionInProgress.set(true)
+        return try {
+            buildInjectedLocation(originLocation, realLocation)
+        } catch (error: Throwable) {
+            if (error is VirtualMachineError || error is ThreadDeath) throw error
+            // This also covers BlindHook callbacks, whose exceptions previously escaped
+            // to LSPosed without disabling the failing injection path.
+            DomainGuard.tripNow(DomainGuard.Domain.LOCATION_INJECTION, "injectLocation", error)
+            originLocation
+        } finally {
+            injectionInProgress.remove()
+        }
+    }
+
+    private fun buildInjectedLocation(originLocation: Location, realLocation: Boolean): Location {
         if (realLocation) {
             if (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     originLocation.provider == LocationManager.GPS_PROVIDER && originLocation.isComplete
@@ -39,8 +54,6 @@ abstract class BaseLocationHook: BaseDivineService() {
             ) {
                 FakeLoc.lastLocation = originLocation
             }
-        } else {
-            originLocation.altitude = FakeLoc.altitude
         }
 
         if (!FakeLoc.enable) {
@@ -49,103 +62,22 @@ abstract class BaseLocationHook: BaseDivineService() {
             return originLocation
         }
 
-        if (originLocation.extras?.getBoolean(INJECTED_EXTRA, false) == true ||
-            originLocation.extras?.getBoolean(LEGACY_INJECTED_EXTRA, false) == true) {
+        if (LocationFactory.isInjected(originLocation)) {
             logOnce("injectLocation.already.${originLocation.provider}",
                 "[BaseLocationHook] injectLocation skipped: already injected provider=${originLocation.provider}")
             return originLocation
         }
 
+        val location = LocationFactory.createInjectedLocation(originLocation)
         if (FakeLoc.disableNetworkLocation && originLocation.provider == LocationManager.NETWORK_PROVIDER) {
             logOnce("injectLocation.network.rewrite",
                 "[BaseLocationHook] network provider rewritten to gps: disableNetworkLocation=${FakeLoc.disableNetworkLocation}")
-            originLocation.provider = LocationManager.GPS_PROVIDER
+            location.provider = LocationManager.GPS_PROVIDER
         }
 
-        val location = Location(originLocation.provider ?: LocationManager.GPS_PROVIDER)
-        location.accuracy = if (FakeLoc.accuracy != 0.0f) FakeLoc.accuracy else originLocation.accuracy
-        val jitterLat = FakeLoc.jitterLocation()
-        location.latitude = jitterLat.first
-        location.longitude = jitterLat.second
-        location.altitude = FakeLoc.altitude
-        if (FakeLoc.enableAltitudeJitter && FakeLoc.altitudeJitter > 0f) {
-            location.altitude += Random.nextDouble(-FakeLoc.altitudeJitter.toDouble(), FakeLoc.altitudeJitter.toDouble())
-        }
-        val speedAmp = Random.nextDouble(-FakeLoc.speedAmplitude, FakeLoc.speedAmplitude)
-        val baseSpeed = if (FakeLoc.speed > 0.0) FakeLoc.speed else originLocation.speed.toDouble()
-        location.speed = (baseSpeed + speedAmp).coerceAtLeast(0.0).toFloat()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && originLocation.hasSpeedAccuracy()) {
-            location.speedAccuracyMetersPerSecond = (FakeLoc.speed + speedAmp).coerceAtLeast(0.0).toFloat()
-        }
-
-        if (location.altitude == 0.0) {
-            location.altitude = 80.0
-        }
-
-        location.time = originLocation.time
-
-        // final addition of zero is to remove -0 results. while these are technically within the
-        // range [0, 360) according to IEEE semantics, this eliminates possible user confusion.
-        var modBearing = FakeLoc.bearing % 360.0 + 0.0
-        if (modBearing < 0) {
-            modBearing += 360.0
-        }
-        location.bearing = modBearing.toFloat()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            location.bearingAccuracyDegrees = modBearing.toFloat()
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            if (location.hasBearingAccuracy() && location.bearingAccuracyDegrees == 0.0f) {
-                location.bearingAccuracyDegrees = 1.0f
-            }
-        }
-
-        if (location.speed == 0.0f) {
-            location.speed = 1.2f
-        }
-
-        location.elapsedRealtimeNanos = originLocation.elapsedRealtimeNanos
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            location.elapsedRealtimeUncertaintyNanos = originLocation.elapsedRealtimeUncertaintyNanos
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            location.verticalAccuracyMeters = originLocation.verticalAccuracyMeters
-        }
-        originLocation.extras?.let {
-            location.extras = it
-        }
-        if (location.extras == null) {
-            location.extras = Bundle()
-        }
-        location.extras?.putBoolean(INJECTED_EXTRA, true)
-        location.extras?.putDouble("latlon", location.latitude + location.longitude)
-        location.extras?.putInt("satellites", Random.nextInt(8, 45))
-        location.extras?.putInt("maxCn0", Random.nextInt(30, 50))
-        location.extras?.putInt("meanCn0", Random.nextInt(20, 30))
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            if (originLocation.hasMslAltitude()) {
-                location.mslAltitudeMeters = FakeLoc.altitude
-            }
-            if (originLocation.hasVerticalAccuracy()) {
-                location.mslAltitudeAccuracyMeters = FakeLoc.altitude.toFloat()
-            }
-        }
-        if (FakeLoc.hideMock) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                location.isMock = false
-            }
-        } else {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                location.isMock = true
-            }
-        }
-
-        kotlin.runCatching {
-            XposedHelpers.callMethod(location, "makeComplete")
-        }.onFailure {
-            Logger.error("makeComplete failed", it)
-        }
+        val outputCoordinates = CoordinateTransforms.forCurrentProcess(location.latitude, location.longitude)
+        location.latitude = outputCoordinates.first
+        location.longitude = outputCoordinates.second
 
         if (FakeLoc.enableDebugLog) {
             Logger.debug("injectLocation success! lat=${location.latitude}, lon=${location.longitude}, acc=${location.accuracy}")
@@ -160,120 +92,6 @@ abstract class BaseLocationHook: BaseDivineService() {
         if (!FakeLoc.enable) {
             return null
         }
-
-        kotlin.runCatching {
-            val nmea = NMEA.valueOf(nmeaStr)
-            when(val value = nmea.value) {
-                is NmeaValue.DTM -> {
-                    return null
-                }
-                is NmeaValue.GGA -> {
-                    if (value.latitude == null || value.longitude == null) {
-                        return null
-                    }
-
-                    if (value.fixQuality == 0) {
-                        return null
-                    }
-
-                    val latitudeHemisphere = if (FakeLoc.latitude >= 0) "N" else "S"
-                    val longitudeHemisphere = if (FakeLoc.longitude >= 0) "E" else "W"
-
-                    value.latitudeHemisphere = latitudeHemisphere
-                    value.longitudeHemisphere = longitudeHemisphere
-
-                    val absLat = kotlin.math.abs(FakeLoc.latitude)
-                    val latDeg = absLat.toInt()
-                    val latMin = (absLat - latDeg) * 60
-                    value.latitude = (latDeg * 100.0) + latMin
-
-                    val absLon = kotlin.math.abs(FakeLoc.longitude)
-                    val lonDeg = absLon.toInt()
-                    val lonMin = (absLon - lonDeg) * 60
-                    value.longitude = (lonDeg * 100.0) + lonMin
-
-                    return value.toNmeaString()
-                }
-                is NmeaValue.GNS -> {
-                    if (value.latitude == null || value.longitude == null) {
-                        return null
-                    }
-
-                    if (value.mode == "N") {
-                        return null
-                    }
-
-                    val latitudeHemisphere = if (FakeLoc.latitude >= 0) "N" else "S"
-                    val longitudeHemisphere = if (FakeLoc.longitude >= 0) "E" else "W"
-
-                    value.latitudeHemisphere = latitudeHemisphere
-                    value.longitudeHemisphere = longitudeHemisphere
-
-                    val absLat = kotlin.math.abs(FakeLoc.latitude)
-                    val latDeg = absLat.toInt()
-                    val latMin = (absLat - latDeg) * 60
-                    value.latitude = (latDeg * 100.0) + latMin
-
-                    val absLon = kotlin.math.abs(FakeLoc.longitude)
-                    val lonDeg = absLon.toInt()
-                    val lonMin = (absLon - lonDeg) * 60
-                    value.longitude = (lonDeg * 100.0) + lonMin
-
-                    return value.toNmeaString()
-                }
-                is NmeaValue.GSA -> {
-                    return null
-                }
-                is NmeaValue.GSV -> {
-                    return null
-                }
-                is NmeaValue.RMC -> {
-                    if (value.latitude == null || value.longitude == null) {
-                        return null
-                    }
-
-                    if (value.status == "V") {
-                        return null
-                    }
-
-                    val latitudeHemisphere = if (FakeLoc.latitude >= 0) "N" else "S"
-                    val longitudeHemisphere = if (FakeLoc.longitude >= 0) "E" else "W"
-
-                    value.latitudeHemisphere = latitudeHemisphere
-                    value.longitudeHemisphere = longitudeHemisphere
-
-                    val absLat = kotlin.math.abs(FakeLoc.latitude)
-                    val latDeg = absLat.toInt()
-                    val latMin = (absLat - latDeg) * 60
-                    value.latitude = (latDeg * 100.0) + latMin
-
-                    val absLon = kotlin.math.abs(FakeLoc.longitude)
-                    val lonDeg = absLon.toInt()
-                    val lonMin = (absLon - lonDeg) * 60
-                    value.longitude = (lonDeg * 100.0) + lonMin
-
-                    // 注入方位角（字段8：trackAngle），使用模拟方位
-                    var modBearing = FakeLoc.bearing % 360.0 + 0.0
-                    if (modBearing < 0) modBearing += 360.0
-                    value.trackAngle = modBearing
-
-                    return value.toNmeaString()
-                }
-                is NmeaValue.VTG -> {
-                    // 注入方位角（trueTrack），使用模拟方位
-                    var modBearing = FakeLoc.bearing % 360.0 + 0.0
-                    if (modBearing < 0) modBearing += 360.0
-                    value.trueTrack = modBearing
-                    if (value.magneticTrack != null) {
-                        value.magneticTrack = modBearing
-                    }
-                    return value.toNmeaString()
-                }
-            }
-        }.onFailure {
-            Logger.error("NMEA parse failed: ${it.message}")
-            return null
-        }
-        return null
+        return NmeaSentenceFactory.rewrite(nmeaStr)
     }
 }

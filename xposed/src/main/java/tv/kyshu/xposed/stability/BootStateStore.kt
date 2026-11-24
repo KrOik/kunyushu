@@ -75,6 +75,8 @@ object BootStateStore {
         val lastInstallCrashTime: Long = 0L,
         /** 写入时的boot hash，用于区分同启动 vs 跨启动 */
         val bootHash: String = "",
+        /** SHA-256 prefix of the last consumed one-time recovery nonce; never the nonce itself. */
+        val lastRecoveryNonceHash: String = "",
     )
 
     private val lock = ReentrantLock()
@@ -130,6 +132,7 @@ object BootStateStore {
                     lastInstallCrashTime = if (isSameBoot)
                         json.optLong("last_install_crash_time", 0L) else 0L,
                     bootHash = hash,
+                    lastRecoveryNonceHash = json.optString("last_recovery_nonce_hash", ""),
                 )
             } catch (e: Exception) {
                 Logger.warn("[BootStateStore] load failed", e)
@@ -158,6 +161,7 @@ object BootStateStore {
                     put("last_install_crash_time", state.lastInstallCrashTime)
                     put("boot_hash", state.bootHash.takeIf { it.isNotBlank() }
                         ?: currentBootHash.ifBlank { resolveBootHash() })
+                    put("last_recovery_nonce_hash", state.lastRecoveryNonceHash)
                 }
                 file.writeText(json.toString(2))
             } catch (e: Exception) {

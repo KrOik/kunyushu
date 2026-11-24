@@ -38,6 +38,8 @@ object DomainGuard {
         BLE("BLE"),
         PROXY("PROXY"),
         LOCATION_SERVICE("LOCATION_SERVICE"),
+        LOCATION_INJECTION("LOCATION_INJECTION"),
+        NMEA("NMEA"),
         NATIVE_LIB("NATIVE_LIB"),
     }
 
@@ -132,6 +134,23 @@ object DomainGuard {
         )
     }
 
+    /** Immediate per-domain fuse for callback/runtime failures. Idempotent. */
+    fun tripNow(domain: Domain, stage: String, error: Throwable? = null): Boolean {
+        val state = domains.getOrPut(domain) { DomainState() }
+        if (!state.disabled.compareAndSet(0, 1)) return false
+        synchronized(state.crashes) { state.crashes.add(System.currentTimeMillis()) }
+        val errorType = error?.javaClass?.simpleName ?: "unknown"
+        Logger.forceLogging = true
+        Logger.error("[DomainGuard] ${domain.label} immediate fuse at $stage ($errorType)")
+        LogRouter.error("DomainGuard", "${domain.label} immediate fuse at $stage ($errorType)")
+        CrashForensics.crash(domain.label, "DOMAIN_IMMEDIATE_FUSE", error)
+        FlightRecorder.crashMarker("LIFECYCLE", "DOMAIN_IMMEDIATE_FUSE",
+            mapOf("domain" to domain.label, "stage" to stage, "error" to errorType))
+        return true
+    }
+
+    fun domainStates(): Map<Domain, Boolean> = Domain.entries.associateWith(::isDomainDisabled)
+
     fun resetAll() {
         domains.clear()
         Logger.info("[DomainGuard] all domains reset")
@@ -192,7 +211,8 @@ object DomainGuard {
         installCrashCount.set(0)
         lastInstallCrashTime = 0L
         // 清零时清除持久化状态文件（当前启动已安全加载）
-        BootStateStore.clear()
+        val persisted = BootStateStore.load()
+        BootStateStore.save(persisted.copy(safeMode = safeMode, installCrashCount = 0, lastInstallCrashTime = 0L))
         persistedStateLoaded = false
         Logger.info("[DomainGuard] install crash counter reset and persisted state cleared")
     }
@@ -215,8 +235,9 @@ object DomainGuard {
             extra = mapOf("reason" to reason),
         )
         // 持久化：安全模式标记写入磁盘，跨重启生效
+        val persisted = BootStateStore.load()
         BootStateStore.save(
-            BootStateStore.BootState(
+            persisted.copy(
                 safeMode = true,
                 installCrashCount = installCrashCount.get(),
                 lastInstallCrashTime = lastInstallCrashTime,
@@ -231,6 +252,25 @@ object DomainGuard {
         BootStateStore.clear()
         persistedStateLoaded = false
         Logger.info("[DomainGuard] exited safe mode, persisted state cleared")
+    }
+
+    /** Consume a user-confirmed one-time recovery request without ever persisting its raw nonce. */
+    @Synchronized
+    fun applyManualRecovery(nonceHash: String): Boolean {
+        if (nonceHash.isBlank()) return false
+        val persisted = BootStateStore.load()
+        if (persisted.lastRecoveryNonceHash == nonceHash) return false
+        safeMode = false
+        installCrashCount.set(0)
+        lastInstallCrashTime = 0L
+        BootStateStore.save(persisted.copy(
+            safeMode = false,
+            installCrashCount = 0,
+            lastInstallCrashTime = 0L,
+            lastRecoveryNonceHash = nonceHash,
+        ))
+        persistedStateLoaded = false
+        return true
     }
 
     // ==================== 持久化辅助 ====================
@@ -261,8 +301,9 @@ object DomainGuard {
      * 在 [installCrashCount] 锁内持久化安装崩溃状态。
      */
     private fun persistInstallStateLocked() {
+        val persisted = BootStateStore.load()
         BootStateStore.save(
-            BootStateStore.BootState(
+            persisted.copy(
                 safeMode = safeMode,
                 installCrashCount = installCrashCount.get(),
                 lastInstallCrashTime = lastInstallCrashTime,

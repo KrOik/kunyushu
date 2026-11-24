@@ -10,6 +10,10 @@ import java.util.concurrent.locks.ReentrantLock
 private val hookedMethods = Collections.synchronizedSet(mutableSetOf<String>())
 private val hookOnceLock = ReentrantLock()
 
+private fun logHookFailure(error: Throwable) {
+    Log.w("XposedHook", "hook callback failed", error)
+}
+
 private fun generateOnceHookMethodKey(
     className: String,
     methodName: String,
@@ -63,7 +67,7 @@ fun Method.onceHookBefore(callback: XC_MethodHook.MethodHookParam.() -> Unit): X
                     param.callback()
                 }
             }.onFailure {
-                XposedBridge.log(it)
+                logHookFailure(it)
             }
         }
     })
@@ -82,7 +86,7 @@ fun Method.onceHookAfter(callback: XC_MethodHook.MethodHookParam.() -> Unit): XC
                     param.callback()
                 }
             }.onFailure {
-                XposedBridge.log(it)
+                logHookFailure(it)
             }
         }
     })
@@ -154,7 +158,7 @@ fun <T> Class<T>.onceHookMethodAfter(methodName: String, vararg parameterTypes: 
  */
 fun <T> Class<T>.onceHookDoNothingMethod(methodName: String, vararg parameterTypes: Class<*>, shouldDoNothing: XC_MethodHook.MethodHookParam.() -> Boolean): XC_MethodHook.Unhook? {
     return onceHookMethodBefore(methodName, *parameterTypes) {
-        if (kotlin.runCatching { shouldDoNothing() }.onFailure { XposedBridge.log(it) }.getOrNull() == true) {
+        if (kotlin.runCatching { shouldDoNothing() }.onFailure { logHookFailure(it) }.getOrNull() == true) {
             result = null
         }
     }
@@ -182,7 +186,7 @@ fun <T> Class<T>.hookAllMethodsBefore(methodName: String, callback: XC_MethodHoo
                     param.callback()
                 }
             }.onFailure {
-                XposedBridge.log(it)
+                logHookFailure(it)
             }
         }
     })
@@ -200,7 +204,7 @@ fun <T> Class<T>.hookAllMethodsAfter(methodName: String, callback: XC_MethodHook
                     param.callback()
                 }
             }.onFailure {
-                XposedBridge.log(it)
+                logHookFailure(it)
             }
         }
     })
@@ -231,7 +235,7 @@ fun Method.hookBefore(callback: XC_MethodHook.MethodHookParam.() -> Unit): XC_Me
                     param.callback()
                 }
             }.onFailure {
-                XposedBridge.log(it)
+                logHookFailure(it)
             }
         }
     })
@@ -249,7 +253,7 @@ fun Method.hookAfter(callback: XC_MethodHook.MethodHookParam.() -> Unit): XC_Met
                     param.callback()
                 }
             }.onFailure {
-                XposedBridge.log(it)
+                logHookFailure(it)
             }
         }
     })
@@ -296,7 +300,7 @@ fun <T> Class<T>.hookMethodAfter(methodName: String, vararg parameterTypes: Clas
  */
 fun <T> Class<T>.hookDoNothingMethod(methodName: String, vararg parameterTypes: Class<*>, shouldDoNothing: XC_MethodHook.MethodHookParam.() -> Boolean): XC_MethodHook.Unhook? {
     return hookMethodBefore(methodName, *parameterTypes) {
-        if (kotlin.runCatching { shouldDoNothing() }.onFailure { XposedBridge.log(it) }.getOrNull() == true) {
+        if (kotlin.runCatching { shouldDoNothing() }.onFailure { logHookFailure(it) }.getOrNull() == true) {
             result = null
         }
     }
@@ -315,7 +319,7 @@ fun beforeHook(
                     param.callback()
                 }
             }.onFailure {
-                XposedBridge.log(it)
+                logHookFailure(it)
             }
         }
     }
@@ -334,7 +338,7 @@ fun afterHook(
                     param.callback()
                 }
             }.onFailure {
-                XposedBridge.log(it)
+                logHookFailure(it)
             }
         }
     }
@@ -418,7 +422,7 @@ fun Method.diyHook(
                         }
                     }
                 }.onFailure {
-                    XposedBridge.log(it)
+                    logHookFailure(it)
                 }
             }
 
@@ -432,7 +436,7 @@ fun Method.diyHook(
                         }
                     }
                 }.onFailure {
-                    XposedBridge.log(it)
+                    logHookFailure(it)
                 }
             }
         })

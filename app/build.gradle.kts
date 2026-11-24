@@ -7,6 +7,9 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.serialization)
+    alias(libs.plugins.ksp)
+    alias(libs.plugins.hilt.android)
+    alias(libs.plugins.compose.compiler)
 }
 
 
@@ -30,6 +33,7 @@ android {
             abiFilters.addAll(listOf("arm64-v8a", "x86_64"))
         }
         manifestPlaceholders["BAIDU_MAP_KEY"] = getBaiduMapKey()
+        configureMockDomainBuildFlags()
 
 //        val googleServicesFile = project.file("google-services.json")
 //        if (!googleServicesFile.exists()) {
@@ -98,7 +102,11 @@ android {
         jvmTarget = "17"
     }
     buildFeatures {
-        viewBinding = true
+        buildConfig = true
+        compose = true
+    }
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
     }
     packaging {
         jniLibs {
@@ -202,14 +210,32 @@ dependencies {
     implementation(libs.androidx.constraintlayout)
     implementation(libs.androidx.lifecycle.livedata.ktx)
     implementation(libs.androidx.lifecycle.viewmodel.ktx)
+    implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.navigation.fragment.ktx)
     implementation(libs.androidx.navigation.ui.ktx)
+
+    implementation(platform(libs.androidx.compose.bom))
+    implementation(libs.androidx.activity.compose)
+    implementation(libs.androidx.navigation.compose)
+    implementation(libs.androidx.compose.ui)
+    implementation(libs.androidx.compose.runtime.livedata)
+    implementation(libs.androidx.compose.foundation)
+    implementation(libs.androidx.compose.material3)
+    implementation(libs.androidx.compose.ui.tooling.preview)
+    debugImplementation(libs.androidx.compose.ui.tooling)
 
     implementation(libs.okhttp)
 
     implementation(libs.fastjson)
     implementation(libs.kotlinx.serialization)
     implementation(libs.reflect)
+    implementation(libs.room.runtime)
+    implementation(libs.room.ktx)
+    ksp(libs.room.compiler)
+
+    implementation(libs.hilt.android)
+    ksp(libs.hilt.compiler)
+    implementation(libs.androidx.hilt.navigation.compose)
 
     implementation(libs.geotools)
     implementation(fileTree(mapOf(
@@ -269,6 +295,30 @@ fun getVersionName(): String {
         if (date.isNotBlank()) return "1.0.8-$hash-$date"
     } catch (_: Exception) { }
     return "1.0.8-$hash"
+}
+
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
+}
+
+fun featureFlag(name: String, defaultValue: Boolean = false): Boolean {
+    val value = project.findProperty(name)?.toString()
+        ?: System.getenv(name.uppercase().replace('.', '_'))
+        ?: return defaultValue
+    return value.equals("true", ignoreCase = true) ||
+        value == "1" ||
+        value.equals("yes", ignoreCase = true)
+}
+
+fun com.android.build.api.dsl.ApplicationDefaultConfig.configureMockDomainBuildFlags() {
+    buildConfigField("boolean", "ENABLE_LOCATION_MOCK", featureFlag("enableLocationMock", true).toString())
+    buildConfigField("boolean", "ENABLE_GNSS_MOCK", featureFlag("enableGnssMock", true).toString())
+    buildConfigField("boolean", "ENABLE_NMEA_MOCK", featureFlag("enableNmeaMock", true).toString())
+    buildConfigField("boolean", "ENABLE_SENSOR_MOCK", featureFlag("enableSensorMock", true).toString())
+    buildConfigField("boolean", "ENABLE_WIFI_MOCK", featureFlag("enableWifiMock", true).toString())
+    buildConfigField("boolean", "ENABLE_CELL_MOCK", featureFlag("enableCellMock", true).toString())
+    buildConfigField("boolean", "ENABLE_BLE_MOCK", featureFlag("enableBleMock", true).toString())
+    buildConfigField("boolean", "ENABLE_NFC_MOCK", featureFlag("enableNfcMock").toString())
 }
 
 fun getBaiduMapKey(): String {

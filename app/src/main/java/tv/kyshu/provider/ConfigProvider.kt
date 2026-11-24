@@ -8,12 +8,13 @@ import android.database.Cursor
 import android.database.MatrixCursor
 import android.net.Uri
 import android.os.Binder
-import android.os.Bundle
 import android.os.ParcelFileDescriptor
-import com.alibaba.fastjson2.JSONObject
+import tv.kyshu.BuildConfig
+import tv.kyshu.service.MockDomainConfigPrefs
 import tv.kyshu.service.MockServiceHelper
-import tv.kyshu.ui.mock.HistoricalLocation
+import tv.kyshu.xposed.MockCommandContract
 import tv.kyshu.xposed.utils.FakeLoc
+import tv.kyshu.xposed.utils.Log as XLog
 import tv.kyshu.xposed.utils.PortalIdentity
 import java.io.File
 import java.util.concurrent.ConcurrentLinkedQueue
@@ -148,13 +149,13 @@ class ConfigProvider : ContentProvider() {
                 )
             }
             uid < APP_UID_BASE -> {
-                // Other system UIDs: allow non-sensitive config and bounded RINEX reads only.
+                // Other system UIDs: allow non-sensitive config only.
                 CallerAccess(
                     uid = uid,
                     isSystemUid = true,
                     isSystemServer = false,
                     isControlPackage = false,
-                    canReadRinex = true,
+                    canReadRinex = false,
                     sensitiveAllowed = false,
                 )
             }
@@ -169,7 +170,7 @@ class ConfigProvider : ContentProvider() {
                         isSystemUid = false,
                         isSystemServer = false,
                         isControlPackage = false,
-                        canReadRinex = true,
+                        canReadRinex = false,
                         sensitiveAllowed = false,
                     )
                 }
@@ -234,7 +235,7 @@ class ConfigProvider : ContentProvider() {
         val json = values?.getAsString("command") ?: return null
         val byteSize = json.toByteArray(Charsets.UTF_8).size
         if (byteSize > MAX_COMMAND_BYTES) {
-            android.util.Log.w("ConfigProvider", "Command payload too large: bytes=$byteSize")
+            XLog.w("ConfigProvider", "Command payload too large: bytes=$byteSize")
             return null
         }
         // Cap queue to prevent OOM from uncontrolled inserts
@@ -264,7 +265,7 @@ class ConfigProvider : ContentProvider() {
 
         fun safeRead(key: String, block: () -> Unit) {
             try { block() } catch (e: Exception) {
-                android.util.Log.w("ConfigProvider", "Failed to read config key '$key': ${e.message}")
+                XLog.w("ConfigProvider", "Failed to read config key '$key'", e)
             }
         }
         fun bool(key: String, prefKey: String, default: Boolean) =
@@ -283,7 +284,7 @@ class ConfigProvider : ContentProvider() {
             try {
                 block()
             } catch (e: Exception) {
-                android.util.Log.e("ConfigProvider", "Invalid critical config key '$key'; aborting config query", e)
+                XLog.e("ConfigProvider", "Invalid critical config key '$key'; aborting config query", e)
                 throw IllegalStateException("Invalid critical config key '$key'", e)
             }
         }
@@ -291,14 +292,19 @@ class ConfigProvider : ContentProvider() {
             criticalRead(key) { addRow(cursor, key, prefs.getFloat(prefKey, default.toFloat()).toDouble().toString(), "double") }
         fun criticalFloat(key: String, prefKey: String, default: Float) =
             criticalRead(key) { addRow(cursor, key, prefs.getFloat(prefKey, default).toString(), "float") }
-        val selectedLocationRaw = prefs.getString("selectedLocation", null)
-        val selectedLocation = selectedLocationRaw?.takeIf { it.isNotBlank() }?.let { raw ->
-            try {
-                HistoricalLocation.fromString(raw)
-            } catch (e: Exception) {
-                android.util.Log.e("ConfigProvider", "Invalid critical config key 'selectedLocation'; aborting config query", e)
-                throw IllegalStateException("Invalid critical config key 'selectedLocation'", e)
-            }
+        val selectedLocation = try {
+            MockDomainConfigPrefs.selectedLocationOrNull(ctx)
+        } catch (e: Exception) {
+            XLog.e("ConfigProvider", "Invalid critical config key 'selectedLocation'; aborting config query", e)
+            throw IllegalStateException("Invalid critical config key 'selectedLocation'", e)
+        }
+
+        // System UID only: one-time safe-mode recovery metadata. Raw nonce is short-lived
+        // and is never logged or persisted by system_server.
+        if (access.isSystemServer) {
+            string("safe_recovery_nonce", "safeRecoveryNonce", "")
+            long("safe_recovery_issued_at", "safeRecoveryIssuedAt", 0L)
+            long("safe_recovery_expires_at", "safeRecoveryExpiresAt", 0L)
         }
 
         // Read persisted app settings. The xposed side accepts these snake_case keys.
@@ -306,14 +312,20 @@ class ConfigProvider : ContentProvider() {
         bool("enable_debug_log", "debug", FakeLoc.enableDebugLog)
         bool("enable", "enable", false)
         bool("enable_mock_gnss", "enableMockGnss", FakeLoc.enableMockGnss)
-        bool("enable_mock_wifi", "enableMockWifi", FakeLoc.enableMockWifi)
+        if (BuildConfig.ENABLE_WIFI_MOCK) {
+            bool("enable_mock_wifi", "enableMockWifi", FakeLoc.enableMockWifi)
+        } else {
+            addRow(cursor, "enable_mock_wifi", "false", "boolean")
+        }
         bool("enable_nmea", "enableNMEA", FakeLoc.enableNMEA)
         bool("enable_agps", "enableAGPS", FakeLoc.enableAGPS)
         int("min_satellites", "minSatelliteCount", FakeLoc.minSatellites)
-        safeRead("rinex_path") {
-            val rinexPath = prefs.getString("rinexPath", FakeLoc.rinexPath)?.takeIf { it.isNotBlank() }
-            if (rinexPath != null) {
-                addRow(cursor, "rinex_path", rinexPath, "string")
+        if (access.sensitiveAllowed) {
+            safeRead("rinex_path") {
+                val rinexPath = prefs.getString("rinexPath", FakeLoc.rinexPath)?.takeIf { it.isNotBlank() }
+                if (rinexPath != null) {
+                    addRow(cursor, "rinex_path", rinexPath, "string")
+                }
             }
         }
         // Sensitive fields: only if caller is authorized
@@ -325,13 +337,15 @@ class ConfigProvider : ContentProvider() {
             criticalFloat("accuracy", "accuracy", FakeLoc.accuracy)
             safeRead("bearing") { val v = FakeLoc.bearing; addRow(cursor, "bearing", v.toString(), "double") }
         }
-        bool("hook_wifi", "hookWifi", FakeLoc.hookWifi)
-        bool("disable_wifi_scan", "disableWifiScan", FakeLoc.disableWifiScan)
-        string("mock_ssid", "mockSSID", FakeLoc.mockSSID)
-        string("mock_bssid", "mockBSSID", FakeLoc.mockBSSID)
-        string("mock_mac", "mockMac", FakeLoc.mockMac)
-        string("mock_ip", "mockIp", FakeLoc.mockIp)
-        int("mock_wifi_scan_count", "mockWifiScanCount", FakeLoc.mockWifiScanCount)
+        if (BuildConfig.ENABLE_WIFI_MOCK && access.sensitiveAllowed) {
+            bool("hook_wifi", "hookWifi", FakeLoc.hookWifi)
+            bool("disable_wifi_scan", "disableWifiScan", FakeLoc.disableWifiScan)
+            string("mock_ssid", "mockSSID", FakeLoc.mockSSID)
+            string("mock_bssid", "mockBSSID", FakeLoc.mockBSSID)
+            string("mock_mac", "mockMac", FakeLoc.mockMac)
+            string("mock_ip", "mockIp", FakeLoc.mockIp)
+            int("mock_wifi_scan_count", "mockWifiScanCount", FakeLoc.mockWifiScanCount)
+        }
         safeRead("hook_sensor") {
             val hookSensor = prefs.getBoolean("hookSensor", false)
             val stepMock = prefs.getBoolean("enableStepCountMock", FakeLoc.enableStepCountMock)
@@ -350,9 +364,11 @@ class ConfigProvider : ContentProvider() {
         }
         bool("keep_walking_waveform", "keepWalkingWaveform", FakeLoc.keepWalkingWaveform)
         long("doze_sensor_interval_ms", "dozeSensorIntervalMs", FakeLoc.dozeSensorIntervalMs)
-        float("gait_freq", "gaitFreq", FakeLoc.gaitFreq)
-        float("gait_amp_scale", "gaitAmpScale", FakeLoc.gaitAmpScale)
-        string("gait_params_json", "gaitParamsJson", FakeLoc.gaitParamsJson)
+        if (access.sensitiveAllowed) {
+            float("gait_freq", "gaitFreq", FakeLoc.gaitFreq)
+            float("gait_amp_scale", "gaitAmpScale", FakeLoc.gaitAmpScale)
+            string("gait_params_json", "gaitParamsJson", FakeLoc.gaitParamsJson)
+        }
         bool("is_app_in_background", "isAppInBackground", FakeLoc.isAppInBackground)
         bool("is_screen_off", "isScreenOff", FakeLoc.isScreenOff)
         bool("is_device_idle_mode", "isDeviceIdleMode", FakeLoc.isDeviceIdleMode)
@@ -366,9 +382,19 @@ class ConfigProvider : ContentProvider() {
         bool("loop_broadcast_location", "loopBroadcastLocation", FakeLoc.loopBroadcastLocation)
         bool("hide_mock", "hideMock", FakeLoc.locationData.hideMock)
         bool("disable_network_location", "disableNetworkLocation", FakeLoc.disableNetworkLocation)
-        doubleFromFloat("speed_amplitude", "speedAmplitude", FakeLoc.speedAmplitude)
-        doubleFromFloat("min_speed", "minSpeed", FakeLoc.minSpeed)
-        doubleFromFloat("max_speed", "maxSpeed", FakeLoc.maxSpeed)
+        if (access.sensitiveAllowed) {
+            doubleFromFloat("speed_amplitude", "speedAmplitude", FakeLoc.speedAmplitude)
+            doubleFromFloat("min_speed", "minSpeed", FakeLoc.minSpeed)
+            doubleFromFloat("max_speed", "maxSpeed", FakeLoc.maxSpeed)
+            safeRead(MockCommandContract.Keys.MOCK_DOMAIN_CONFIG_JSON) {
+                addRow(
+                    cursor,
+                    MockCommandContract.Keys.MOCK_DOMAIN_CONFIG_JSON,
+                    MockDomainConfigPrefs.exportJson(ctx, persist = false),
+                    "json",
+                )
+            }
+        }
 
         return cursor
     }
@@ -377,20 +403,20 @@ class ConfigProvider : ContentProvider() {
         val rawPath = prefs.getString("rinexPath", null)?.takeIf { it.isNotBlank() }
             ?: File(ctx.filesDir, "brdc.rnx").absolutePath
         val file = runCatching { File(rawPath).canonicalFile }.getOrElse {
-            android.util.Log.w("ConfigProvider", "RINEX path canonicalization failed: ${it.message}")
+            XLog.w("ConfigProvider", "RINEX path canonicalization failed", it)
             return null
         }
         val filesDir = runCatching { ctx.filesDir.canonicalFile }.getOrElse {
-            android.util.Log.w("ConfigProvider", "RINEX filesDir canonicalization failed: ${it.message}")
+            XLog.w("ConfigProvider", "RINEX filesDir canonicalization failed", it)
             return null
         }
         if (!isUnderDirectory(file, filesDir)) {
-            android.util.Log.w("ConfigProvider", "RINEX openFile rejected outside app filesDir: path=${file.absolutePath}")
+            XLog.w("ConfigProvider", "RINEX openFile rejected outside app filesDir: path=${file.absolutePath}")
             return null
         }
         val length = file.length()
         if (!file.isFile || !file.canRead() || length < MIN_RINEX_BYTES || length > MAX_RINEX_BYTES) {
-            android.util.Log.w(
+            XLog.w(
                 "ConfigProvider",
                 "RINEX openFile unavailable: path=${file.absolutePath} exists=${file.exists()} " +
                     "canRead=${file.canRead()} length=$length"
@@ -398,7 +424,7 @@ class ConfigProvider : ContentProvider() {
             return null
         }
         if (!hasRinexHeader(file)) {
-            android.util.Log.w("ConfigProvider", "RINEX openFile rejected invalid header: path=${file.absolutePath}")
+            XLog.w("ConfigProvider", "RINEX openFile rejected invalid header: path=${file.absolutePath}")
             return null
         }
         return file

@@ -9,6 +9,8 @@ import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.viewModelScope
 import com.alibaba.fastjson2.JSON
+import dagger.hilt.android.lifecycle.HiltViewModel
+import javax.inject.Inject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -47,7 +49,8 @@ data class SensorUiData(
     val stepCount: Long = 0L,
 )
 
-class SensorViewModel(application: Application) : AndroidViewModel(application) {
+@HiltViewModel
+class SensorViewModel @Inject constructor(application: Application) : AndroidViewModel(application) {
     private val context: Context get() = getApplication()
 
     private val _realSensorData = MutableLiveData<SensorUiData>()

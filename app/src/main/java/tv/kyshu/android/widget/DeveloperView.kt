@@ -4,9 +4,9 @@ package tv.kyshu.android.widget
 import android.content.Context
 import android.graphics.Rect
 import android.util.AttributeSet
-import android.util.Log
 import android.view.CollapsibleActionView
 import androidx.appcompat.widget.LinearLayoutCompat
+import tv.kyshu.xposed.utils.Log as XLog
 
 class DeveloperView @JvmOverloads constructor(
     context: Context,
@@ -23,13 +23,13 @@ class DeveloperView @JvmOverloads constructor(
         visibility = VISIBLE
         invalidate()
         requestLayout()
-        Log.d("DeveloperView", "onActionViewExpanded")
+        XLog.d("DeveloperView", "onActionViewExpanded")
     }
 
     override fun onActionViewCollapsed() {
         visibility = GONE
         invalidate()
         requestLayout()
-        Log.d("DeveloperView", "onActionViewCollapsed")
+        XLog.d("DeveloperView", "onActionViewCollapsed")
     }
 }

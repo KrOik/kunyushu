@@ -1,0 +1,525 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<issues format="6" by="lint 9.0.1" type="baseline" client="gradle" dependencies="false" name="AGP (8.7.1)" variant="all" version="9.0.1">
+
+    <issue
+        id="DefaultLocale"
+        message="Implicitly using the default locale is a common source of bugs: Use `String.format(Locale, ...)` instead"
+        errorLine1="        override fun toString(): String = &quot;[#$seq ${ts / 1000}.${String.format(&quot;%03d&quot;, ts % 1000)}] [$category] [$tag] $message&quot;"
+        errorLine2="                                                                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/tv/kyshu/xposed/utils/Log.kt"
+            line="341"
+            column="66"/>
+    </issue>
+
+    <issue
+        id="InlinedApi"
+        message="Field requires API level 26 (current min is 24): `android.bluetooth.le.ScanResult#SID_NOT_PRESENT`"
+        errorLine1="                profile.advertisingSid?.coerceIn(0, 15) ?: ScanResult.SID_NOT_PRESENT,"
+        errorLine2="                                                           ~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/tv/kyshu/xposed/factory/BleScanResultFactory.kt"
+            line="125"
+            column="60"/>
+    </issue>
+
+    <issue
+        id="InlinedApi"
+        message="Field requires API level 26 (current min is 24): `android.bluetooth.le.ScanResult#TX_POWER_NOT_PRESENT`"
+        errorLine1="                profile.txPowerDbm?.coerceIn(-127, 126) ?: ScanResult.TX_POWER_NOT_PRESENT,"
+        errorLine2="                                                           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/tv/kyshu/xposed/factory/BleScanResultFactory.kt"
+            line="126"
+            column="60"/>
+    </issue>
+
+    <issue
+        id="InlinedApi"
+        message="Field requires API level 26 (current min is 24): `android.bluetooth.le.ScanResult#PERIODIC_INTERVAL_NOT_PRESENT`"
+        errorLine1="                    ?: ScanResult.PERIODIC_INTERVAL_NOT_PRESENT,"
+        errorLine2="                       ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/tv/kyshu/xposed/factory/BleScanResultFactory.kt"
+            line="129"
+            column="24"/>
+    </issue>
+
+    <issue
+        id="InlinedApi"
+        message="Field requires API level 26 (current min is 24): `android.bluetooth.le.ScanResult#DATA_TRUNCATED`"
+        errorLine1="            ScanResult.DATA_TRUNCATED"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/tv/kyshu/xposed/factory/BleScanResultFactory.kt"
+            line="174"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="InlinedApi"
+        message="Field requires API level 26 (current min is 24): `android.bluetooth.le.ScanResult#DATA_COMPLETE`"
+        errorLine1="            ScanResult.DATA_COMPLETE"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/tv/kyshu/xposed/factory/BleScanResultFactory.kt"
+            line="176"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="InlinedApi"
+        message="Field requires API level 28 (current min is 24): `android.telephony.CellInfo#CONNECTION_NONE`"
+        errorLine1="                if (profile.registered) CellInfo.CONNECTION_PRIMARY_SERVING else CellInfo.CONNECTION_NONE,"
+        errorLine2="                                                                                 ~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/tv/kyshu/xposed/factory/CellInfoFactory.kt"
+            line="300"
+            column="82"/>
+    </issue>
+
+    <issue
+        id="InlinedApi"
+        message="Field requires API level 28 (current min is 24): `android.telephony.CellInfo#CONNECTION_PRIMARY_SERVING`"
+        errorLine1="                if (profile.registered) CellInfo.CONNECTION_PRIMARY_SERVING else CellInfo.CONNECTION_NONE,"
+        errorLine2="                                        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/tv/kyshu/xposed/factory/CellInfoFactory.kt"
+            line="300"
+            column="41"/>
+    </issue>
+
+    <issue
+        id="InlinedApi"
+        message="Field requires API level 28 (current min is 24): `android.telephony.CellInfo#CONNECTION_NONE`"
+        errorLine1="            if (profile.registered) CellInfo.CONNECTION_PRIMARY_SERVING else CellInfo.CONNECTION_NONE,"
+        errorLine2="                                                                             ~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/tv/kyshu/xposed/factory/CellInfoFactory.kt"
+            line="314"
+            column="78"/>
+    </issue>
+
+    <issue
+        id="InlinedApi"
+        message="Field requires API level 28 (current min is 24): `android.telephony.CellInfo#CONNECTION_PRIMARY_SERVING`"
+        errorLine1="            if (profile.registered) CellInfo.CONNECTION_PRIMARY_SERVING else CellInfo.CONNECTION_NONE,"
+        errorLine2="                                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/tv/kyshu/xposed/factory/CellInfoFactory.kt"
+            line="314"
+            column="37"/>
+    </issue>
+
+    <issue
+        id="InlinedApi"
+        message="Field requires API level 28 (current min is 24): `android.telephony.CellInfo#CONNECTION_NONE`"
+        errorLine1="        if (profile.registered) CellInfo.CONNECTION_PRIMARY_SERVING else CellInfo.CONNECTION_NONE"
+        errorLine2="                                                                         ~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/tv/kyshu/xposed/factory/CellInfoFactory.kt"
+            line="347"
+            column="74"/>
+    </issue>
+
+    <issue
+        id="InlinedApi"
+        message="Field requires API level 28 (current min is 24): `android.telephony.CellInfo#CONNECTION_PRIMARY_SERVING`"
+        errorLine1="        if (profile.registered) CellInfo.CONNECTION_PRIMARY_SERVING else CellInfo.CONNECTION_NONE"
+        errorLine2="                                ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/tv/kyshu/xposed/factory/CellInfoFactory.kt"
+            line="347"
+            column="33"/>
+    </issue>
+
+    <issue
+        id="NewApi"
+        message="Class requires API level 29 (current min is 24): `android.telephony.CellIdentityNr`"
+        errorLine1="        CellIdentityNr::class.java.declaredConstructor("
+        errorLine2="        ~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/tv/kyshu/xposed/factory/CellInfoFactory.kt"
+            line="136"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="NewApi"
+        message="Class requires API level 29 (current min is 24): `android.telephony.CellSignalStrengthNr`"
+        errorLine1="            CellSignalStrengthNr::class.java.declaredConstructor("
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/tv/kyshu/xposed/factory/CellInfoFactory.kt"
+            line="215"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="NewApi"
+        message="Class requires API level 29 (current min is 24): `android.telephony.CellSignalStrengthNr`"
+        errorLine1="            CellSignalStrengthNr::class.java.declaredConstructor("
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/tv/kyshu/xposed/factory/CellInfoFactory.kt"
+            line="237"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="NewApi"
+        message="Class requires API level 29 (current min is 24): `android.telephony.CellInfoNr`"
+        errorLine1="        CellInfoNr::class.java.declaredConstructor("
+        errorLine2="        ~~~~~~~~~~">
+        <location
+            file="src/main/java/tv/kyshu/xposed/factory/CellInfoFactory.kt"
+            line="307"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="NewApi"
+        message="Class requires API level 29 (current min is 24): `android.telephony.CellIdentityNr`"
+        errorLine1="            CellIdentityNr::class.java,"
+        errorLine2="            ~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/tv/kyshu/xposed/factory/CellInfoFactory.kt"
+            line="311"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="NewApi"
+        message="Class requires API level 29 (current min is 24): `android.telephony.CellSignalStrengthNr`"
+        errorLine1="            CellSignalStrengthNr::class.java,"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/tv/kyshu/xposed/factory/CellInfoFactory.kt"
+            line="312"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="NewApi"
+        message="Call requires API level 33 (current min is 29): `android.location.Location#removeElapsedRealtimeUncertaintyNanos`"
+        errorLine1="            location.removeElapsedRealtimeUncertaintyNanos()"
+        errorLine2="                     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/tv/kyshu/xposed/factory/LocationFactory.kt"
+            line="103"
+            column="22"/>
+    </issue>
+
+    <issue
+        id="NewApi"
+        message="Call requires API level 26, or core library desugaring (current min is 24): `java.time.format.DateTimeFormatter#ofPattern`"
+        errorLine1="        private val dateFormat = DateTimeFormatter.ofPattern(&quot;yyyyMMdd&quot;)"
+        errorLine2="                                                   ~~~~~~~~~">
+        <location
+            file="src/main/java/tv/kyshu/xposed/utils/Log.kt"
+            line="463"
+            column="52"/>
+    </issue>
+
+    <issue
+        id="NewApi"
+        message="Call requires API level 26, or core library desugaring (current min is 24): `java.time.format.DateTimeFormatter#ofPattern`"
+        errorLine1="        private val tsFormat = DateTimeFormatter.ofPattern(&quot;yyyy-MM-dd HH:mm:ss.SSS&quot;)"
+        errorLine2="                                                 ~~~~~~~~~">
+        <location
+            file="src/main/java/tv/kyshu/xposed/utils/Log.kt"
+            line="464"
+            column="50"/>
+    </issue>
+
+    <issue
+        id="NewApi"
+        message="Call requires API level 26, or core library desugaring (current min is 24): `java.time.LocalDate#format`"
+        errorLine1="            val today = LocalDate.now().format(dateFormat)"
+        errorLine2="                                        ~~~~~~">
+        <location
+            file="src/main/java/tv/kyshu/xposed/utils/Log.kt"
+            line="484"
+            column="41"/>
+    </issue>
+
+    <issue
+        id="NewApi"
+        message="Call requires API level 26, or core library desugaring (current min is 24): `java.time.LocalDate#now`"
+        errorLine1="            val today = LocalDate.now().format(dateFormat)"
+        errorLine2="                                  ~~~">
+        <location
+            file="src/main/java/tv/kyshu/xposed/utils/Log.kt"
+            line="484"
+            column="35"/>
+    </issue>
+
+    <issue
+        id="NewApi"
+        message="Call requires API level 26, or core library desugaring (current min is 24): `java.time.LocalDate#atTime`"
+        errorLine1="            val ts = LocalDate.now().atTime(LocalTime.now()).format(tsFormat)"
+        errorLine2="                                     ~~~~~~">
+        <location
+            file="src/main/java/tv/kyshu/xposed/utils/Log.kt"
+            line="492"
+            column="38"/>
+    </issue>
+
+    <issue
+        id="NewApi"
+        message="Call requires API level 26, or core library desugaring (current min is 24): `java.time.LocalDate#now`"
+        errorLine1="            val ts = LocalDate.now().atTime(LocalTime.now()).format(tsFormat)"
+        errorLine2="                               ~~~">
+        <location
+            file="src/main/java/tv/kyshu/xposed/utils/Log.kt"
+            line="492"
+            column="32"/>
+    </issue>
+
+    <issue
+        id="NewApi"
+        message="Call requires API level 26, or core library desugaring (current min is 24): `java.time.LocalDateTime#format`"
+        errorLine1="            val ts = LocalDate.now().atTime(LocalTime.now()).format(tsFormat)"
+        errorLine2="                                                             ~~~~~~">
+        <location
+            file="src/main/java/tv/kyshu/xposed/utils/Log.kt"
+            line="492"
+            column="62"/>
+    </issue>
+
+    <issue
+        id="NewApi"
+        message="Call requires API level 26, or core library desugaring (current min is 24): `java.time.LocalTime#now`"
+        errorLine1="            val ts = LocalDate.now().atTime(LocalTime.now()).format(tsFormat)"
+        errorLine2="                                                      ~~~">
+        <location
+            file="src/main/java/tv/kyshu/xposed/utils/Log.kt"
+            line="492"
+            column="55"/>
+    </issue>
+
+    <issue
+        id="NewApi"
+        message="Call requires API level 35 (current min is 24): `java.util.List#removeLast` (Prior to API level 35, this call would resolve to a Kotlin stdlib extension function. You can use `removeAt(files.lastIndex)` instead.)"
+        errorLine1="            val removed = files.removeLast()"
+        errorLine2="                                ~~~~~~~~~~~~">
+        <location
+            file="src/main/java/tv/kyshu/xposed/RemoteCommandHandler.kt"
+            line="1163"
+            column="33"/>
+    </issue>
+
+    <issue
+        id="NewApi"
+        message="Call requires API level 30 (current min is 24): `android.net.wifi.ScanResult()`"
+        errorLine1="            ScanResult()"
+        errorLine2="            ~~~~~~~~~~">
+        <location
+            file="src/main/java/tv/kyshu/xposed/factory/WifiScanResultFactory.kt"
+            line="58"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="PrivateApi"
+        message="Accessing internal APIs via reflection is not supported and may not work on all devices or in the future"
+        errorLine1="            val method = ScanRecord::class.java.getDeclaredMethod(&quot;parseFromBytes&quot;, ByteArray::class.java)"
+        errorLine2="                         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/tv/kyshu/xposed/factory/BleScanResultFactory.kt"
+            line="137"
+            column="26"/>
+    </issue>
+
+    <issue
+        id="PrivateApi"
+        message="Accessing internal APIs via reflection is not supported and may not work on all devices or in the future"
+        errorLine1="            val activityThread = Class.forName(&quot;android.app.ActivityThread&quot;)"
+        errorLine2="                                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/tv/kyshu/xposed/utils/CoordinateTransforms.kt"
+            line="46"
+            column="34"/>
+    </issue>
+
+    <issue
+        id="PrivateApi"
+        message="Accessing internal APIs via reflection is not supported and may not work on all devices or in the future"
+        errorLine1="            activityThread.getDeclaredMethod(&quot;currentProcessName&quot;).invoke(null) as? String"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/tv/kyshu/xposed/utils/CoordinateTransforms.kt"
+            line="47"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="PrivateApi"
+        message="Accessing internal APIs via reflection is not supported and may not work on all devices or in the future"
+        errorLine1="            val method = Tag::class.java.getDeclaredMethod(&quot;getTechExtras&quot;, Int::class.javaPrimitiveType!!)"
+        errorLine2="                         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/tv/kyshu/xposed/factory/NfcTagFactory.kt"
+            line="48"
+            column="26"/>
+    </issue>
+
+    <issue
+        id="PrivateApi"
+        message="Accessing internal APIs via reflection is not supported and may not work on all devices or in the future"
+        errorLine1="            val method = Tag::class.java.getDeclaredMethod("
+        errorLine2="                         ^">
+        <location
+            file="src/main/java/tv/kyshu/xposed/factory/NfcTagFactory.kt"
+            line="73"
+            column="26"/>
+    </issue>
+
+    <issue
+        id="PrivateApi"
+        message="Accessing internal APIs via reflection is not supported and may not work on all devices or in the future"
+        errorLine1="                    Class.forName(&quot;android.nfc.INfcTag&quot;),"
+        errorLine2="                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/tv/kyshu/xposed/factory/NfcTagFactory.kt"
+            line="88"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="PrivateApi"
+        message="Accessing internal APIs via reflection is not supported and may not work on all devices or in the future"
+        errorLine1="                Class.forName(&quot;android.os.SystemProperties&quot;)"
+        errorLine2="                ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/tv/kyshu/xposed/security/RemoteCommandSecurity.kt"
+            line="366"
+            column="17"/>
+    </issue>
+
+    <issue
+        id="PrivateApi"
+        message="Accessing internal APIs via reflection is not supported and may not work on all devices or in the future"
+        errorLine1="            val field = target.javaClass.getDeclaredField(name)"
+        errorLine2="                        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/tv/kyshu/xposed/factory/WifiInfoFactory.kt"
+            line="88"
+            column="25"/>
+    </issue>
+
+    <issue
+        id="SdCardPath"
+        message="Do not hardcode &quot;`/data/`&quot;; use `Context.getFilesDir().getPath()` instead"
+        errorLine1="            path.startsWith(&quot;/data/user/&quot;) || path.startsWith(&quot;/data/data/&quot;) -> &quot;app_private&quot;"
+        errorLine2="                             ~~~~~~~~~~~">
+        <location
+            file="src/main/java/tv/kyshu/xposed/utils/LogRedactor.kt"
+            line="182"
+            column="30"/>
+    </issue>
+
+    <issue
+        id="SdCardPath"
+        message="Do not hardcode &quot;`/data/`&quot;; use `Context.getFilesDir().getPath()` instead"
+        errorLine1="            path.startsWith(&quot;/data/user/&quot;) || path.startsWith(&quot;/data/data/&quot;) -> &quot;app_private&quot;"
+        errorLine2="                                                               ~~~~~~~~~~~">
+        <location
+            file="src/main/java/tv/kyshu/xposed/utils/LogRedactor.kt"
+            line="182"
+            column="64"/>
+    </issue>
+
+    <issue
+        id="SdCardPath"
+        message="Do not hardcode &quot;/sdcard/&quot;; use `Environment.getExternalStorageDirectory().getPath()` instead"
+        errorLine1="            path.startsWith(&quot;/storage/&quot;) || path.startsWith(&quot;/sdcard/&quot;) -> &quot;shared_storage&quot;"
+        errorLine2="                                                             ~~~~~~~~">
+        <location
+            file="src/main/java/tv/kyshu/xposed/utils/LogRedactor.kt"
+            line="189"
+            column="62"/>
+    </issue>
+
+    <issue
+        id="SuspiciousIndentation"
+        message="The indentation string here is different from on the previous line (`\t` vs `&quot; &quot;`)"
+        errorLine1="                        return@Thread"
+        errorLine2="~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/tv/kyshu/xposed/FakeLocation.kt"
+            line="626"
+            column="1"/>
+        <location
+            file="src/main/java/tv/kyshu/xposed/FakeLocation.kt"
+            line="624"
+            column="1"
+            message="Previous line indentation here"/>
+    </issue>
+
+    <issue
+        id="SuspiciousIndentation"
+        message="The indentation string here is different from on the previous line (`\t` vs `&quot; &quot;`)"
+        errorLine1="        Logger.debug(&quot;[WlanHook] hooking WifiServiceImpl: methods=${wifiClazz.declaredMethods.size}&quot;)"
+        errorLine2="~~~~~~~~">
+        <location
+            file="src/main/java/tv/kyshu/xposed/hooks/wlan/WlanHook.kt"
+            line="115"
+            column="1"/>
+        <location
+            file="src/main/java/tv/kyshu/xposed/hooks/wlan/WlanHook.kt"
+            line="111"
+            column="1"
+            message="Previous line indentation here"/>
+    </issue>
+
+    <issue
+        id="SuspiciousIndentation"
+        message="The indentation string here is different from on the previous line (`\t` vs `&quot; &quot;`)"
+        errorLine1="            if (packageName.isNullOrEmpty()) {"
+        errorLine2="~~~~~~~~~~~~">
+        <location
+            file="src/main/java/tv/kyshu/xposed/hooks/wlan/WlanHook.kt"
+            line="154"
+            column="1"/>
+        <location
+            file="src/main/java/tv/kyshu/xposed/hooks/wlan/WlanHook.kt"
+            line="153"
+            column="1"
+            message="Previous line indentation here"/>
+    </issue>
+
+    <issue
+        id="GradleDependency"
+        message="A newer version of `compileSdk` than 35 is available: 36"
+        errorLine1="    compileSdk = 35"
+        errorLine2="    ~~~~~~~~~~~~~~~">
+        <location
+            file="build.gradle.kts"
+            line="8"
+            column="5"/>
+    </issue>
+
+    <issue
+        id="StaticFieldLeak"
+        message="Do not place Android context classes in static fields (static reference to `RetainedContext` which has field `context` pointing to `Context`); this is a memory leak"
+        errorLine1="    @Volatile"
+        errorLine2="    ^">
+        <location
+            file="src/main/java/tv/kyshu/xposed/utils/FakeLoc.kt"
+            line="69"
+            column="5"/>
+    </issue>
+
+    <issue
+        id="UseTomlInstead"
+        message="Use version catalog instead"
+        errorLine1="    implementation(&quot;io.github.vvb2060.ndk:dobby:1.2&quot;)  // Tracked via ndk/dobby; semver stable"
+        errorLine2="                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="build.gradle.kts"
+            line="69"
+            column="20"/>
+    </issue>
+
+</issues>

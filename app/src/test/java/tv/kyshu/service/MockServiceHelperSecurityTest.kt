@@ -16,14 +16,36 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.json.JSONObject
+import org.robolectric.RuntimeEnvironment
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import tv.kyshu.xposed.MockCommandContract
 import tv.kyshu.xposed.security.RemoteCommandBundleCodec
 import tv.kyshu.xposed.security.RemoteCommandSecurity
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [33], manifest = Config.NONE)
 class MockServiceHelperSecurityTest {
+
+    @Test
+    fun `stop requires explicit stopped state and never treats missing response as stopped`() {
+        val manager = mockk<LocationManager>()
+        every { manager.sendExtraCommand(MockServiceHelper.PROVIDER_NAME, "exchange_key", any()) } answers {
+            (invocation.args[2] as Bundle).putEncryptedSessionKey("auth_test_key")
+            true
+        }
+        MockServiceHelper.tryInitService(manager)
+        every { manager.sendExtraCommand(MockServiceHelper.PROVIDER_NAME, "auth_test_key", any()) } returns true
+        assertFalse(MockServiceHelper.tryCloseMock(manager))
+        assertEquals(null, MockServiceHelper.queryMockState(manager))
+        every { manager.sendExtraCommand(MockServiceHelper.PROVIDER_NAME, "auth_test_key", any()) } answers {
+            (invocation.args[2] as Bundle).putBoolean("is_start", false)
+            true
+        }
+        assertTrue(MockServiceHelper.tryCloseMock(manager))
+        every { manager.sendExtraCommand(MockServiceHelper.PROVIDER_NAME, "auth_test_key", any()) } returns false
+        assertEquals(null, MockServiceHelper.queryMockState(manager))
+    }
 
     @Before
     fun resetMockServiceHelper() {
@@ -142,6 +164,54 @@ class MockServiceHelperSecurityTest {
         val location = MockServiceHelper.getLocation(locationManager)
         assertEquals(39.9087, location!!.first, 0.0)
         assertEquals(116.3975, location.second, 0.0)
+    }
+
+    @Test
+    fun `putConfig emits versioned domain config json in authenticated payload`() {
+        val locationManager = mockk<LocationManager>()
+        every {
+            locationManager.sendExtraCommand(MockServiceHelper.PROVIDER_NAME, "exchange_key", any())
+        } answers {
+            val bundle = invocation.args[2] as Bundle
+            bundle.putEncryptedSessionKey("auth_put_config_key")
+            true
+        }
+        MockServiceHelper.tryInitService(locationManager)
+
+        val context = RuntimeEnvironment.getApplication()
+        context.getSharedPreferences(MockServiceHelper.PROVIDER_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .clear()
+            .putBoolean("enable", true)
+            .putString("selectedLocation", "Tokyo,Station,35.6812,139.7671")
+            .putFloat("altitude", 44.0f)
+            .putFloat("speed", 1.5f)
+            .putInt("minSatelliteCount", 20)
+            .putBoolean("enableNMEA", true)
+            .putBoolean("hideBaseStation", true)
+            .commit()
+
+        var sentBundle: Bundle? = null
+        every {
+            locationManager.sendExtraCommand(MockServiceHelper.PROVIDER_NAME, "auth_put_config_key", any())
+        } answers {
+            sentBundle = invocation.args[2] as Bundle
+            true
+        }
+
+        assertTrue(MockServiceHelper.putConfig(locationManager, context))
+        val sent = sentBundle!!
+        val json = JSONObject(sent.getString(MockCommandContract.Keys.MOCK_DOMAIN_CONFIG_JSON)!!)
+
+        assertEquals(MockCommandContract.Commands.PUT_CONFIG, sent.getString(MockCommandContract.Keys.COMMAND_ID))
+        assertEquals(35.6812, sent.getDouble(MockCommandContract.Keys.LATITUDE), 0.0)
+        assertEquals(139.7671, sent.getDouble(MockCommandContract.Keys.LONGITUDE), 0.0)
+        assertEquals(tv.kyshu.xposed.config.MockDomainConfig.CURRENT_SCHEMA_VERSION, json.getInt("schema_version"))
+        assertEquals(35.6812, json.getJSONObject("location").getDouble("latitude"), 0.0)
+        assertEquals(139.7671, json.getJSONObject("location").getDouble("longitude"), 0.0)
+        assertEquals(20, json.getJSONObject("gnss").getInt("min_satellite_count"))
+        assertTrue(json.getJSONObject("nmea").getBoolean("enabled"))
+        assertEquals("MASK_REAL", json.getJSONObject("switches").getJSONObject("CELL").getString("mode"))
     }
 
     @Test

@@ -1,63 +1,72 @@
 package tv.kyshu
 
-import android.Manifest.permission.ACCESS_COARSE_LOCATION
-import android.Manifest.permission.ACCESS_FINE_LOCATION
-import android.Manifest.permission.ACCESS_LOCATION_EXTRA_COMMANDS
-import android.Manifest.permission.ACCESS_NETWORK_STATE
-import android.Manifest.permission.ACCESS_WIFI_STATE
-import android.Manifest.permission.CHANGE_WIFI_STATE
-import android.Manifest.permission.FOREGROUND_SERVICE
-import android.Manifest.permission.INTERNET
-import android.Manifest.permission.VIBRATE
-import android.annotation.SuppressLint
+import android.Manifest
 import android.app.Notification
 import android.app.PendingIntent
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.content.res.ColorStateList
-import android.graphics.PorterDuff
-import android.graphics.PorterDuffColorFilter
 import android.location.LocationManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
-import android.util.Log
-import android.view.Menu
-import android.view.MenuItem
 import android.view.View
-import android.view.WindowManager
-import android.widget.AdapterView.OnItemClickListener
-import android.widget.ImageView
-import android.widget.SimpleAdapter
-import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.setContent
 import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
-import androidx.appcompat.widget.SearchView
-import androidx.core.app.ActivityCompat
-import androidx.core.content.ContextCompat
-import androidx.core.view.WindowCompat
-import androidx.core.view.WindowInsetsControllerCompat
-import androidx.core.widget.ImageViewCompat
-import androidx.drawerlayout.widget.DrawerLayout
-import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
-import androidx.lifecycle.repeatOnLifecycle
-import androidx.navigation.NavController
-import androidx.navigation.NavController.OnDestinationChangedListener
-import androidx.navigation.NavDestination
-import androidx.navigation.findNavController
-import androidx.navigation.ui.AppBarConfiguration
-import androidx.navigation.ui.navigateUp
-import androidx.navigation.ui.setupActionBarWithNavController
-import androidx.navigation.ui.setupWithNavController
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.Button
+import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.NavigationDrawerItem
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.rememberDrawerState
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.platform.ViewCompositionStrategy
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.fragment.app.Fragment
+import androidx.fragment.app.FragmentContainerView
+import androidx.fragment.app.FragmentManager
+import androidx.fragment.app.commit
+import androidx.navigation.NavHostController
+import dagger.hilt.android.AndroidEntryPoint
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
+import androidx.navigation.compose.rememberNavController
 import com.baidu.mapapi.map.BitmapDescriptorFactory
 import com.baidu.mapapi.map.InfoWindow
 import com.baidu.mapapi.map.MapStatusUpdateFactory
 import com.baidu.mapapi.map.MarkerOptions
-import com.baidu.mapapi.map.MyLocationConfiguration
-import com.baidu.mapapi.model.LatLng
 import com.baidu.mapapi.search.core.SearchResult
 import com.baidu.mapapi.search.geocode.GeoCodeResult
 import com.baidu.mapapi.search.geocode.GeoCoder
@@ -65,431 +74,390 @@ import com.baidu.mapapi.search.geocode.OnGetGeoCoderResultListener
 import com.baidu.mapapi.search.geocode.ReverseGeoCodeResult
 import com.baidu.mapapi.search.sug.SuggestionSearch
 import com.baidu.mapapi.search.sug.SuggestionSearchOption
-import com.google.android.material.navigation.NavigationView
+import com.baidu.mapapi.model.LatLng
 import kotlinx.coroutines.launch
 import tv.kyshu.android.permission.RequestPermissions
 import tv.kyshu.android.root.ShellUtils
 import tv.kyshu.android.window.OverlayUtils
 import tv.kyshu.bdmap.Poi
 import tv.kyshu.bdmap.toPoi
-import tv.kyshu.databinding.ActivityMainBinding
 import tv.kyshu.ext.gcj02
 import tv.kyshu.ext.wgs84
-import tv.kyshu.ui.notification.NotificationUtils
+import tv.kyshu.ui.compose.theme.PortalTheme
+import tv.kyshu.ui.environment.EnvironmentDataFragment
+import tv.kyshu.ui.environment.EnvironmentMapFragment
+import tv.kyshu.ui.gnss.GnssMockFragment
+import tv.kyshu.ui.home.HomeFragment
+import tv.kyshu.ui.mock.MockFragment
+import tv.kyshu.ui.mock.RouteEditFragment
+import tv.kyshu.ui.mock.RouteMockFragment
+import tv.kyshu.ui.settings.AppCoordinateFragment
+import tv.kyshu.ui.settings.MapSettingsFragment
+import tv.kyshu.ui.settings.SensorSettingsFragment
+import tv.kyshu.ui.settings.SettingsFragment
 import tv.kyshu.ui.viewmodel.BaiduMapViewModel
 import tv.kyshu.ui.viewmodel.MockServiceViewModel
+import tv.kyshu.service.MockServiceHelper
+import tv.kyshu.ui.compose.portalComposeView
+import tv.kyshu.ui.notification.NotificationUtils
+import tv.kyshu.xposed.utils.Log as XLog
 
+@AndroidEntryPoint
 class MainActivity : AppCompatActivity() {
-    private lateinit var appBarConfiguration: AppBarConfiguration
-    private lateinit var binding: ActivityMainBinding
-
-    /* Permission */
     private val requestMultiplePermissions = RequestPermissions(this)
-
-    /* BaiduMap */
-    private var mSuggestionSearch: SuggestionSearch? = null
     private val baiduMapViewModel by viewModels<BaiduMapViewModel>()
     private val mockServiceViewModel by viewModels<MockServiceViewModel>()
-
-    private fun getRequiredPermissions(): MutableSet<String> {
-        val permissions = mutableSetOf(
-            ACCESS_FINE_LOCATION,
-            ACCESS_COARSE_LOCATION,
-            ACCESS_LOCATION_EXTRA_COMMANDS,
-            ACCESS_WIFI_STATE,
-            CHANGE_WIFI_STATE,
-            INTERNET,
-            ACCESS_NETWORK_STATE,
-            VIBRATE
-        )
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            permissions.add(FOREGROUND_SERVICE)
-        }
-        return permissions
-    }
-
-    private fun handleDeniedPermissions(denied: Set<String>) {
-        denied.forEach { permission ->
-            if (ActivityCompat.shouldShowRequestPermissionRationale(this, permission)) {
-                showPermissionDeniedToast(permission)
-            } else {
-                ActivityCompat.requestPermissions(this, arrayOf(permission), REQUEST_PERMISSIONS_CODE)
-            }
-        }
-
-        if (denied.isEmpty()) {
-            requireFloatWindows()
-        }
-    }
-
-    private fun showPermissionDeniedToast(permission: String) {
-        val message = when (permission) {
-            ACCESS_FINE_LOCATION, ACCESS_COARSE_LOCATION -> "Portal需要完整位置权限"
-            ACCESS_LOCATION_EXTRA_COMMANDS -> "Portal需要额外位置命令权限和系统交互"
-            ACCESS_NETWORK_STATE, INTERNET -> "Portal需要访问网络"
-            VIBRATE -> "Portal需要访问传感器"
-            else -> "需要 $permission 才能运行"
-        }
-        Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
-    }
-
-    private suspend fun checkPermission(): Boolean {
-        val permissions = getRequiredPermissions()
-        val (_, denied) = requestMultiplePermissions.request(permissions)
-        handleDeniedPermissions(denied)
-        return denied.isEmpty()
-    }
+    private var mSuggestionSearch: SuggestionSearch? = null
+    private var composeNavController: NavHostController? = null
+    private var permissionDenied by mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        configureSystemBars()
+        if (!ShellUtils.hasRoot()) Toast.makeText(this, "无Root可能导致传感器Hook失效", Toast.LENGTH_LONG).show()
 
-        WindowCompat.setDecorFitsSystemWindows(window, false)
-        val controller = WindowInsetsControllerCompat(window, window.decorView)
-        controller.isAppearanceLightStatusBars = false // 状态栏字体颜色
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS)
-            window.clearFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_STATUS)
-            window.statusBarColor = ContextCompat.getColor(this, R.color.theme_appbar_color)
-        }
-
-        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.N) {
-            window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-        }
-
-        if (!ShellUtils.hasRoot()) {
-            Toast.makeText(this, "无Root可能导致传感器Hook失效", Toast.LENGTH_LONG).show()
-        }
-
-        lifecycleScope.launch {
-            repeatOnLifecycle(Lifecycle.State.CREATED) {
-                if(checkPermission()) {
-                    mockServiceViewModel.locationManager = getSystemService(LOCATION_SERVICE) as? LocationManager
-                }
-
-                initNotification()
-
-                binding = ActivityMainBinding.inflate(layoutInflater)
-                setContentView(binding.root)
-
-                setSupportActionBar(binding.appBarMain.toolbar)
-
-                binding.appBarMain.toolbar.setBackgroundColor(ContextCompat.getColor(this@MainActivity, R.color.theme_appbar_color))
-                val drawerLayout: DrawerLayout = binding.drawerLayout
-                val navView: NavigationView = binding.navView
-                navView.itemIconTintList = ContextCompat.getColorStateList(this@MainActivity, R.color.theme_nav_icon_color)
-                val navController = findNavController(R.id.nav_host_fragment_content_main)
-
-                // Passing each menu ID as a set of Ids because each
-                // menu should be considered as top level destinations.
-                appBarConfiguration = AppBarConfiguration(
-                    setOf(
-                        R.id.nav_home,
-                        R.id.nav_mock,
-                        R.id.nav_gnss_mock,
-                        R.id.nav_sensor_settings,
-                        R.id.nav_route_gallery,
-                        R.id.nav_settings,
-                    ), drawerLayout
-                )
-
-                setupActionBarWithNavController(navController, appBarConfiguration)
-                navView.setupWithNavController(navController)
-
-                binding.appBarMain.toolbar.navigationIcon?.colorFilter = PorterDuffColorFilter(
-                    ContextCompat.getColor(this@MainActivity, R.color.theme_appbar_icon_color), PorterDuff.Mode.SRC_IN
-                )
-
-                navController.addOnDestinationChangedListener(object: OnDestinationChangedListener {
-                    val menuIdMapping = mapOf(
-                        R.id.nav_home to R.id.action_search,
-                        //R.id.nav_settings to R.id.action_info
-                    )
-
-                    override fun onDestinationChanged(
-                        controller: NavController,
-                        destination: NavDestination,
-                        arguments: Bundle?
-                    ) {
-                        menuIdMapping.forEach { (key, value) ->
-                            val menu = binding.appBarMain.toolbar.menu
-                            menu.findItem(value)?.isVisible = key == destination.id
-                        }
-                    }
-                })
+        initGeoCoder()
+        initNotification()
+        mockServiceViewModel.initRocker(this)
+        setContent {
+            PortalTheme {
+                if (permissionDenied) PermissionRequiredScreen() else PortalApp()
             }
         }
+        lifecycleScope.launch {
+            if (checkPermission()) {
+                mockServiceViewModel.locationManager = getSystemService(LOCATION_SERVICE) as? LocationManager
+            }
+        }
+    }
 
+    private fun configureSystemBars() {
+        window.statusBarColor = getColor(R.color.theme_appbar_color)
+        androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
+        androidx.core.view.WindowInsetsControllerCompat(window, window.decorView).isAppearanceLightStatusBars = false
+        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.N) window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+    }
+
+    private fun initGeoCoder() {
         baiduMapViewModel.mGeoCoder = GeoCoder.newInstance()
-        baiduMapViewModel.mGeoCoder?.setOnGetGeoCodeResultListener(object: OnGetGeoCoderResultListener {
-            override fun onGetGeoCodeResult(geoCodeResult: GeoCodeResult) {}
-
-            override fun onGetReverseGeoCodeResult(reverseGeoCodeResult: ReverseGeoCodeResult) {
-                if (reverseGeoCodeResult.error != SearchResult.ERRORNO.NO_ERROR) {
-                    Log.e("MainActivity", "Reverse GeoCode error: ${reverseGeoCodeResult.error}")
+        baiduMapViewModel.mGeoCoder?.setOnGetGeoCodeResultListener(object : OnGetGeoCoderResultListener {
+            override fun onGetGeoCodeResult(geoCodeResult: GeoCodeResult) = Unit
+            override fun onGetReverseGeoCodeResult(result: ReverseGeoCodeResult) {
+                if (result.error != SearchResult.ERRORNO.NO_ERROR) {
+                    XLog.e("MainActivity", "Reverse GeoCode error: ${result.error}")
                 } else with(baiduMapViewModel) {
-                    markName = reverseGeoCodeResult.address.toString()
-
-                    if (showDetailView) {
-                        showDetailInfo(reverseGeoCodeResult.location.wgs84, reverseGeoCodeResult.location)
-                    }
+                    markName = result.address.toString()
+                    if (showDetailView) showDetailInfo(result.location.wgs84, result.location)
                 }
             }
         })
+    }
 
-        mockServiceViewModel.initRocker(this)
+    private fun showDetailInfo(wgsLoc: Pair<Double, Double>, gcjLoc: LatLng) {
+        val infoView = ComposeView(this).apply {
+            setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
+            setContent {
+                PortalTheme {
+                    Surface(
+                        modifier = Modifier.widthIn(max = 280.dp),
+                        shape = MaterialTheme.shapes.medium,
+                        tonalElevation = 6.dp,
+                        shadowElevation = 4.dp,
+                        color = MaterialTheme.colorScheme.surface,
+                    ) {
+                        Column(modifier = Modifier.padding(horizontal = 18.dp, vertical = 12.dp)) {
+                            Text(
+                                "${wgsLoc.second.toString().take(10)}, ${wgsLoc.first.toString().take(10)}",
+                                style = MaterialTheme.typography.bodyLarge,
+                            )
+                            Text(
+                                baiduMapViewModel.markName ?: "未知地址",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        val maxWidth = (280 * resources.displayMetrics.density).toInt()
+        val spec = View.MeasureSpec.makeMeasureSpec(maxWidth, View.MeasureSpec.AT_MOST)
+        infoView.measure(spec, View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED))
+        infoView.layout(0, 0, infoView.measuredWidth, infoView.measuredHeight)
+        baiduMapViewModel.baiduMap.showInfoWindow(InfoWindow(BitmapDescriptorFactory.fromView(infoView), gcjLoc, -95, null))
     }
 
     private fun initNotification() {
-        with(baiduMapViewModel) {
-            mNotification = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                val notificationUtils = NotificationUtils(this@MainActivity)
-                val builder = notificationUtils.getAndroidChannelNotification(
-                    "Portal后台定位服务",
-                    "正在后台定位"
-                )
-                builder.build()
-            } else {
-                val builder = Notification.Builder(this@MainActivity)
-                val nfIntent = Intent(
-                    this@MainActivity,
-                    MainActivity::class.java
-                )
-                builder.setContentIntent(PendingIntent.getActivity(
-                    this@MainActivity, 0, nfIntent, PendingIntent.FLAG_IMMUTABLE
-                ))
-                    .setContentTitle("Portal后台定位服务")
-                    .setSmallIcon(R.mipmap.ic_launcher)
-                    .setContentText("正在后台定位")
-                    .setWhen(System.currentTimeMillis())
+        baiduMapViewModel.mNotification = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationUtils(this).getAndroidChannelNotification("Portal后台定位服务", "正在后台定位").build()
+        } else {
+            Notification.Builder(this)
+                .setContentIntent(PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE))
+                .setContentTitle("Portal后台定位服务")
+                .setSmallIcon(R.mipmap.ic_launcher)
+                .setContentText("正在后台定位")
+                .setWhen(System.currentTimeMillis())
+                .build()
+        }.also { it.defaults = Notification.DEFAULT_SOUND }
+    }
 
-                builder.build()
-            }.also {
-                it.defaults = Notification.DEFAULT_SOUND
+    private fun requiredPermissions(): MutableSet<String> = mutableSetOf(
+        Manifest.permission.ACCESS_FINE_LOCATION,
+        Manifest.permission.ACCESS_COARSE_LOCATION,
+        Manifest.permission.ACCESS_LOCATION_EXTRA_COMMANDS,
+        Manifest.permission.ACCESS_WIFI_STATE,
+        Manifest.permission.CHANGE_WIFI_STATE,
+        Manifest.permission.INTERNET,
+        Manifest.permission.ACCESS_NETWORK_STATE,
+        Manifest.permission.VIBRATE,
+    ).apply { if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) add(Manifest.permission.FOREGROUND_SERVICE) }
+
+    private suspend fun checkPermission(): Boolean {
+        val (_, denied) = requestMultiplePermissions.request(requiredPermissions())
+        if (denied.isEmpty()) {
+            requireFloatWindows()
+            return true
+        }
+        denied.forEach { permission ->
+            val message = when (permission) {
+                Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION -> "Portal需要完整位置权限"
+                Manifest.permission.ACCESS_LOCATION_EXTRA_COMMANDS -> "Portal需要额外位置命令权限和系统交互"
+                Manifest.permission.ACCESS_NETWORK_STATE, Manifest.permission.INTERNET -> "Portal需要访问网络"
+                Manifest.permission.VIBRATE -> "Portal需要访问传感器"
+                else -> "需要 $permission 才能运行"
+            }
+            Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+        }
+        permissionDenied = true
+        return false
+    }
+
+    private fun requireFloatWindows(): Boolean {
+        if (OverlayUtils.hasOverlayPermissions(this)) return true
+        Toast.makeText(this, "请授权悬浮窗权限", Toast.LENGTH_LONG).show()
+        runCatching {
+            startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION).setData(Uri.parse("package:$packageName")))
+        }.onFailure { Toast.makeText(this, "跳转失败，请手动去设置授权", Toast.LENGTH_LONG).show() }
+        return false
+    }
+
+    @Composable
+    private fun PermissionRequiredScreen() {
+        Column(modifier = Modifier.fillMaxSize().padding(24.dp)) {
+            Text("缺少必要权限", style = MaterialTheme.typography.headlineSmall)
+            Text("请在系统设置中授予位置、网络和传感器权限后重新打开 Portal。", modifier = Modifier.padding(top = 12.dp))
+            Button(onClick = { permissionDenied = false; recreate() }, modifier = Modifier.fillMaxWidth().padding(top = 20.dp)) { Text("重新检查") }
+        }
+    }
+
+    @OptIn(ExperimentalMaterial3Api::class)
+    @Composable
+    private fun PortalApp() {
+        val navController = rememberNavController()
+        val drawerState = rememberDrawerState(DrawerValue.Closed)
+        val scope = rememberCoroutineScope()
+        val currentRoute by navController.currentBackStackEntryAsState()
+        val route = currentRoute?.destination?.route ?: ROUTE_HOME
+        var searchOpen by remember { mutableStateOf(false) }
+        var searchQuery by remember { mutableStateOf("") }
+        var searchResults by remember { mutableStateOf<List<Poi>>(emptyList()) }
+        composeNavController = navController
+
+        BackHandler(enabled = searchOpen || route != ROUTE_HOME) {
+            if (searchOpen) searchOpen = false else navController.popBackStack()
+        }
+        ModalNavigationDrawer(
+            drawerState = drawerState,
+            drawerContent = {
+                ModalDrawerSheet {
+                    Text("Portal", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(24.dp))
+                    Text("位置与传感器工具", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(horizontal = 24.dp))
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 16.dp))
+                    destinations.forEach { destination ->
+                        NavigationDrawerItem(
+                            label = { Text(destination.title) },
+                            icon = { Text(destination.glyph) },
+                            selected = route == destination.route,
+                            onClick = {
+                                scope.launch { drawerState.close() }
+                                navController.navigate(destination.route) {
+                                    launchSingleTop = true
+                                    restoreState = true
+                                }
+                            },
+                            modifier = Modifier.padding(horizontal = 12.dp),
+                        )
+                    }
+                }
+            },
+        ) {
+            Scaffold(
+                topBar = {
+                    TopAppBar(
+                        title = { Text(destinations.firstOrNull { it.route == route }?.title ?: "Portal") },
+                        navigationIcon = { IconButton(onClick = { scope.launch { drawerState.open() } }) { Text("☰", style = MaterialTheme.typography.titleLarge) } },
+                        actions = {
+                            if (route == ROUTE_HOME) IconButton(onClick = { searchOpen = !searchOpen; if (!searchOpen) searchResults = emptyList() }) { Text("⌕", style = MaterialTheme.typography.titleLarge) }
+                        },
+                    )
+                },
+            ) { padding ->
+                Column(modifier = Modifier.fillMaxSize().padding(padding)) {
+                    if (searchOpen && route == ROUTE_HOME) {
+                        OutlinedTextField(
+                            value = searchQuery,
+                            onValueChange = {
+                                searchQuery = it
+                                requestSuggestions(it) { searchResults = it }
+                            },
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                            label = { Text("搜索地点") },
+                            singleLine = true,
+                        )
+                        if (searchResults.isNotEmpty()) {
+                            LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 240.dp).padding(horizontal = 16.dp)) {
+                                items(searchResults, key = { "${it.name}:${it.longitude}:${it.latitude}" }) { poi ->
+                                    NavigationDrawerItem(
+                                        label = { Column { Text(poi.name); Text(poi.address, style = MaterialTheme.typography.bodySmall) } },
+                                        selected = false,
+                                        onClick = {
+                                            selectPoi(poi)
+                                            searchOpen = false
+                                            searchResults = emptyList()
+                                        },
+                                        modifier = Modifier.fillMaxWidth(),
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    NavHost(navController, startDestination = ROUTE_HOME, modifier = Modifier.fillMaxSize()) {
+                        destinations.forEach { destination ->
+                            composable(destination.route) { FragmentDestination(destination.route) }
+                        }
+                        composable(ROUTE_ROUTE_EDIT) { FragmentDestination(ROUTE_ROUTE_EDIT) }
+                    }
+                }
             }
         }
     }
 
-    private fun requireFloatWindows(): Boolean {
-        fun requestSettingCanDrawOverlays() {
-            kotlin.runCatching {
-                val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION)
-                intent.setData(Uri.parse("package:$packageName"))
-                startActivity(intent)
-            }.onFailure {
-                Log.e("MainActivity", "requestSettingCanDrawOverlays: ", it) // boom in Redmi K60
-                Toast.makeText(this, "跳转失败，请手动去设置授权", Toast.LENGTH_LONG).show()
+    @Composable
+    private fun FragmentDestination(route: String) {
+        val context = LocalContext.current
+        val manager = (context as? androidx.fragment.app.FragmentActivity)?.supportFragmentManager ?: return
+        val containerId = remember(route) { View.generateViewId() }
+        AndroidView(
+            factory = { FragmentContainerView(context).apply { id = containerId } },
+            modifier = Modifier.fillMaxSize(),
+        )
+        DisposableEffect(route, containerId) {
+            val tag = "portal-compose-$route"
+            manager.commit {
+                setReorderingAllowed(true)
+                replace(containerId, fragmentFor(route), tag)
             }
-            finish()
+            onDispose {
+                manager.findFragmentByTag(tag)?.let { fragment ->
+                    if (!manager.isStateSaved) manager.commit { remove(fragment) }
+                }
+            }
         }
+    }
 
-        if (!OverlayUtils.hasOverlayPermissions(this)) {
-            Toast.makeText(this, "快给我悬浮窗权限", Toast.LENGTH_LONG).show()
-            requestSettingCanDrawOverlays()
-            return false
+    private fun fragmentFor(route: String): Fragment = when (route) {
+        ROUTE_HOME -> HomeFragment()
+        ROUTE_MOCK -> MockFragment()
+        ROUTE_GNSS -> GnssMockFragment()
+        ROUTE_SENSOR -> SensorSettingsFragment()
+        ROUTE_ROUTE -> RouteMockFragment()
+        ROUTE_ROUTE_EDIT -> RouteEditFragment()
+        ROUTE_SETTINGS -> SettingsFragment()
+        ROUTE_ENV_MAP -> EnvironmentMapFragment()
+        ROUTE_ENV_DATA -> EnvironmentDataFragment()
+        ROUTE_COORDINATE -> AppCoordinateFragment()
+        ROUTE_MAP_SETTINGS -> MapSettingsFragment()
+        else -> HomeFragment()
+    }
+
+    private fun requestSuggestions(query: String, onResult: (List<Poi>) -> Unit) {
+        if (query.isBlank()) { onResult(emptyList()); return }
+        if (mSuggestionSearch == null) {
+            mSuggestionSearch = SuggestionSearch.newInstance().also { search ->
+                search.setOnGetSuggestionResultListener { result ->
+                    val data = result?.takeIf { it.allSuggestions != null }?.toPoi(baiduMapViewModel.currentLocation).orEmpty()
+                    runOnUiThread { onResult(data) }
+                }
+            }
         }
+        runCatching {
+            mSuggestionSearch?.requestSuggestion(SuggestionSearchOption().keyword(query).city(mCityString))
+        }.onFailure { Toast.makeText(this, "搜索出错", Toast.LENGTH_SHORT).show() }
+    }
 
-        return true
+    private fun selectPoi(poi: Poi) {
+        baiduMapViewModel.markName = poi.name
+        baiduMapViewModel.markedLoc = poi.latitude to poi.longitude
+        if (baiduMapViewModel.isExists) {
+            val point = (poi.latitude to poi.longitude).gcj02
+            baiduMapViewModel.baiduMap.setMapStatus(MapStatusUpdateFactory.newLatLng(point))
+            baiduMapViewModel.baiduMap.clear()
+            baiduMapViewModel.baiduMap.addOverlay(MarkerOptions().position(point))
+        } else Toast.makeText(this, "地图未加载", Toast.LENGTH_SHORT).show()
+    }
+
+    fun openRouteEditor() {
+        composeNavController?.navigate(ROUTE_ROUTE_EDIT) { launchSingleTop = true }
     }
 
     override fun onResume() {
         super.onResume()
-        val locationManager = getSystemService(LOCATION_SERVICE) as? LocationManager ?: return
-        if (tv.kyshu.service.MockServiceHelper.isServiceInit()) {
-            kotlin.runCatching {
-                val rely = tv.kyshu.service.MockServiceHelper.syncConfig(locationManager)
-                if (rely != null && rely.containsKey("latitude") && rely.containsKey("longitude")) {
-                    val lat = rely.getDouble("latitude")
-                    val lon = rely.getDouble("longitude")
-                    Toast.makeText(this, "配置已同步", Toast.LENGTH_SHORT).show()
-                }
-            }
-        }
-    }
-
-    override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<out String>,
-        grantResults: IntArray
-    ) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == REQUEST_PERMISSIONS_CODE) {
-            val denied = permissions.filterIndexed { index, _ ->
-                grantResults[index] != PackageManager.PERMISSION_GRANTED
-            }
-
-            if (denied.isEmpty()) {
-                mockServiceViewModel.locationManager = getSystemService(LOCATION_SERVICE) as? LocationManager
-                return
-            }
-
-            for (permission in denied) {
-                Toast.makeText(this, when(permission) {
-                    ACCESS_FINE_LOCATION, ACCESS_COARSE_LOCATION -> "Portal需要完整位置权限"
-                    ACCESS_LOCATION_EXTRA_COMMANDS -> "Portal需要额外位置命令权限和系统交互"
-                    CHANGE_WIFI_STATE, ACCESS_WIFI_STATE -> "Portal需要访问Wi-Fi状态"
-                    ACCESS_NETWORK_STATE, INTERNET -> "Portal需要访问网络"
-                    VIBRATE -> "Portal需要访问传感器"
-                    else -> "需要 $permission 才能运行"
-                } + "，请手动授权！", Toast.LENGTH_SHORT).show()
-            }
-
-            setContentView(R.layout.activity_no_permission)
-        }
-    }
-
-    override fun onCreateOptionsMenu(menu: Menu): Boolean {
-        menuInflater.inflate(R.menu.main, menu)
-        val searchItem: MenuItem = menu.findItem(R.id.action_search)
-        val searchView = searchItem.actionView as SearchView
-        searchView.onActionViewExpanded()
-
-        val searchClose = searchView.findViewById<ImageView>(androidx.appcompat.R.id.search_close_btn)
-        val searchBack = searchView.findViewById<ImageView>(androidx.appcompat.R.id.search_go_btn)
-        val voiceBack = searchView.findViewById<ImageView>(androidx.appcompat.R.id.search_voice_btn)
-        val color = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.white))
-        ImageViewCompat.setImageTintList(searchClose, color)
-        ImageViewCompat.setImageTintList(searchBack, color)
-        ImageViewCompat.setImageTintList(voiceBack, color)
-
-        val mSearchList = binding.appBarMain.searchListView
-        mSearchList.onItemClickListener = OnItemClickListener { parent, view, pos, id ->
-            val lngText = (view.findViewById<View>(R.id.poi_longitude) as TextView).text.toString()
-            val latText = (view.findViewById<View>(R.id.poi_latitude) as TextView).text.toString()
-            with(baiduMapViewModel) {
-                markName = (view.findViewById<View>(R.id.poi_name) as TextView).text.toString()
-
-                val lng = lngText.toDouble() // wgs84
-                val lat = latText.toDouble()
-                markedLoc = lat to lng
-                if (isExists) {
-                    val gcjLoc = markedLoc?.gcj02 ?: return@with
-                    val location = LatLng(gcjLoc.latitude, gcjLoc.longitude)
-                    baiduMap.setMapStatus(MapStatusUpdateFactory.newLatLng(location))
-                } else {
-                    Toast.makeText(this@MainActivity, "地图未加载", Toast.LENGTH_SHORT).show()
-                }
-
-                markMap()
-
-                binding.appBarMain.searchLinear.visibility = View.INVISIBLE
-                searchItem.collapseActionView()
-            }
-        }
-        if (mSuggestionSearch == null) {
-            mSuggestionSearch = SuggestionSearch.newInstance()
-            mSuggestionSearch?.setOnGetSuggestionResultListener { suggestionResult ->
-                if (suggestionResult == null || suggestionResult.allSuggestions == null) {
-                    Toast.makeText(this@MainActivity, "未搜索到相关位置", Toast.LENGTH_SHORT).show()
-                } else {
-                    val data = suggestionResult.toPoi(
-                        baiduMapViewModel.currentLocation
-                    ).map { it.toMap() } // wgs84
-
-                    val simAdapt = SimpleAdapter(
-                        this@MainActivity, data,
-                        R.layout.layout_search_poi_item,
-                        arrayOf(Poi.KEY_NAME, Poi.KEY_ADDRESS, Poi.KEY_LONGITUDE_RAW, Poi.KEY_LATITUDE_RAW, Poi.KEY_TAG),
-                        intArrayOf(R.id.poi_name, R.id.poi_address, R.id.poi_longitude, R.id.poi_latitude, R.id.poi_tag)
-                    )
-                    mSearchList.setAdapter(simAdapt)
-                    binding.appBarMain.searchLinear.visibility = View.VISIBLE
-                }
-            }
-        }
-
-        searchView.setOnQueryTextListener(object: SearchView.OnQueryTextListener {
-            override fun onQueryTextSubmit(query: String?): Boolean {
-                if (query.isNullOrBlank()) return false
-                try {
-                    mSuggestionSearch?.requestSuggestion(SuggestionSearchOption()
-                        .keyword(query)
-                        .city(mCityString)
-                    )
-
-                    baiduMapViewModel.baiduMap.clear()
-                    binding.appBarMain.searchLinear.visibility = View.INVISIBLE
-                } catch (e: Exception) {
-                    Toast.makeText(this@MainActivity, "搜索出错", Toast.LENGTH_SHORT).show()
-                    Log.e("MainActivity", "Search error: ${e.stackTraceToString()}")
-                }
-                return true
-            }
-
-            override fun onQueryTextChange(newText: String?): Boolean {
-                if (!newText.isNullOrBlank()) {
-                    try {
-                        mSuggestionSearch?.requestSuggestion(
-                            SuggestionSearchOption()
-                                .keyword(newText)
-                                .city(mCityString)
-                        )
-                    } catch (e: Exception) {
-                        Toast.makeText(this@MainActivity, "搜索出错", Toast.LENGTH_SHORT).show()
-                        Log.e("MainActivity", "Search error: ${e.stackTraceToString()}")
-                    }
-                } else {
-                    binding.appBarMain.searchLinear.visibility = View.GONE
-                }
-                return true
-            }
-        })
-        return true
-    }
-
-    private fun markMap() = with(baiduMapViewModel) {
-        if (markedLoc == null) return
-
-        if (perspectiveState == MyLocationConfiguration.LocationMode.FOLLOWING) {
-            perspectiveState = MyLocationConfiguration.LocationMode.NORMAL
-        }
-
-        val gcjLoc = markedLoc?.gcj02 ?: return
-        val ooA = MarkerOptions()
-            .position(gcjLoc)
-            .apply {
-                if (mMapIndicator != null)
-                    icon(mMapIndicator)
-            }
-        baiduMap.clear()
-        baiduMap.addOverlay(ooA)
-
-        showDetailInfo(markedLoc ?: return, gcjLoc)
-    }
-
-    @SuppressLint("SetTextI18n")
-    private fun showDetailInfo(wgsLoc: Pair<Double, Double>, gcjLoc: LatLng) {
-        val infoView = layoutInflater.inflate(R.layout.layout_loc_detail, null)
-        val locDetail = infoView.findViewById<TextView>(R.id.loc_detail)
-        locDetail.text = "${wgsLoc.second.toString().take(10)}, ${wgsLoc.first.toString().take(10)}"
-        val locAddr = infoView.findViewById<TextView>(R.id.loc_addr)
-        locAddr.text = baiduMapViewModel.markName ?: "未知地址"
-        val mInfoWindow = InfoWindow(BitmapDescriptorFactory.fromView(infoView), gcjLoc, -95, null)
-
-        baiduMapViewModel.baiduMap.showInfoWindow(mInfoWindow)
-    }
-
-    override fun onSupportNavigateUp(): Boolean {
-        val navController = findNavController(R.id.nav_host_fragment_content_main)
-        return navController.navigateUp(appBarConfiguration) || super.onSupportNavigateUp()
+        val manager = getSystemService(LOCATION_SERVICE) as? LocationManager ?: return
+        if (MockServiceHelper.isServiceInit()) runCatching { MockServiceHelper.syncConfig(manager) }
     }
 
     override fun onDestroy() {
-        super.onDestroy()
         mSuggestionSearch?.destroy()
         mSuggestionSearch = null
         baiduMapViewModel.mGeoCoder?.destroy()
         baiduMapViewModel.mGeoCoder = null
+        composeNavController = null
+        super.onDestroy()
     }
 
-    companion object {
-        private const val REQUEST_PERMISSIONS_CODE = 111
+    private data class Destination(val route: String, val title: String, val glyph: String)
 
+    companion object {
+        const val ROUTE_HOME = "home"
+        const val ROUTE_MOCK = "mock"
+        const val ROUTE_GNSS = "gnss"
+        const val ROUTE_SENSOR = "sensor"
+        const val ROUTE_ROUTE = "route"
+        const val ROUTE_ROUTE_EDIT = "route_edit"
+        const val ROUTE_SETTINGS = "settings"
+        const val ROUTE_ENV_MAP = "environment_map"
+        const val ROUTE_ENV_DATA = "environment_data"
+        const val ROUTE_COORDINATE = "app_coordinate"
+        const val ROUTE_MAP_SETTINGS = "map_settings"
+        private const val REQUEST_PERMISSIONS_CODE = 111
         internal var mCityString: String? = null
             set(value) {
-                if (field != value)  {
+                if (field != value) {
                     field = value
-                    Log.d("HomeViewModel", "cityString: $value")
+                    XLog.d("MainActivity", "cityString: $value")
                 }
             }
+        private val destinations = listOf(
+            Destination(ROUTE_HOME, "首页地图", "⌂"),
+            Destination(ROUTE_MOCK, "位置模拟", "◎"),
+            Destination(ROUTE_GNSS, "GNSS 模拟", "◉"),
+            Destination(ROUTE_SENSOR, "传感器设置", "⌁"),
+            Destination(ROUTE_ROUTE, "路线模拟", "↝"),
+            Destination(ROUTE_ENV_MAP, "环境图谱", "⌖"),
+            Destination(ROUTE_ENV_DATA, "环境数据", "▦"),
+            Destination(ROUTE_COORDINATE, "应用坐标系", "◇"),
+            Destination(ROUTE_MAP_SETTINGS, "地图设置", "▣"),
+            Destination(ROUTE_SETTINGS, "综合设置", "⚙"),
+        )
     }
 }

@@ -149,8 +149,12 @@ abstract class BaseDivineService {
             return false
         }
 
-        if (!syncConfig(locationManager, randomKey, from)) {
+        if (!syncConfig(locationManager, randomKey, from, sensorOnly = sensorBootstrap != null)) {
             return false
+        }
+        if (sensorBootstrap != null) {
+            initializedServices.add(from)
+            return true
         }
 
         val proxyBinder = object: Binder() {
@@ -204,7 +208,12 @@ abstract class BaseDivineService {
             return null
         }
         val sessionKey = RemoteCommandSecurity.decryptSessionKey(rely) ?: return null
-        RemoteCommandHandler.registerSessionKey(sessionKey)
+        val localScope = if (sensorBootstrap != null) {
+            RemoteCommandHandler.SessionScope.SYNC_ONLY
+        } else {
+            RemoteCommandHandler.SessionScope.CONTROL
+        }
+        RemoteCommandHandler.registerSessionKey(sessionKey, localScope)
         return sessionKey
     }
 
@@ -242,8 +251,42 @@ abstract class BaseDivineService {
      * Synchronize configurations in different processes
      */
     private fun syncConfig(locationManager: LocationManager, randomKey: String, from: String): Boolean {
+        return syncConfig(locationManager, randomKey, from, sensorOnly = false)
+    }
+
+    /**
+     * Synchronize configurations in different processes.
+     *
+     * Sensor-app bootstrap sessions receive a non-sensitive subset from the
+     * system process. They must not learn raw location, Wi-Fi, RINEX path, or
+     * register as a proxy for full control command relay.
+     */
+    private fun syncConfig(
+        locationManager: LocationManager,
+        randomKey: String,
+        from: String,
+        sensorOnly: Boolean,
+    ): Boolean {
         val (ok, rely) = sendAuthenticated(locationManager, randomKey, "sync_config")
         if(ok) {
+            if (sensorOnly) {
+                FakeLoc.enable = rely.getBoolean("enable", FakeLoc.enable)
+                FakeLoc.enableLog = rely.getBoolean("enable_log", FakeLoc.enableLog)
+                FakeLoc.enableDebugLog = rely.getBoolean("enable_debug_log", FakeLoc.enableDebugLog)
+                FakeLoc.hookSensor = rely.getBoolean("hook_sensor", FakeLoc.hookSensor)
+                FakeLoc.enableStepCountMock = rely.getBoolean("enable_step_count_mock", FakeLoc.enableStepCountMock)
+                FakeLoc.stepCount = rely.getInt("step_count", FakeLoc.stepCount)
+                FakeLoc.enableShakeMock = rely.getBoolean("enable_shake_mock", FakeLoc.enableShakeMock)
+                FakeLoc.sensorData.enableMotionMock = rely.getBoolean("enable_motion_mock", FakeLoc.sensorData.enableMotionMock)
+                FakeLoc.keepWalkingWaveform = rely.getBoolean("keep_walking_waveform", FakeLoc.keepWalkingWaveform)
+                SystemSensorManagerHook.updateStepGoal()
+                Logger.info(
+                    "[BaseDivineService] Synced sensor subset for $from: enable=${FakeLoc.enable}, " +
+                        "sensor=${FakeLoc.hookSensor}, motion=${FakeLoc.sensorData.enableMotionMock}, " +
+                        "step=${FakeLoc.enableStepCountMock}, stepCount=${FakeLoc.stepCount}"
+                )
+                return true
+            }
             val parsed = runCatching {
                 SyncCriticalConfig(
                     latitude = MockCommandContract.requireLatitude(
@@ -297,14 +340,21 @@ abstract class BaseDivineService {
             FakeLoc.enableNMEA = rely.getBoolean("enable_nmea", FakeLoc.enableNMEA)
             FakeLoc.minSatellites = rely.getInt("min_satellites", FakeLoc.minSatellites).coerceIn(1, 35)
             FakeLoc.hideMock = rely.getBoolean("hide_mock", FakeLoc.hideMock)
-            FakeLoc.hookWifi = rely.getBoolean("hook_wifi", FakeLoc.hookWifi)
-            FakeLoc.enableMockWifi = rely.getBoolean("enable_mock_wifi", FakeLoc.enableMockWifi)
-            FakeLoc.disableWifiScan = rely.getBoolean("disable_wifi_scan", FakeLoc.disableWifiScan)
-            FakeLoc.mockSSID = rely.getString("mock_ssid") ?: FakeLoc.mockSSID
-            FakeLoc.mockBSSID = rely.getString("mock_bssid") ?: FakeLoc.mockBSSID
-            FakeLoc.mockMac = rely.getString("mock_mac") ?: FakeLoc.mockMac
-            FakeLoc.mockIp = rely.getString("mock_ip") ?: FakeLoc.mockIp
-            FakeLoc.mockWifiScanCount = rely.getInt("mock_wifi_scan_count", FakeLoc.mockWifiScanCount)
+            if (BuildConfig.ENABLE_WIFI_MOCK) {
+                FakeLoc.hookWifi = rely.getBoolean("hook_wifi", FakeLoc.hookWifi)
+                FakeLoc.enableMockWifi = rely.getBoolean("enable_mock_wifi", FakeLoc.enableMockWifi)
+                FakeLoc.disableWifiScan = rely.getBoolean("disable_wifi_scan", FakeLoc.disableWifiScan)
+                FakeLoc.mockSSID = rely.getString("mock_ssid") ?: FakeLoc.mockSSID
+                FakeLoc.mockBSSID = rely.getString("mock_bssid") ?: FakeLoc.mockBSSID
+                FakeLoc.mockMac = rely.getString("mock_mac") ?: FakeLoc.mockMac
+                FakeLoc.mockIp = rely.getString("mock_ip") ?: FakeLoc.mockIp
+                FakeLoc.mockWifiScanCount = rely.getInt("mock_wifi_scan_count", FakeLoc.mockWifiScanCount)
+            } else {
+                FakeLoc.hookWifi = false
+                FakeLoc.enableMockWifi = false
+                FakeLoc.disableWifiScan = false
+                FakeLoc.mockWifiList = emptyList()
+            }
             FakeLoc.hookSensor = rely.getBoolean("hook_sensor", FakeLoc.hookSensor)
             FakeLoc.enableStepCountMock = rely.getBoolean("enable_step_count_mock", FakeLoc.enableStepCountMock)
             FakeLoc.stepCount = rely.getInt("step_count", FakeLoc.stepCount)

@@ -79,6 +79,11 @@ bool safe_execute_failfast(const char* step_id, Func&& operation) {
 // Template B: bounded watchdog wrapper
 template<typename Func>
 bool safe_execute_with_watchdog(const char* step_id, Func&& operation, int timeout_ms = 2000) {
+    if (timeout_ms <= 0) {
+        log_skip(step_id, "INVALID_TIMEOUT");
+        mark_step_permanently_disabled(step_id, "INVALID_TIMEOUT");
+        return false;
+    }
     if (is_terminal_despair_locked()) {
         log_skip(step_id, "DESPAIR_LOCK");
         return false;

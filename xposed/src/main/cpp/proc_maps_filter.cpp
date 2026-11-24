@@ -214,6 +214,8 @@ static ssize_t new_readlinkat(int dirfd, const char* path, char* buf, size_t buf
 CRASH_RECOVERY_DECL(g_maps_open_recovery);
 CRASH_RECOVERY_DECL(g_maps_openat_recovery);
 CRASH_RECOVERY_DECL(g_maps_close_recovery);
+CRASH_RECOVERY_DECL(g_maps_readlink_recovery);
+CRASH_RECOVERY_DECL(g_maps_readlinkat_recovery);
 
 // ============================================================================
 // install_proc_maps_hooks — install all G2 hooks safely
@@ -262,20 +264,26 @@ bool portal_install_proc_maps_hooks_jni(void) {
         }
         addr = dlsym(RTLD_DEFAULT, "readlink");
         if (addr) {
-            if (DobbyHook(addr, (void*)new_readlink, (void**)&orig_readlink) != 0) {
-                orig_readlink = nullptr;
-                ok = false;
-                LOGD("G2_MAPS: DobbyHook readlink failed");
+            CRASH_RECOVERY_BEGIN(g_maps_readlink_recovery, "G2_READLINK") {
+                if (DobbyHook(addr, (void*)new_readlink, (void**)&orig_readlink) != 0) {
+                    orig_readlink = nullptr;
+                    ok = false;
+                    LOGD("G2_MAPS: DobbyHook readlink failed");
+                }
             }
+            CRASH_RECOVERY_END(g_maps_readlink_recovery);
         }
 
         addr = dlsym(RTLD_DEFAULT, "readlinkat");
         if (addr) {
-            if (DobbyHook(addr, (void*)new_readlinkat, (void**)&orig_readlinkat) != 0) {
-                orig_readlinkat = nullptr;
-                ok = false;
-                LOGD("G2_MAPS: DobbyHook readlinkat failed");
+            CRASH_RECOVERY_BEGIN(g_maps_readlinkat_recovery, "G2_READLINKAT") {
+                if (DobbyHook(addr, (void*)new_readlinkat, (void**)&orig_readlinkat) != 0) {
+                    orig_readlinkat = nullptr;
+                    ok = false;
+                    LOGD("G2_MAPS: DobbyHook readlinkat failed");
+                }
             }
+            CRASH_RECOVERY_END(g_maps_readlinkat_recovery);
         }
 
         return ok;

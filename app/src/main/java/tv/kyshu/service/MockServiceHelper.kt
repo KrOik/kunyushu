@@ -7,8 +7,8 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
+import tv.kyshu.BuildConfig
 import tv.kyshu.xposed.utils.Log as XLog
-import tv.kyshu.android.root.ShellUtils
 import tv.kyshu.ext.sharedPrefs
 import tv.kyshu.ext.altitude
 import tv.kyshu.ext.altitudeJitter
@@ -21,6 +21,7 @@ import tv.kyshu.ext.enableGetFromLocation
 import tv.kyshu.ext.enableNMEA
 import tv.kyshu.ext.enableRequestGeofence
 import tv.kyshu.ext.enableMockWifi
+import tv.kyshu.ext.disableWifiScan
 import tv.kyshu.ext.minSatelliteCount
 import tv.kyshu.ext.needDowngradeToCdma
 import tv.kyshu.ext.speed
@@ -47,10 +48,10 @@ import tv.kyshu.ext.speedAmplitude
 import tv.kyshu.ext.minSpeed
 import tv.kyshu.ext.maxSpeed
 import tv.kyshu.ext.rinexPath
+import tv.kyshu.xposed.MockCommandContract
 import tv.kyshu.xposed.utils.FakeLoc
 import tv.kyshu.xposed.security.RemoteCommandBundleCodec
 import tv.kyshu.xposed.security.RemoteCommandSecurity
-import java.io.File
 import java.util.concurrent.Callable
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -249,8 +250,13 @@ object MockServiceHelper {
     }
 
     fun isMockStart(locationManager: LocationManager): Boolean {
+        return queryMockState(locationManager) == true
+    }
+
+    /** Null means unavailable, not stopped. */
+    fun queryMockState(locationManager: LocationManager): Boolean? {
         val (ok, rely) = sendAuthenticated(locationManager, "is_start") {}
-        return ok && rely.getBoolean("is_start")
+        return if (ok && rely.containsKey("is_start")) rely.getBoolean("is_start") else null
     }
 
     fun ping(locationManager: LocationManager): Boolean {
@@ -277,15 +283,18 @@ object MockServiceHelper {
     }
 
     fun isWifiMockStart(locationManager: LocationManager): Boolean {
+        if (!BuildConfig.ENABLE_WIFI_MOCK) return false
         val (ok, rely) = sendAuthenticated(locationManager, "is_wifi_mock_start") {}
         return ok && rely.getBoolean("is_wifi_mock_start")
     }
 
     fun startWifiMock(locationManager: LocationManager): Boolean {
+        if (!BuildConfig.ENABLE_WIFI_MOCK) return false
         return sendAuthenticated(locationManager, "start_wifi_mock") {}.first
     }
 
     fun stopWifiMock(locationManager: LocationManager): Boolean {
+        if (!BuildConfig.ENABLE_WIFI_MOCK) return false
         return sendAuthenticated(locationManager, "stop_wifi_mock") {}.first
     }
 
@@ -307,7 +316,7 @@ object MockServiceHelper {
     fun tryCloseMock(locationManager: LocationManager): Boolean {
         val (ok, _) = sendAuthenticated(locationManager, "stop") {}
         if (!ok) return false
-        return !isMockStart(locationManager)
+        return queryMockState(locationManager) == false
     }
 
     fun getLocation(locationManager: LocationManager): Pair<Double, Double>? {
@@ -394,6 +403,10 @@ object MockServiceHelper {
     fun putConfig(locationManager: LocationManager, context: Context): Boolean {
         return sendAuthenticated(locationManager, "put_config") {
             putBoolean("enable", context.sharedPrefs.getBoolean("enable", false))
+            MockDomainConfigPrefs.selectedLocationOrNull(context)?.let { location ->
+                putDouble("latitude", location.lat)
+                putDouble("longitude", location.lon)
+            }
             putDouble("altitude", context.altitude)
             putFloat("altitudeJitter", context.altitudeJitter)
             putDouble("speed", context.speed)
@@ -408,13 +421,20 @@ object MockServiceHelper {
             putBoolean("enable_nmea", context.enableNMEA)
             putBoolean("disable_request_geofence", !context.enableRequestGeofence)
             putBoolean("disable_get_from_location", !context.enableGetFromLocation)
-            putBoolean("enable_mock_wifi", context.enableMockWifi)
-            putBoolean("hook_wifi", context.hookWifi)
-            putString("mock_ssid", context.mockSSID)
-            putString("mock_bssid", context.mockBSSID)
-            putString("mock_mac", context.mockMac)
-            putString("mock_ip", context.mockIp)
-            putInt("mock_wifi_scan_count", context.mockWifiScanCount)
+            if (BuildConfig.ENABLE_WIFI_MOCK) {
+                putBoolean("enable_mock_wifi", context.enableMockWifi)
+                putBoolean("hook_wifi", context.hookWifi)
+                putBoolean("disable_wifi_scan", context.disableWifiScan)
+                putString("mock_ssid", context.mockSSID)
+                putString("mock_bssid", context.mockBSSID)
+                putString("mock_mac", context.mockMac)
+                putString("mock_ip", context.mockIp)
+                putInt("mock_wifi_scan_count", context.mockWifiScanCount)
+            } else {
+                putBoolean("enable_mock_wifi", false)
+                putBoolean("hook_wifi", false)
+                putBoolean("disable_wifi_scan", false)
+            }
             putBoolean("hook_sensor", context.hookSensor || context.enableStepCountMock || context.enableShakeMock)
             putBoolean("enable_step_count_mock", context.enableStepCountMock)
             putInt("step_count", context.stepCount)
@@ -433,6 +453,10 @@ object MockServiceHelper {
             putDouble("min_speed", context.minSpeed)
             putDouble("max_speed", context.maxSpeed)
             context.rinexPath?.takeIf { it.isNotBlank() }?.let { putString("rinex_path", it) }
+            putString(
+                MockCommandContract.Keys.MOCK_DOMAIN_CONFIG_JSON,
+                MockDomainConfigPrefs.exportJson(context),
+            )
         }.also { (ok, _) ->
             MockServiceProbe.configSync("put_config: enable=${context.sharedPrefs.getBoolean("enable", false)} ok=$ok")
         }.first
@@ -490,98 +514,7 @@ object MockServiceHelper {
         return ::randomKey.isInitialized
     }
 
-    fun loadLibrary(locationManager: LocationManager, path: String): String? {
-        val (ok, rely) = sendAuthenticated(locationManager, "load_library") {
-            putString("path", path)
-        }
-        return if (ok) rely.getString("result") else null
-    }
 
-    @SuppressLint("DiscouragedPrivateApi")
-    fun loadPortalLibrary(context: Context): Boolean {
-        if (!ShellUtils.hasRoot()) return false
-
-        val isX86: Boolean = runCatching {
-            if (Build.SUPPORTED_ABIS.any { it.contains("x86") }) {
-                return@runCatching true
-            }
-            val clazz = Class.forName("dalvik.system.VMRuntime")
-            val method = clazz.getDeclaredMethod("getRuntime")
-            val runtime = method.invoke(null)
-            val field = clazz.getDeclaredField("vmInstructionSet")
-            field.isAccessible = true
-            val instructionSet = field.get(runtime) as String
-            if (instructionSet.contains("x86") ) {
-                true
-            } else false
-        }.getOrElse { false }
-        // todo: support x86
-
-        val soDir = File("/data/local/portal-lib")
-        if (!soDir.exists()) {
-            ShellUtils.executeCommand("mkdir -m 755 ${soDir.absolutePath}")
-        }
-        val soFile = File(soDir, "libportal.so")
-        var copyOk = false
-        runCatching {
-            val tmpSoFile = File(soDir, "libportal.so.tmp").also { file ->
-                var nativeDir = context.applicationInfo.nativeLibraryDir
-                val apkSoFile = File(nativeDir, "libportal.so")
-                if (apkSoFile.exists()) {
-                    ShellUtils.executeCommand("cp ${apkSoFile.absolutePath} ${file.absolutePath}")
-                } else {
-                    MockServiceProbe.error("Failed to copy portal library: ${apkSoFile.absolutePath}")
-                    return@runCatching
-                }
-            }
-            if (soFile.exists()) {
-                val newHash = ShellUtils.executeCommand("sha256sum ${tmpSoFile.absolutePath}").substringBefore(' ')
-                val oldHash = ShellUtils.executeCommand("sha256sum ${soFile.absolutePath}").substringBefore(' ')
-                if (newHash == oldHash || oldHash.isBlank()) {
-                    if (newHash.isNotEmpty()) {
-                        ShellUtils.executeCommand("rm ${soFile.absolutePath}")
-                        ShellUtils.executeCommand("mv ${tmpSoFile.absolutePath} ${soFile.absolutePath}")
-                    }
-                } else {
-                    MockServiceProbe.warn("SO hash mismatch, new: $newHash, old: $oldHash")
-                    ShellUtils.executeCommand("rm ${tmpSoFile.absolutePath}")
-                }
-            } else if (tmpSoFile.exists()) {
-                ShellUtils.executeCommand("mv ${tmpSoFile.absolutePath} ${soFile.absolutePath}")
-            }
-            copyOk = true
-        }.onFailure {
-            MockServiceProbe.warn("Failed to copy portal library: ${it?.message}")
-        }
-
-        if (!copyOk) return false
-
-        // TOCTOU guard: verify canonical path is within expected directory
-        val resolvedPath = soFile.canonicalPath
-        val resolvedDir = soDir.canonicalPath
-        if (!resolvedPath.startsWith(resolvedDir)) {
-            MockServiceProbe.error("Symlink attack detected: $resolvedPath not under $resolvedDir")
-            return false
-        }
-        ShellUtils.executeCommand("chmod 755 ${soFile.absolutePath}")
-
-        // Try to load via IPC to the Xposed module
-        val locationManager = runCatching {
-            context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
-        }.getOrNull()
-        if (locationManager != null) {
-            if (!::randomKey.isInitialized) {
-                tryInitService(locationManager)
-            }
-            val result = loadLibrary(locationManager, soFile.absolutePath)
-            MockServiceProbe.init("load_native_library", result ?: "IPC_FAILED")
-            return result == "success"
-        } else {
-            MockServiceProbe.init("load_native_library", "NO_LOCATION_MANAGER")
-        }
-
-        return false
-    }
 
     /**
      * Always returns false — hooked by the Xposed module to fool

@@ -1,6 +1,6 @@
 package tv.kyshu.dobby
 
-import android.util.Log
+import tv.kyshu.xposed.utils.Log as XLog
 
 object Dobby {
     private const val TAG = "Dobby"
@@ -19,27 +19,20 @@ object Dobby {
     private var pendingStatus: Boolean? = null
 
     /**
-     * Load libportal.so from an absolute path.
-     * Must be called before any JNI method. Safe to call multiple times.
+     * Absolute-path native loading is intentionally disabled.
+     *
+     * The supported path is [loadFromClassLoader], which resolves libportal.so
+     * from the module's nativeLibraryDir/base.apk entry. Keeping this method as
+     * a deny-only compatibility shim prevents old callers from reintroducing
+     * /data/local style loading.
      */
     @Synchronized
+    @Deprecated("Absolute native loading is disabled; use loadFromClassLoader")
     fun load(path: String): Boolean {
         if (isLoaded) return flushPendingStatusLocked()
-        if (loadAttempted) return false
-        loadAttempted = true
-        return try {
-            System.load(path)
-            isLoaded = true
-            lastLoadError = null
-            Log.i(TAG, "libportal.so loaded from $path")
-            flushPendingStatusLocked()
-            true
-        } catch (e: UnsatisfiedLinkError) {
-            lastLoadError = e
-            loadAttempted = false
-            Log.e(TAG, "Failed to load libportal.so from $path", e)
-            false
-        }
+        lastLoadError = SecurityException("absolute native load disabled")
+        XLog.w(TAG, "absolute native runtime load denied")
+        return false
     }
 
     /**
@@ -56,13 +49,13 @@ object Dobby {
             System.loadLibrary("portal")
             isLoaded = true
             lastLoadError = null
-            Log.i(TAG, "libportal.so loaded via classloader")
+            XLog.i(TAG, "native runtime loaded via classloader")
             flushPendingStatusLocked()
             true
         } catch (e: UnsatisfiedLinkError) {
             lastLoadError = e
-            Log.w(TAG, "Classloader load failed (expected for LSPosed modules), use load(path) instead")
-            loadAttempted = false  // allow retry with load(path)
+            XLog.w(TAG, "classloader native runtime load failed: ${e.javaClass.simpleName}")
+            loadAttempted = false  // allow retry after transient classloader failures
             false
         }
     }
@@ -120,6 +113,8 @@ object Dobby {
     external fun resetCrashCounter()
 
     external fun initSafetyFramework(cacheDir: String)
+
+    external fun installNativeSensorHook(): Boolean
 
     external fun writeArtVersionLock()
 

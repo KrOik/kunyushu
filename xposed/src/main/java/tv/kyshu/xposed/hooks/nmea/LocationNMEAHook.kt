@@ -18,15 +18,12 @@ package tv.kyshu.xposed.hooks.nmea
 
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
-import de.robv.android.xposed.XposedHelpers
 import tv.kyshu.xposed.BaseLocationHook
 import tv.kyshu.xposed.utils.FakeLoc
 import tv.kyshu.xposed.utils.Logger
-import tv.kyshu.xposed.utils.onceHookAllMethod
 import tv.kyshu.xposed.utils.onceHookBefore
-import tv.kyshu.xposed.utils.onceHookMethodBefore
 import tv.kyshu.xposed.utils.GnssSatellite
-import java.util.Collections
+import tv.kyshu.xposed.utils.OrbitType
 import kotlin.math.roundToInt
 import tv.kyshu.xposed.utils.satelliteList
 import tv.kyshu.xposed.utils.GnssFlags
@@ -36,6 +33,8 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.Locale
 import java.lang.reflect.Modifier
 import android.os.SystemClock
+import java.lang.ref.WeakReference
+import tv.kyshu.xposed.stability.DomainGuard
 
 object LocationNMEAHook: BaseLocationHook() {
 
@@ -51,7 +50,8 @@ object LocationNMEAHook: BaseLocationHook() {
     private val gsvPayloadCache = mutableMapOf<String, TimedGsvPayload>()
     private val gsvCacheLock = Any()
     private val diagnosticKeys = ConcurrentHashMap.newKeySet<String>()
-    private val skippedNmeaCallbackIds = ConcurrentHashMap.newKeySet<Int>()
+    // Identity hashes can collide and outlive callbacks. Keep weak object identities.
+    private val skippedNmeaCallbacks = mutableListOf<WeakReference<Any>>()
     private val internalNmeaCallbackMarkers = listOf(
         "DeepThinkerDelegate",
         "com.android.server.display.ambience.",
@@ -61,6 +61,24 @@ object LocationNMEAHook: BaseLocationHook() {
         if (diagnosticKeys.add(key)) {
             Logger.info(message)
         }
+    }
+
+    internal fun safeInjectNMEA(nmea: String): String? {
+        if (DomainGuard.isDomainDisabled(DomainGuard.Domain.NMEA)) return null
+        val injected = runCatching { injectNMEA(nmea) }
+            .onFailure {
+                if (it is VirtualMachineError || it is ThreadDeath) throw it
+                DomainGuard.tripNow(DomainGuard.Domain.NMEA, "injectNMEA", it)
+                Logger.warn("[LocationNMEAHook] injectNMEA failed closed: ${it.javaClass.simpleName}: ${it.message ?: ""}", it)
+            }
+            .getOrNull()
+            ?: return null
+        val body = injected.trimEnd('\r', '\n')
+        if (!isSingleNmeaSentence(body)) {
+            Logger.error("[LocationNMEAHook] unsafe injected NMEA rejected: ${body.take(96)}")
+            return null
+        }
+        return injected
     }
 
     internal fun shouldSkipNmeaCallback(callback: Any): Boolean {
@@ -91,17 +109,28 @@ object LocationNMEAHook: BaseLocationHook() {
 
     internal fun rememberSkippedNmeaRegistration(callback: Any, args: Array<Any?>): Boolean {
         val shouldSkip = shouldSkipNmeaRegistration(callback, args)
-        if (shouldSkip) {
-            skippedNmeaCallbackIds.add(callbackId(callback))
+        synchronized(skippedNmeaCallbacks) {
+            skippedNmeaCallbacks.removeAll { it.get() == null || it.get() === callback }
+            if (shouldSkip) skippedNmeaCallbacks.add(WeakReference(callback))
         }
         return shouldSkip
     }
 
     internal fun shouldSkipNmeaCallbackInstance(callback: Any): Boolean {
-        return skippedNmeaCallbackIds.contains(callbackId(callback)) || shouldSkipNmeaCallback(callback)
+        val remembered = synchronized(skippedNmeaCallbacks) {
+            skippedNmeaCallbacks.removeAll { it.get() == null }
+            skippedNmeaCallbacks.any { it.get() === callback }
+        }
+        return remembered || shouldSkipNmeaCallback(callback)
     }
 
-    private fun callbackId(callback: Any): Int = System.identityHashCode(callback)
+    internal fun callbackAction(callback: Any): NmeaCallbackContract.Action =
+        NmeaCallbackContract.action(
+            FakeLoc.enable,
+            FakeLoc.enable && shouldSkipNmeaCallbackInstance(callback),
+            FakeLoc.enableNMEA || FakeLoc.enableAGPS,
+            DomainGuard.isDomainDisabled(DomainGuard.Domain.NMEA),
+        )
 
     private fun Class<*>.concreteClassHierarchy(): Sequence<Class<*>> = sequence {
         var clazz: Class<*>? = this@concreteClassHierarchy
@@ -136,11 +165,8 @@ object LocationNMEAHook: BaseLocationHook() {
 
         listOf(
             "addGnssMeasurementsListener",
-            "removeGnssMeasurementsListener",
             "addGnssNavigationMessageListener",
-            "removeGnssNavigationMessageListener",
             "addGnssAntennaInfoListener",
-            "removeGnssAntennaInfoListener",
         ).forEach { methodName ->
             val count = runCatching { XposedBridge.hookAllMethods(classILocationManager, methodName, doNothingMethod).size }
                 .onFailure { Logger.warn("[LocationNMEAHook] $methodName hook failed", it) }
@@ -154,9 +180,8 @@ object LocationNMEAHook: BaseLocationHook() {
     }
 
     private fun hookGnssNmea(classILocationManager: Class<*>) {
-        val hookedGnssCallback = Collections.synchronizedSet(HashSet<String>())
         val candidateMethods = classILocationManager.declaredMethods.filter {
-            it.name == "registerGnssNmeaCallback" && it.parameterTypes.size > 1
+            NmeaCallbackContract.supportsRegistration(it)
         }
         if (candidateMethods.isEmpty()) {
             Logger.warn("[LocationNMEAHook] registerGnssNmeaCallback not found on ${classILocationManager.name}")
@@ -166,9 +191,7 @@ object LocationNMEAHook: BaseLocationHook() {
         }
         val unhooks = candidateMethods.map { method ->
             method.onceHookBefore {
-                val callback = args.firstOrNull { arg ->
-                    arg != null && arg.javaClass.declaredMethods.any { it.name == "onNmeaReceived" }
-                } ?: args.firstOrNull()
+                val callback = args.firstOrNull()
                 val cIGnssNmeaCallback = (callback ?: run {
                     Logger.warn("[LocationNMEAHook] registerGnssNmeaCallback callback missing: method=$method args=${args.map { it?.javaClass?.name }}")
                     return@onceHookBefore
@@ -180,34 +203,24 @@ object LocationNMEAHook: BaseLocationHook() {
                         "[LocationNMEAHook] registerGnssNmeaCallback skipped for internal ambience callback=${cIGnssNmeaCallback.name}")
                 }
 
-                if (hookedGnssCallback.contains(cIGnssNmeaCallback.name)) return@onceHookBefore
-                hookedGnssCallback.add(cIGnssNmeaCallback.name)
-
                 if (FakeLoc.enableDebugLog) {
                     Logger.debug("registerGnssNmeaCallback: $cIGnssNmeaCallback")
                 }
 
-                cIGnssNmeaCallback.onceHookMethodBefore("onNmeaReceived", Long::class.java, String::class.java) {
-                    if (shouldSkipNmeaCallbackInstance(thisObject)) {
-                        logOnce("nmea.runtime.skip.${thisObject.javaClass.name}",
-                            "[LocationNMEAHook] onNmeaReceived skipped for internal ambience callback=${thisObject.javaClass.name}")
-                        return@onceHookMethodBefore
-                    }
-                    if (!FakeLoc.enable) {
-                        logOnce("nmea.runtime.disabled",
-                            "[LocationNMEAHook] onNmeaReceived skipped: FakeLoc.enable=false")
-                        return@onceHookMethodBefore
-                    }
-
-                    if (!FakeLoc.enableNMEA && !FakeLoc.enableAGPS) {
-                        logOnce("nmea.runtime.blocked",
-                            "[LocationNMEAHook] onNmeaReceived blocked: enableNMEA=false enableAGPS=false")
-                        result = null
-                        return@onceHookMethodBefore
+                val callbackMethod = NmeaCallbackContract.callbackMethod(cIGnssNmeaCallback)
+                    ?: return@onceHookBefore
+                callbackMethod.onceHookBefore nmeaCallback@{
+                    when (callbackAction(thisObject)) {
+                        NmeaCallbackContract.Action.PASSTHROUGH -> return@nmeaCallback
+                        NmeaCallbackContract.Action.SUPPRESS -> {
+                            result = null
+                            return@nmeaCallback
+                        }
+                        NmeaCallbackContract.Action.REWRITE -> Unit
                     }
 
-                    val nmea = args[1] as? String ?: return@onceHookMethodBefore
-                    val injected = injectNMEA(nmea)
+                    val nmea = args.getOrNull(1) as? String ?: return@nmeaCallback
+                    val injected = safeInjectNMEA(nmea)
                     if (injected != null) {
                         logOnce("nmea.runtime.injected.${nmea.take(6)}",
                             "[LocationNMEAHook] NMEA injected: ${nmea.take(6)} -> ${injected.take(6)}, len=${nmea.length}->${injected.length}")
@@ -239,7 +252,9 @@ object LocationNMEAHook: BaseLocationHook() {
         // Handle GSV injection with multi-sentence caching
         if (original.contains("GSV")) {
             synchronized(gsvCacheLock) {
-                val gsvIdentity = parseGsvIdentity(original) ?: return null
+                val gsvIdentity = parseGsvIdentity(original) ?: run {
+                    return null
+                }
                 val (constellation, talker, msgNum) = gsvIdentity
 
                 if (msgNum > 1) {
@@ -258,12 +273,16 @@ object LocationNMEAHook: BaseLocationHook() {
                 // Generate complete GSV sequence, split into individual sentences, cache them.
                 val fullSequence = runCatching { generateGSV(constellation, talker) }
                     .onFailure { Logger.warn("[LocationNMEAHook] generateGSV failed constellation=$constellation", it) }
-                    .getOrNull() ?: return null
+                    .getOrNull() ?: run {
+                    return null
+                }
                 val sentences = fullSequence.lineSequence()
                     .map { it.trim() }
                     .filter { it.isNotEmpty() }
                     .toList()
-                if (sentences.isEmpty()) return null
+                if (sentences.isEmpty()) {
+                    return null
+                }
                 gsvSequences[constellation] = GsvSequence(sentences, nextIndex = 1)
                 logOnce("gsv.generated.$constellation",
                     "[LocationNMEAHook] generated GSV constellation=$constellation sentences=${sentences.size}")
@@ -428,18 +447,20 @@ object LocationNMEAHook: BaseLocationHook() {
             else -> "GP"
         }
         val cacheKey = "$constellation:$talker"
-        val nowElapsed = SystemClock.elapsedRealtime()
+        val nowElapsed = elapsedRealtimeCompat()
         gsvPayloadCache[cacheKey]?.let { cached ->
             val samePlace = kotlin.math.abs(cached.lat - FakeLoc.latitude) < 0.00001 &&
                 kotlin.math.abs(cached.lon - FakeLoc.longitude) < 0.00001
-            if (samePlace && nowElapsed - cached.generatedAtMs < 1_000L) {
+            if (samePlace && nowElapsed - cached.generatedAtMs < 5_000L) {
                 return cached.text
             }
         }
 
-        val satellites = satelliteList.filter {
-            it.constellation == constellation
-        }.map { sat ->
+        val constellationSatellites = satelliteList
+            .filter { it.constellation == constellation }
+            .ifEmpty { fallbackGsvSatellites(constellation) }
+
+        val satellites = constellationSatellites.map { sat ->
             val position = deterministicFallbackPosition(
                 sat,
                 FakeLoc.latitude,
@@ -459,8 +480,7 @@ object LocationNMEAHook: BaseLocationHook() {
         ).take(16)
 
         val effectiveSats = if (satellites.isEmpty()) {
-            satelliteList.filter { it.constellation == constellation }
-                .map { sat ->
+            constellationSatellites.map { sat ->
                     val position = deterministicFallbackPosition(
                         sat,
                         FakeLoc.latitude,
@@ -530,6 +550,17 @@ object LocationNMEAHook: BaseLocationHook() {
                 lon = FakeLoc.longitude,
             )
         }
+    }
+
+    private fun fallbackGsvSatellites(constellation: Int): List<GnssSatellite> {
+        return (1..4).map { prn ->
+            GnssSatellite(prn, OrbitType.MEO, constellation)
+        }
+    }
+
+    private fun elapsedRealtimeCompat(): Long {
+        return runCatching { SystemClock.elapsedRealtime() }
+            .getOrElse { System.currentTimeMillis() }
     }
 
     private fun calculateChecksum(sentence: String): String {

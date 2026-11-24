@@ -67,6 +67,12 @@ class LocationData {
             field = if (value < 0) -value else value
         }
 
+    @Volatile
+    var coordinateOverrides: Map<String, CoordinateSystem> = emptyMap()
+
+    @Volatile
+    var motionNoise: MotionNoiseConfig = MotionNoiseConfig()
+
     // ==================== GNSS / NMEA ====================
 
     /**

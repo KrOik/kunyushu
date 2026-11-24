@@ -34,8 +34,10 @@ class SystemServerContextFallbackTest {
     }
 
     @Test
-    fun `default log route keeps warn and error visible in xposed logs`() {
-        assertEquals(Log.Channel.CAT or Log.Channel.FILE, LogConfig.resolveChannels("Portal", Log.Level.WARN))
-        assertEquals(Log.Channel.CAT or Log.Channel.FILE, LogConfig.resolveChannels("Portal", Log.Level.ERROR))
+    fun `default log route retains files without console exposure`() {
+        LogConfig.resetForTest()
+
+        assertEquals(Log.Channel.FILE, LogConfig.resolveChannels("Portal", Log.Level.WARN))
+        assertEquals(Log.Channel.FILE, LogConfig.resolveChannels("Portal", Log.Level.ERROR))
     }
 }

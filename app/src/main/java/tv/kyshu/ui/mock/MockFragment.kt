@@ -1,345 +1,232 @@
 package tv.kyshu.ui.mock
 
-import android.annotation.SuppressLint
+import dagger.hilt.android.AndroidEntryPoint
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
-import android.widget.CheckedTextView
 import android.widget.Toast
-import androidx.core.content.ContextCompat
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.activityViewModels
-import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
-import androidx.recyclerview.widget.ItemTouchHelper
-import androidx.recyclerview.widget.LinearLayoutManager
-import androidx.recyclerview.widget.RecyclerView
-import com.google.android.material.button.MaterialButton
-import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.baidu.mapapi.map.BaiduMap
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import tv.kyshu.R
-import tv.kyshu.android.root.ShellUtils
-import tv.kyshu.android.widget.RockerView
-import tv.kyshu.android.window.OverlayUtils
-import tv.kyshu.databinding.FragmentMockBinding
-import tv.kyshu.ext.altitude
-import tv.kyshu.ext.drawOverOtherAppsEnabled
 import tv.kyshu.ext.historicalLocations
-import tv.kyshu.ext.hookSensor
 import tv.kyshu.ext.rawHistoricalLocations
 import tv.kyshu.ext.selectLocation
 import tv.kyshu.ext.speed
+import tv.kyshu.ext.altitude
+import tv.kyshu.ext.drawOverOtherAppsEnabled
 import tv.kyshu.service.MockServiceHelper
-import tv.kyshu.xposed.utils.Log
+import tv.kyshu.ui.compose.portalComposeView
 import tv.kyshu.ui.viewmodel.MockServiceViewModel
-import tv.kyshu.ui.viewmodel.MockViewModel
 import tv.kyshu.xposed.utils.FakeLoc
 
+@AndroidEntryPoint
 class MockFragment : Fragment() {
-    private var _binding: FragmentMockBinding? = null
-    private val binding get() = _binding!!
-
-    private val mockViewModel by lazy { ViewModelProvider(this)[MockViewModel::class.java] }
     private val mockServiceViewModel by activityViewModels<MockServiceViewModel>()
 
-    @SuppressLint("SetTextI18n")
-    override fun onCreateView(
-        inflater: LayoutInflater,
-        container: ViewGroup?,
-        savedInstanceState: Bundle?
-    ): View {
-        _binding = FragmentMockBinding.inflate(inflater, container, false)
+    override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, state: Bundle?): View {
+        configureRocker()
+        return portalComposeView { MockScreen() }
+    }
 
-        binding.fabMockLocation.setOnClickListener {
-            Log.buttonOp("Mock", "FAB位置选择")
-            if (!OverlayUtils.hasOverlayPermissions(requireContext())) {
-                Toast.makeText(requireContext(), "请授权悬浮窗权限", Toast.LENGTH_SHORT).show()
-                return@setOnClickListener
-            }
-        }
-
-        binding.fabMockLocation.setOnLongClickListener {
-            Log.buttonOp("Mock", "FAB长按(糸守町)")
-            Toast.makeText(requireContext(), "糸守町", Toast.LENGTH_SHORT).show()
-            true
-        }
-
-        if (mockServiceViewModel.isServiceStart()) {
-            binding.switchMock.text = "停止模拟"
-            ContextCompat.getDrawable(requireContext(), R.drawable.rounded_play_disabled_24)?.let {
-                binding.switchMock.icon = it
-            }
-        }
-
-        binding.switchMock.setOnClickListener {
-            val isStarting = !mockServiceViewModel.isServiceStart()
-            Log.switchOp("Mock", "模拟启停", isStarting)
-            if (mockServiceViewModel.isServiceStart()) {
-                showToast("正在停止位置模拟")
-                tryCloseService(it as MaterialButton)
-            } else {
-                showToast("正在启动位置模拟")
-                tryOpenService(it as MaterialButton)
-            }
-        }
-
+    private fun configureRocker() {
         with(mockServiceViewModel) {
-            if (rocker.isStart) {
-                binding.rocker.toggle()
-            }
-            binding.rocker.setOnClickListener {
-                if (locationManager == null) {
-                    Toast.makeText(requireContext(), "定位服务加载异常", Toast.LENGTH_SHORT).show()
-                    return@setOnClickListener
-                }
-                if (!isServiceStart()) {
-                    Toast.makeText(requireContext(), "请先启动模拟", Toast.LENGTH_SHORT).show()
-                    return@setOnClickListener
-                }
-                val checkedTextView = it as CheckedTextView
-                checkedTextView.toggle()
-                Log.switchOp("Mock", "摇杆显示", checkedTextView.isChecked)
-
-                if (!requireContext().drawOverOtherAppsEnabled()) {
-                    Toast.makeText(requireContext(), "请授权悬浮窗权限", Toast.LENGTH_SHORT).show()
-                    return@setOnClickListener
-                }
-
-                lifecycleScope.launch(Dispatchers.Main) {
-                    if (checkedTextView.isChecked) {
-                        rocker.show()
-                        Toast.makeText(requireContext(), "摇杆已显示", Toast.LENGTH_SHORT).show()
-                    } else {
-                        rocker.hide()
-                        rockerCoroutineController.pause()
-                        Toast.makeText(requireContext(), "摇杆已隐藏", Toast.LENGTH_SHORT).show()
-                    }
-                }
-            }
-
-            rocker.setRockerListener(object: RockerView.Companion.OnMoveListener {
+            rocker.setRockerListener(object : tv.kyshu.android.widget.RockerView.Companion.OnMoveListener {
                 override fun onAngle(angle: Double) {
-                    MockServiceHelper.setBearing(locationManager ?: return@onAngle, angle)
+                    MockServiceHelper.setBearing(locationManager ?: return, angle)
                     FakeLoc.bearing = angle
                     FakeLoc.hasBearings = true
                 }
-
-                override fun onLockChanged(isLocked: Boolean) {
-                    isRockerLocked = isLocked
-                }
-
-                override fun onFinished() {
-                    if (!isRockerLocked) {
-                        rockerCoroutineController.pause()
-                    }
-                }
-
-                override fun onStarted() {
-                    rockerCoroutineController.resume()
-                }
+                override fun onLockChanged(isLocked: Boolean) { isRockerLocked = isLocked }
+                override fun onFinished() { if (!isRockerLocked) rockerCoroutineController.pause() }
+                override fun onStarted() { rockerCoroutineController.resume() }
             })
         }
+    }
 
-        requireContext().selectLocation?.let {
-            binding.mockLocationName.text = it.name
-            binding.mockLocationAddress.text = it.address
-            binding.mockLocationLatlon.text = it.lat.toString().take(8) + ", " + it.lon.toString().take(8)
-            mockServiceViewModel.selectedLocation = it
-        }
+    @Composable
+    private fun MockScreen() {
+        val context = requireContext()
+        val scope = rememberCoroutineScope()
+        var locations by remember { mutableStateOf(context.historicalLocations.sortedBy { it.name }) }
+        var query by remember { mutableStateOf("") }
+        var selected by remember { mutableStateOf(mockServiceViewModel.selectedLocation ?: context.selectLocation) }
+        var mocking by remember { mutableStateOf(mockServiceViewModel.isServiceStart()) }
+        var rockerVisible by remember { mutableStateOf(mockServiceViewModel.rocker.isStart) }
+        var busy by remember { mutableStateOf(false) }
+        var deleteLocation by remember { mutableStateOf<HistoricalLocation?>(null) }
+        val visibleLocations = locations.filter { query.isBlank() || it.name.contains(query, true) || it.address.contains(query, true) }
 
-        val locations = requireContext().historicalLocations
-
-        binding.mockLocationCard.setOnClickListener {
-            Log.buttonOp("Mock", "查看位置信息")
-            mockServiceViewModel.locationManager?.let { mgr ->
-                val location = MockServiceHelper.getLocation(mgr)
-                Toast.makeText(requireContext(), "Location$location, ListenerSize: ${MockServiceHelper.getLocationListenerSize(mgr)}", Toast.LENGTH_SHORT).show()
-            }
-        }
-
-        // 2024.10.10: sort historical locations
-        val historicalLocationAdapter = HistoricalLocationAdapter(locations.sortedBy { it.name }.toMutableList()) { loc, isLongClick ->
-            if (isLongClick) {
-                Log.buttonOp("Mock", "历史位置长按")
-                Toast.makeText(requireContext(), "长按", Toast.LENGTH_SHORT).show()
-            } else {
-                Log.dialogOp("Mock", "选择位置", "${loc.name}(${loc.lat},${loc.lon})")
-                binding.mockLocationName.text = loc.name
-                binding.mockLocationAddress.text = loc.address
-                binding.mockLocationLatlon.text = loc.lat.toString().take(8) + ", " + loc.lon.toString().take(8)
-                mockServiceViewModel.selectedLocation = loc
-                requireContext().selectLocation = loc
-
-                mockServiceViewModel.locationManager?.let { mgr ->
-                    if (MockServiceHelper.isMockStart(mgr)) {
-                        if (MockServiceHelper.setLocation(mgr, loc.lat, loc.lon)) {
-                            Toast.makeText(requireContext(), "位置更新成功", Toast.LENGTH_SHORT).show()
-                        } else {
-                            Toast.makeText(requireContext(), "更新位置失败", Toast.LENGTH_SHORT).show()
-                        }
+        Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            Text("位置模拟", style = MaterialTheme.typography.headlineSmall)
+            Text("选择目标位置后启动模拟。摇杆会在获得悬浮窗权限后显示。", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+                Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("目标位置", style = MaterialTheme.typography.titleMedium)
+                    Text(selected?.name ?: "请选择一个位置", style = MaterialTheme.typography.titleLarge)
+                    Text(selected?.let { "${it.address}\n%.6f, %.6f".format(it.lat, it.lon) } ?: "从历史位置列表中选择目标", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Button(enabled = !busy, onClick = {
+                            busy = true
+                            if (mocking) stopMock { if (it) mocking = false; busy = false } else startMock { mocking = it; busy = false }
+                        }, modifier = Modifier.weight(1f)) { Text(if (mocking) "停止模拟" else "启动模拟") }
+                        OutlinedButton(onClick = {
+                            val manager = mockServiceViewModel.locationManager
+                            if (manager == null) showToast("定位服务未就绪")
+                            else showToast("Location${MockServiceHelper.getLocation(manager)}，监听器 ${MockServiceHelper.getLocationListenerSize(manager)} 个")
+                        }, modifier = Modifier.weight(1f)) { Text("查看状态") }
                     }
-                }
-            }
-        }
-        val recyclerView = binding.historicalLocationList
-        recyclerView.layoutManager = LinearLayoutManager(requireContext())
-        recyclerView.adapter = historicalLocationAdapter
-        ItemTouchHelper(object: ItemTouchHelper.SimpleCallback(0, ItemTouchHelper.LEFT or ItemTouchHelper.RIGHT) {
-            override fun onMove(
-                recyclerView: RecyclerView,
-                viewHolder: RecyclerView.ViewHolder,
-                target: RecyclerView.ViewHolder
-            ): Boolean {
-                return false
-            }
-
-            override fun onSwiped(viewHolder: RecyclerView.ViewHolder, direction: Int) {
-                val position = viewHolder.adapterPosition
-                val location = historicalLocationAdapter[position]
-                with(requireContext()) {
-                    MaterialAlertDialogBuilder(this)
-                        .setTitle("删除位置")
-                        .setMessage("确定要删除位置(${location.name})吗？")
-                        .setPositiveButton("删除") { _, _ ->
-                            Log.dialogOp("Mock", "删除位置", location.name)
-                            historicalLocationAdapter.removeItem(position)
-                            rawHistoricalLocations = rawHistoricalLocations.toMutableSet().apply {
-                                removeIf { it.split(",")[0] == location.name }
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("移动摇杆", style = MaterialTheme.typography.bodyLarge)
+                            Text("需要先启动模拟并授予悬浮窗权限", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Switch(rockerVisible, onCheckedChange = { visible ->
+                            if (!mocking) showToast("请先启动模拟")
+                            else if (!requireContext().drawOverOtherAppsEnabled()) showToast("请授权悬浮窗权限")
+                            else {
+                                if (visible) mockServiceViewModel.rocker.show() else { mockServiceViewModel.rocker.hide(); mockServiceViewModel.rockerCoroutineController.pause() }
+                                rockerVisible = visible
                             }
-                            showToast("已删除位置")
+                        })
+                    }
+                }
+            }
+            Text("历史位置", style = MaterialTheme.typography.titleMedium)
+            OutlinedTextField(query, { query = it }, modifier = Modifier.fillMaxWidth(), label = { Text("搜索位置") }, singleLine = true)
+            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+                Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                    visibleLocations.forEach { location ->
+                        Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(location.name, style = MaterialTheme.typography.bodyLarge)
+                                Text(location.address, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text("%.6f, %.6f".format(location.lat, location.lon), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            Column(horizontalAlignment = Alignment.End) {
+                                OutlinedButton(onClick = { selectLocation(location); selected = location }) { Text("选择") }
+                                TextButton(onClick = { deleteLocation = location }) { Text("删除") }
+                            }
                         }
+                    }
+                    if (visibleLocations.isEmpty()) Text("没有匹配的位置", modifier = Modifier.padding(16.dp))
                 }
             }
-        }).attachToRecyclerView(recyclerView)
-
-        return binding.root
+        }
+        deleteLocation?.let { location ->
+            AlertDialog(
+                onDismissRequest = { deleteLocation = null },
+                title = { Text("删除位置") },
+                text = { Text("确定要删除位置“${location.name}”吗？") },
+                dismissButton = { TextButton(onClick = { deleteLocation = null }) { Text("取消") } },
+                confirmButton = {
+                    TextButton(onClick = {
+                        context.rawHistoricalLocations = context.rawHistoricalLocations.filterNot { it.substringBefore(',') == location.name }.toSet()
+                        locations = context.historicalLocations.sortedBy { it.name }
+                        if (selected?.name == location.name) { selected = null; context.selectLocation = null; mockServiceViewModel.selectedLocation = null }
+                        deleteLocation = null
+                        showToast("已删除位置")
+                    }) { Text("删除") }
+                },
+            )
+        }
     }
 
-    private fun tryOpenService(button: MaterialButton) {
-        if (!OverlayUtils.hasOverlayPermissions(requireContext())) {
-            showToast("请授权悬浮窗权限")
-            return
+    private fun selectLocation(location: HistoricalLocation) {
+        mockServiceViewModel.selectedLocation = location
+        requireContext().selectLocation = location
+        mockServiceViewModel.locationManager?.let { manager ->
+            if (MockServiceHelper.isMockStart(manager)) lifecycleScope.launch(Dispatchers.IO) {
+                val success = mockServiceViewModel.setLocationAndReplay(manager, location.lat, location.lon, true)
+                showToast(if (success) "位置更新成功" else "更新位置失败")
+            }
         }
+    }
 
-        val selectedLocation = mockServiceViewModel.selectedLocation ?: run {
-            showToast("请选择一个位置")
-            return
-        }
-
-        if (mockServiceViewModel.locationManager == null) {
-            showToast("定位服务加载异常")
-            return
-        }
-
-        if (!MockServiceHelper.isServiceInit()) {
-            showToast("系统服务注入失败")
-            return
-        }
-
+    private fun startMock(onResult: (Boolean) -> Unit) {
+        val location = mockServiceViewModel.selectedLocation ?: run { showToast("请选择一个位置"); onResult(false); return }
+        val manager = mockServiceViewModel.locationManager ?: run { showToast("定位服务未就绪"); onResult(false); return }
+        if (!MockServiceHelper.isServiceInit()) { showToast("系统服务注入失败"); onResult(false); return }
+        val speed = requireContext().speed
+        val altitude = requireContext().altitude
         lifecycleScope.launch {
-            val context = requireContext()
-            val speed = context.speed
-            val altitude = context.altitude
-            val accuracy = FakeLoc.accuracy
-
-            button.isClickable = false
+            var active = true // Keep stop available when the remote outcome is unknown.
             try {
-                withContext(Dispatchers.IO) {
-                    val mgr = mockServiceViewModel.locationManager ?: run {
-                        showToast("定位服务加载异常")
-                        return@withContext
-                    }
-                    if (MockServiceHelper.tryOpenMock(mgr, speed, altitude, accuracy)) {
-                        updateMockButtonState(button, "停止模拟", R.drawable.rounded_play_disabled_24)
-                    } else {
-                        showToast("模拟服务启动失败")
-                        return@withContext
-                    }
-
-                    if (!MockServiceHelper.setLocation(mgr, selectedLocation.lat, selectedLocation.lon)) {
-                        showToast("更新位置失败")
-                        return@withContext
-                    }
-
-                    if (MockServiceHelper.broadcastLocation(mgr)) {
-                        showToast("更新位置成功")
-                    } else {
-                        showToast("更新位置失败")
-                    }
+                val (ok, state) = withContext(Dispatchers.IO) {
+                    val ok = mockServiceViewModel.setLocationAndReplay(manager, location.lat, location.lon, true) &&
+                        MockServiceHelper.tryOpenMock(manager, speed, altitude, FakeLoc.accuracy) &&
+                        MockServiceHelper.broadcastLocation(manager)
+                    ok to MockServiceHelper.queryMockState(manager)
                 }
+                active = state != false
+                showToast(when {
+                    state == null -> "模拟状态未确认，请尝试停止或重新查看状态"
+                    !state -> "模拟服务启动失败"
+                    !ok -> "模拟已开启，但位置更新未确认"
+                    else -> "位置模拟已启动"
+                })
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                tv.kyshu.xposed.utils.Log.e("MockFragment", "start mock failed", error)
+                showToast("模拟状态未确认，请尝试停止")
             } finally {
-                button.isClickable = true
+                onResult(active)
             }
         }
-
-
     }
 
-    private fun tryCloseService(button: MaterialButton) {
-        if (mockServiceViewModel.locationManager == null) {
-            showToast("定位服务加载异常")
-            return
-        }
-
-        if (!MockServiceHelper.isServiceInit()) {
-            showToast("系统服务注入失败")
-            return
-        }
-
+    private fun stopMock(onResult: (Boolean) -> Unit) {
+        val manager = mockServiceViewModel.locationManager ?: run { showToast("定位服务未就绪"); onResult(false); return }
         lifecycleScope.launch {
-            button.isClickable = false
+            var ok = false
             try {
-                val isClosed = withContext(Dispatchers.IO) {
-                    val mgr = mockServiceViewModel.locationManager ?: return@withContext false
-                    if (!MockServiceHelper.isMockStart(mgr)) {
-                        showToast("模拟服务未启动")
-                        return@withContext false
-                    }
-
-                    if (MockServiceHelper.tryCloseMock(mgr)) {
-                        updateMockButtonState(button, "开始模拟", R.drawable.rounded_play_arrow_24)
-                        return@withContext true
-                    } else {
-                        showToast("模拟服务停止失败")
-                        return@withContext false
-                    }
-                }
-                if (isClosed && mockServiceViewModel.rocker.isStart) {
-                    binding.rocker.isClickable = false
-                    binding.rocker.toggle()
-                    mockServiceViewModel.rocker.hide()
-                    mockServiceViewModel.rockerCoroutineController.pause()
-                    binding.rocker.isClickable = true
-                }
-                if (isClosed) showToast("模拟服务已停止")
+                ok = withContext(Dispatchers.IO) { MockServiceHelper.tryCloseMock(manager) }
+                if (ok && mockServiceViewModel.rocker.isStart) { mockServiceViewModel.rocker.hide(); mockServiceViewModel.rockerCoroutineController.pause() }
+                showToast(if (ok) "模拟服务已停止" else "停止未确认，请重试")
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                tv.kyshu.xposed.utils.Log.e("MockFragment", "stop mock failed", error)
+                showToast("停止未确认，请重试")
             } finally {
-                button.isClickable = true
+                onResult(ok)
             }
         }
     }
 
-    override fun onDestroyView() {
-        super.onDestroyView()
-        _binding = null
-    }
+    private fun showToast(message: String) = lifecycleScope.launch(Dispatchers.Main) { Toast.makeText(requireContext().applicationContext, message, Toast.LENGTH_SHORT).show() }
+}
 
-    private fun showToast(message: String) {
-        val ctx = requireContext().applicationContext
-        lifecycleScope.launch(Dispatchers.Main) {
-            Toast.makeText(ctx, message, Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    private fun updateMockButtonState(button: MaterialButton, text: String, iconRes: Int) {
-        val ctx = requireContext().applicationContext
-        lifecycleScope.launch(Dispatchers.Main) {
-            button.text = text
-            ContextCompat.getDrawable(ctx, iconRes)?.let {
-                button.icon = it
-            }
-        }
-    }
-} //

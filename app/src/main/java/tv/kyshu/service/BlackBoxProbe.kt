@@ -145,11 +145,11 @@ object BlackBoxProbe {
         return try {
             tv.kyshu.xposed.utils.FakeLoc.reload()
             val enable = tv.kyshu.xposed.utils.FakeLoc.mockState.enable
-            val lat = tv.kyshu.xposed.utils.FakeLoc.locationData.latitude
-            val lon = tv.kyshu.xposed.utils.FakeLoc.locationData.longitude
+            val hasLocation = tv.kyshu.xposed.utils.FakeLoc.locationData.latitude.isFinite() &&
+                tv.kyshu.xposed.utils.FakeLoc.locationData.longitude.isFinite()
 
             ProbeResult(name, true,
-                "ConfigProvider 响应正常, enable=$enable, lat=$lat, lon=$lon",
+                "ConfigProvider 响应正常, enable=$enable, location_available=$hasLocation",
                 SystemClock.elapsedRealtime() - start, Severity.INFO)
         } catch (e: Exception) {
             ProbeResult(name, false,

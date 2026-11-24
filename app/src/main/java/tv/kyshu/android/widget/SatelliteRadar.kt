@@ -16,11 +16,11 @@ import android.location.GnssStatus
 import android.location.LocationManager
 import android.os.Build
 import android.util.AttributeSet
-import android.util.Log
 import android.view.MotionEvent
 import android.view.View
 import androidx.annotation.RequiresPermission
 import androidx.core.app.ActivityCompat
+import tv.kyshu.xposed.utils.Log as XLog
 import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.sin
@@ -38,7 +38,7 @@ data class SatelliteData(
     var screenY: Float = 0f
 )
 
-class SatelliteRadarView(context: Context, attributeSet: AttributeSet): View(context, attributeSet), SensorEventListener {
+class SatelliteRadarView(context: Context, attributeSet: AttributeSet?): View(context, attributeSet), SensorEventListener {
     private var satellites = emptyList<SatelliteData>()
     private val radarPoint = Paint()
     private val satellitePaint = Paint()
@@ -207,7 +207,7 @@ class SatelliteRadarView(context: Context, attributeSet: AttributeSet): View(con
 
         for (satellite in satellites) {
             if (distance(touchX, touchY, satellite.screenX, satellite.screenY) < 20) {
-                Log.d("SatelliteRadarView", "Touched satellite $satellite")
+                XLog.d("SatelliteRadarView", "Touched satellite prn=${satellite.prn} used=${satellite.usedInFix}")
                 return true
             }
         }

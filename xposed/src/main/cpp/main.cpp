@@ -5,10 +5,10 @@
 #include <atomic>
 #include <cstring>
 #include <cstdlib>
-#include <ctime>
 #include "sensor_hook.h"
 #include "crash_recovery.h"
 #include "safety_gate.h"
+#include "csprng.h"
 #include "logging.h"
 
 std::atomic_bool enableSensorHook{false};
@@ -24,23 +24,43 @@ static bool is_system_server_process() {
 
 JNIEXPORT jint JNICALL
 JNI_OnLoad(JavaVM* vm, void* reserved) {
-    LOGI("JNI_OnLoad called: native hook is loading...");
+    LOGD("JNI_OnLoad called");
     JNIEnv* env;
     if (vm->GetEnv((void**) &env, JNI_VERSION_1_6) != JNI_OK) {
         return JNI_ERR;
     }
     if (is_system_server_process()) {
-        // Seed PRNG for sensor hook randomization.
-        srand(static_cast<unsigned>(time(nullptr)));
-
-        // Layer 2: Install SIGSEGV/BUS/ILL recovery handlers.
-        install_crash_handlers();
-
-        // Sensor hooks: ELF parsing + Dobby inline hook.
-        doSensorHook();
-        LOGI("doSensorHook complete");
+        // Seed CSPRNG for sensor hook randomization (risk model R7).
+        // Replaces weak srand(time(nullptr)).
+        csprng_init();
     }
     return JNI_VERSION_1_6;
+}
+
+extern "C"
+JNIEXPORT jboolean JNICALL
+Java_tv_kyshu_dobby_Dobby_installNativeSensorHook(JNIEnv *env, jobject thiz) {
+    (void)env; (void)thiz;
+    if (!is_system_server_process()) {
+        return JNI_FALSE;
+    }
+    csprng_init();
+    if (is_terminal_despair_locked() || !check_crash_meltdown() || is_safe_mode()) {
+        LOGE("native sensor hook skipped by safety gate");
+        return JNI_FALSE;
+    }
+    if (!install_crash_handlers()) {
+        LOGE("native sensor hook skipped: crash recovery unavailable");
+        return JNI_FALSE;
+    }
+    bool ok = safe_execute_failfast("SENSOR_NATIVE_INSTALL", []() -> bool {
+        doSensorHook();
+        return !isNativeSensorHookFailed();
+    });
+    if (ok) {
+        LOGD("native sensor hook initialized");
+    }
+    return ok ? JNI_TRUE : JNI_FALSE;
 }
 
 // ==========================================================================
@@ -75,6 +95,12 @@ Java_tv_kyshu_dobby_Dobby_resetCrashCounter(JNIEnv *env, jobject thiz) {
 extern "C"
 JNIEXPORT void JNICALL
 Java_tv_kyshu_dobby_Dobby_setStatus(JNIEnv *env, jobject thiz, jboolean status) {
+    (void)env; (void)thiz;
+    if (isNativeSensorHookFailed()) {
+        enableSensorHook.store(false, std::memory_order_release);
+        LOGE("setStatus ignored: native sensor hook is failed-inactive");
+        return;
+    }
     enableSensorHook.store(status != JNI_FALSE, std::memory_order_release);
 }
 
@@ -87,10 +113,14 @@ Java_tv_kyshu_dobby_Dobby_initSafetyFramework(JNIEnv *env, jobject thiz, jstring
     }
     const char* utf = env->GetStringUTFChars(cacheDir, nullptr);
     if (utf == nullptr) return;
-    strncpy(g_app_cache_dir, utf, sizeof(g_app_cache_dir) - 1);
-    g_app_cache_dir[sizeof(g_app_cache_dir) - 1] = '\0';
+    if (utf[0] == '\0') {
+        LOGE("initSafetyFramework: cacheDir is blank");
+        env->ReleaseStringUTFChars(cacheDir, utf);
+        return;
+    }
+    set_app_cache_dir(utf);
     env->ReleaseStringUTFChars(cacheDir, utf);
-    LOGI("initSafetyFramework: cache dir set to %s", g_app_cache_dir);
+    LOGI("initSafetyFramework: cache dir ready");
 }
 
 extern "C"
@@ -98,7 +128,7 @@ JNIEXPORT void JNICALL
 Java_tv_kyshu_dobby_Dobby_writeArtVersionLock(JNIEnv *env, jobject thiz) {
     (void)env; (void)thiz;
     write_art_version_lock();
-    LOGI("ART version lock written");
+    LOGD("ART version lock written");
 }
 
 extern "C"
@@ -114,4 +144,13 @@ JNIEXPORT jboolean JNICALL
 Java_tv_kyshu_dobby_Dobby_isTerminalDespairLocked(JNIEnv *env, jobject thiz) {
     (void)env; (void)thiz;
     return is_terminal_despair_locked() ? JNI_TRUE : JNI_FALSE;
+}
+
+// Stub: maps_filter /proc/maps hooks are excluded from release per risk model R4.
+// The JNI symbol must remain for binary compatibility (Dobby.kt declares the
+// external fun), but returns JNI_FALSE unconditionally.
+extern "C"
+JNIEXPORT jboolean JNICALL
+Java_tv_kyshu_dobby_Dobby_installProcMapsHooks(JNIEnv*, jobject) {
+    return JNI_FALSE;
 }
