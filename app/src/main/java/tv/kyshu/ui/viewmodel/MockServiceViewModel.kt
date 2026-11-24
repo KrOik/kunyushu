@@ -26,7 +26,6 @@ import tv.kyshu.ui.mock.RouteSmoother
 import tv.kyshu.ui.mock.Rocker
 import tv.kyshu.xposed.utils.FakeLoc
 import tv.kyshu.xposed.utils.Log as XLog
-import net.sf.geographiclib.Geodesic
 
 @HiltViewModel
 class MockServiceViewModel @Inject constructor() : ViewModel() {
@@ -156,82 +155,31 @@ class MockServiceViewModel @Inject constructor() : ViewModel() {
                         routeStage++
                         if (System.currentTimeMillis() < routeWaitUntilMillis) continue
                     }
-                    val route = selectedRoute?.route ?: break
-                    var transitionsThisTick = 0
-                    while (routeStage < route.size && transitionsThisTick < 32) {
-                        val target = route[routeStage]
-                        val loc = locationManager?.let { MockServiceHelper.getLocation(it) } ?: break
-                        val currentLat = loc.first
-                        val currentLon = loc.second
+                    // 平滑曲线回放：驱动 Catmull-Rom 步行器（Kuroko sim_engine 移植），
+                    // 取代逐航点测地推进。
+                    val route = selectedRoute ?: break
+                    ensureRouteEngine(route)
+                    val walker = routeWalker ?: break
+                    val routeSpeed = route.speedMetersPerSecond().takeIf { it > 0.0 } ?: FakeLoc.speed
+                    val sample = walker.tick(delayTime / 1000.0, routeSpeed)
 
-                        val inverse = Geodesic.WGS84.Inverse(
-                            currentLat,
-                            currentLon,
-                            target.first,
-                            target.second
-                        )
-                        // 判断距离是否小于1米（可根据需要调整阈值）
-                        if (inverse.s12 < 1.0) {
-                            // 精确设置位置到目标点并进入下一阶段
-                            locationManager?.let { mgr ->
-                                setLocationAndReplay(mgr, target.first, target.second)
-                            } ?: break
-                            routeStage++
-                            routeWaitUntilMillis = System.currentTimeMillis() +
-                                (selectedRoute?.waitSecondsAt(routeStage - 1) ?: 0) * 1_000L
-                            transitionsThisTick++
-                            if (System.currentTimeMillis() < routeWaitUntilMillis) break
-                        } else if (inverse.s12 < distancePerTick(selectedRoute?.speedMetersPerSecond() ?: FakeLoc.speed, delayTime)) {
-                            // 如果距离小于速度，直接移动到目标点
-                            locationManager?.let { mgr ->
-                                setLocationAndReplay(mgr, target.first, target.second)
-                            } ?: break
-                            routeStage++
-                            routeWaitUntilMillis = System.currentTimeMillis() +
-                                (selectedRoute?.waitSecondsAt(routeStage - 1) ?: 0) * 1_000L
-                            transitionsThisTick++
-                            if (System.currentTimeMillis() < routeWaitUntilMillis) break
-
-                        } else {
-                            break
-                        }
-                    }
-
-                    // 检查是否已完成所有阶段
-                    if (routeStage >= route.size) {
+                    if (walker.finished) {
                         routeMockCoroutine.pause()
                         rocker.autoStatus = false
-                        // 重设阶段
                         routeStage = 0
                         routeWaitUntilMillis = 0L
+                        // 下次启动强制重建步行器与 OU 配速状态
+                        routeWalker = null
+                        smoothRoute = null
                         continue
                     }
 
-                    // 处理当前目标点的移动
-                    val target = route[routeStage]
-                    val loc = locationManager?.let { MockServiceHelper.getLocation(it) } ?: break
-                    val currentLat = loc.first
-                    val currentLon = loc.second
-
-                    val inverse = Geodesic.WGS84.Inverse(
-                        currentLat,
-                        currentLon,
-                        target.first,
-                        target.second
+                    XLog.d(
+                        "MockServiceViewModel",
+                        "route tick speed=${walker.currentSpeedMps} dist=${walker.totalDistanceM} cf=${sample.cornerFactor}"
                     )
-                    var azimuth = inverse.azi1
-                    if (azimuth < 0) {
-                        azimuth += 360
-                    }
-
-                    XLog.d("MockServiceViewModel", "route tick move bearing=$azimuth")
                     locationManager?.let { mgr ->
-                        val routeSpeed = selectedRoute?.speedMetersPerSecond() ?: FakeLoc.speed
-                        if (!MockServiceHelper.move(mgr, distancePerTick(routeSpeed, delayTime), azimuth)) {
-                            XLog.e("MockServiceViewModel", "move failed")
-                        } else {
-                            replayCurrentLocation(mgr)
-                        }
+                        setLocationAndReplay(mgr, sample.lat, sample.lon)
                     } ?: break
                 }
             }
