@@ -118,6 +118,18 @@ object BluetoothHook {
 
         runCatching {
             callbackClass.onceHookAllMethod("onScanResult", beforeHook {
+                // Kuroko-conservative hide path (priority 1): for UIDs in the policy
+                // table without a BLE policy entry, suppress real scan results
+                // entirely (no fake-object construction). BLE has no dedicated policy
+                // bit — reuse POLICY_HIDE_WIFI (radio-leak family).
+                val selfUid = android.os.Process.myUid()
+                if (tv.kyshu.xposed.config.UidPolicy.epochValue() > 0 &&
+                    tv.kyshu.xposed.config.UidPolicy.isTargetUid(selfUid) &&
+                    !tv.kyshu.xposed.config.UidPolicy.hasPolicy(selfUid, tv.kyshu.xposed.config.UidPolicy.POLICY_HIDE_WIFI)
+                ) {
+                    result = null
+                    return@beforeHook
+                }
                 val snapshot = WirelessRuntime.snapshotOrLegacy()
                 if (!isRuntimeEnabled(snapshot)) return@beforeHook
                 if (snapshot.bleDevices.isEmpty()) {
@@ -130,6 +142,14 @@ object BluetoothHook {
 
         runCatching {
             callbackClass.onceHookAllMethod("onBatchScanResults", beforeHook {
+                val selfUid = android.os.Process.myUid()
+                if (tv.kyshu.xposed.config.UidPolicy.epochValue() > 0 &&
+                    tv.kyshu.xposed.config.UidPolicy.isTargetUid(selfUid) &&
+                    !tv.kyshu.xposed.config.UidPolicy.hasPolicy(selfUid, tv.kyshu.xposed.config.UidPolicy.POLICY_HIDE_WIFI)
+                ) {
+                    result = null
+                    return@beforeHook
+                }
                 val snapshot = WirelessRuntime.snapshotOrLegacy()
                 if (!isRuntimeEnabled(snapshot)) return@beforeHook
                 if (snapshot.bleDevices.isEmpty()) {

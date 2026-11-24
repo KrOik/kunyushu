@@ -56,7 +56,7 @@ data class GaitModelParams(
     val pitchBaselineRad: Float = 0.55f,
 )
 
-class GaitSimulator(private val params: GaitModelParams) {
+class GaitSimulator(val params: GaitModelParams) {
 
     enum class State { RUNNING, STATIONARY }
     var currentState: State = State.RUNNING

@@ -114,6 +114,43 @@ object WlanHook {
         }
         Logger.debug("[WlanHook] hooking WifiServiceImpl: methods=${wifiClazz.declaredMethods.size}")
 
+        // Kuroko per-UID hide path (conservative semantics, priority 1):
+        // for UIDs with POLICY_HIDE_WIFI, redact connection info via makeCopy(redactions)
+        // instead of constructing fake WifiInfo objects — layout-change safe.
+        val hideConnHooks = wifiClazz.hookAllMethods("getConnectionInfo", afterHook {
+            val uid = BinderUtils.getCallerUid()
+            if (uid <= 0 || tv.kyshu.xposed.config.UidPolicy.epochValue() == 0) return@afterHook
+            if (!tv.kyshu.xposed.config.UidPolicy.hasPolicy(uid, tv.kyshu.xposed.config.UidPolicy.POLICY_HIDE_WIFI)) return@afterHook
+            val orig = result as? WifiInfo ?: return@afterHook
+            result = runCatching {
+                val redactions = orig.applicableRedactions
+                orig.makeCopy(if (redactions != 0L) redactions else -1L)
+            }.getOrElse { orig }
+            logOnce("wifi.hideconn.$uid", "[WlanHook] getConnectionInfo redacted (Kuroko hide path) uid=$uid")
+        })
+        Logger.info("[WlanHook] hooked getConnectionInfo hide-path overloads=${hideConnHooks.size}")
+
+        // Kuroko per-UID hide path for scan results: empty list/slice, no object construction.
+        val hideScanHooks = wifiClazz.hookAllMethods("getScanResults", afterHook {
+            val uid = BinderUtils.getCallerUid()
+            if (uid <= 0 || tv.kyshu.xposed.config.UidPolicy.epochValue() == 0) return@afterHook
+            if (!tv.kyshu.xposed.config.UidPolicy.hasPolicy(uid, tv.kyshu.xposed.config.UidPolicy.POLICY_HIDE_WIFI)) return@afterHook
+            if (result == null) return@afterHook
+            result = when (result) {
+                is List<*> -> emptyList<Any>()
+                else -> runCatching {
+                    // jarjar-renamed ParceledListSlice (A12+ APEX) — mirror the runtime return class
+                    val sliceClass = result.javaClass
+                    val empty = sliceClass.getDeclaredMethod("emptyList").apply { isAccessible = true }
+                    empty.invoke(null) ?: sliceClass.getConstructor(List::class.java).apply {
+                        isAccessible = true
+                    }.newInstance(emptyList<Any>())
+                }.getOrElse { emptyList<Any>() }
+            }
+            logOnce("wifi.hidescan.$uid", "[WlanHook] getScanResults emptied (Kuroko hide path) uid=$uid")
+        })
+        Logger.info("[WlanHook] hooked getScanResults hide-path overloads=${hideScanHooks.size}")
+
         // 使用 afterHook 让原方法执行，保留真实连接状态（networkId/supplicantState/linkSpeed/frequency 等），
         // 仅在副本上覆盖身份字段（MAC/BSSID/SSID/IP/RSSI），避免裸 WifiInfo 导致系统判定未连接而断网。
         val connectionHooks = wifiClazz.hookAllMethods("getConnectionInfo", afterHook {

@@ -16,6 +16,23 @@ import tv.kyshu.xposed.utils.onceHookAllMethod
 import java.util.Collections
 
 object GnssHook: BaseLocationHook() {
+
+    /**
+     * Resolve caller UID from GnssManagerService registration args: commonly
+     * (listener, packageName, attributionTag, ...) or (listener, packageName, uid...).
+     * Falls back to Binder.getCallingUid() — accurate inside these binder-entry hooks.
+     */
+    private fun resolveCallerUid(args: Array<Any?>): Int {
+        for (arg in args) {
+            if (arg is Int && arg > 0) return arg
+        }
+        return try {
+            android.os.Binder.getCallingUid()
+        } catch (_: Throwable) {
+            -1
+        }
+    }
+
     operator fun invoke(classLoader: ClassLoader) {
         hookFrameworkGnss(classLoader)
         hookHALGnss(classLoader)
@@ -30,6 +47,20 @@ object GnssHook: BaseLocationHook() {
 
                 if (FakeLoc.enableDebugLog) {
                     Logger.debug("doNothingMethod: ${param.method.name}")
+                }
+
+                // Kuroko POLICY_SUPPRESS_MEAS: per-UID raw measurement suppression.
+                // GnssManagerService methods take (listener, packageName/uid...) —
+                // resolve the caller UID from args or the binder.
+                if (param.method.name.contains("Measurements") || param.method.name.contains("Navigation")) {
+                    val uid = resolveCallerUid(param.args)
+                    if (uid > 0 &&
+                        tv.kyshu.xposed.config.UidPolicy.epochValue() > 0 &&
+                        !tv.kyshu.xposed.config.UidPolicy.hasPolicy(
+                            uid, tv.kyshu.xposed.config.UidPolicy.POLICY_SUPPRESS_MEAS)
+                    ) {
+                        return // non-target UID: keep real raw measurements
+                    }
                 }
 
                 if (FakeLoc.enableMockGnss && !FakeLoc.enableAGPS) {

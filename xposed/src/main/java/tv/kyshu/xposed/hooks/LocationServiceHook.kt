@@ -22,6 +22,7 @@ import tv.kyshu.xposed.factory.GnssStatusFactory
 import tv.kyshu.xposed.factory.MockGnssData
 import tv.kyshu.xposed.hooks.gnss.GnssHook
 import tv.kyshu.xposed.hooks.miui.MiuiBlurLocationProviderHook
+import tv.kyshu.xposed.hooks.miui.MiuiGpsProxyHook
 import tv.kyshu.xposed.hooks.miui.MiuiLocationManagerHook
 import tv.kyshu.xposed.hooks.telephony.miui.MiuiTelephonyManagerHook
 import tv.kyshu.xposed.hooks.nmea.LocationNMEAHook
@@ -746,6 +747,7 @@ internal object LocationServiceHook: BaseLocationHook() {
 
             MiuiBlurLocationProviderHook(it)
             MiuiLocationManagerHook(it)
+            MiuiGpsProxyHook.initSystemServer(it) // HyperOS GpsProxyManager freeze exemption (Kuroko port, no-op on non-MIUI)
             MiuiTelephonyManagerHook(it)
         }
 

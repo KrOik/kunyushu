@@ -159,6 +159,18 @@ object TelephonyHook: BaseTelephonyHook() {
                     Logger.debug("getAllCellInfo: injected! caller = ${BinderUtils.getCallerUid()}")
                 }
 
+                // Kuroko per-UID hide path (conservative semantics, priority 1):
+                // target UIDs with POLICY_HIDE_CELL get an EMPTY list — no fake
+                // CellInfo object construction, layout-change safe.
+                val hideUid = BinderUtils.getCallerUid()
+                if (hideUid > 0 &&
+                    tv.kyshu.xposed.config.UidPolicy.epochValue() > 0 &&
+                    tv.kyshu.xposed.config.UidPolicy.hasPolicy(hideUid, tv.kyshu.xposed.config.UidPolicy.POLICY_HIDE_CELL)
+                ) {
+                    result = emptyList<CellInfo>()
+                    return@afterHook
+                }
+
                 if (shouldDowngradeToCdma() || shouldReplaceCellInfo()) {
                     val original = result
                     result = replaceOrPassthrough(DomainGuard.Domain.TELEPHONY, "getAllCellInfo", original) {
@@ -173,6 +185,15 @@ object TelephonyHook: BaseTelephonyHook() {
         }
 
         if(runCatching { XposedBridge.hookAllMethods(cPhoneInterfaceManager, "getCellLocation", afterHook {
+                // Kuroko per-UID hide path: null for target UIDs
+                val hideUid = BinderUtils.getCallerUid()
+                if (hideUid > 0 &&
+                    tv.kyshu.xposed.config.UidPolicy.epochValue() > 0 &&
+                    tv.kyshu.xposed.config.UidPolicy.hasPolicy(hideUid, tv.kyshu.xposed.config.UidPolicy.POLICY_HIDE_CELL)
+                ) {
+                    result = null
+                    return@afterHook
+                }
                 if (!shouldDowngradeToCdma()) {
                     return@afterHook
                 }
