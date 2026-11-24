@@ -41,6 +41,54 @@ class MockServiceViewModel @Inject constructor() : ViewModel() {
 
     var isRouteStart = false
 
+    private var routeWalker: RouteSmoother.Walker? = null
+    private var smoothRoute: RouteSmoother.SmoothRoute? = null
+
+    /** Prepare (or rebuild) the smoothed route + walker for the selected route. */
+    private fun ensureRouteEngine(route: HistoricalRoute) {
+        val needsRebuild = smoothRoute == null ||
+            routeWalker == null ||
+            engineRouteName != route.name ||
+            engineRoutePoints != route.route
+        if (!needsRebuild) return
+        val loop = route.finishPolicy == RouteFinishPolicy.LOOP_FOREVER
+        val built = if (route.smoothCurve) {
+            RouteSmoother.build(route.route, loop)
+        } else {
+            // Legacy straight-line behaviour approximated: sample each leg once
+            val samples = ArrayList<RouteSmoother.Sample>(route.route.size)
+            var cum = 0.0
+            for (i in route.route.indices) {
+                if (i > 0) cum += RouteSmoother.haversineM(
+                    route.route[i - 1].first, route.route[i - 1].second,
+                    route.route[i].first, route.route[i].second
+                )
+                samples.add(RouteSmoother.Sample(route.route[i].first, route.route[i].second, 0.0, cum, 1.0))
+            }
+            RouteSmoother.SmoothRoute(samples, cum, loop)
+        }
+        smoothRoute = built
+        val maxDist = if (route.finishPolicy == RouteFinishPolicy.MILEAGE) {
+            route.targetDistanceMeters.coerceAtLeast(0.0)
+        } else 0.0
+        val maxLaps = when (route.finishPolicy) {
+            RouteFinishPolicy.LAPS -> route.targetLaps.coerceAtLeast(1)
+            RouteFinishPolicy.SINGLE_PASS -> 1
+            else -> 0
+        }
+        routeWalker = RouteSmoother.Walker(
+            route = built,
+            maxDistanceM = maxDist,
+            maxLaps = maxLaps,
+            paceVarianceRatio = route.paceVarianceRatio.coerceIn(0.0, 1.0),
+        )
+        engineRouteName = route.name
+        engineRoutePoints = route.route
+    }
+
+    private var engineRouteName: String? = null
+    private var engineRoutePoints: List<Pair<Double, Double>>? = null
+
     var locationManager: LocationManager? = null
         set(value) {
             field = value

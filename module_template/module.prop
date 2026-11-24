@@ -1,0 +1,6 @@
+id=portal_ksu
+name=Portal (kyushu) All-in-One
+version=1.0.9
+versionCode=109
+author=kyushu
+description=All-in-One KernelSU module shipping the Portal (tv.kyshu) APK. Boot-guard anti-brick included. Requires LSPosed (scope: android + com.android.phone only).

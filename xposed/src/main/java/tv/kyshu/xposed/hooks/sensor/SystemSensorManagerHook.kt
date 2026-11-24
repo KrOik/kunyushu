@@ -131,10 +131,33 @@ object SystemSensorManagerHook {
         val now = System.currentTimeMillis()
         val userJson = FakeLoc.gaitData.gaitParamsJson.trim()
         val jsonChanged = userJson != lastGaitJson
+        // Kuroko carry mode: rebuild simulator when carry mode or pitch baseline changes.
+        val carryChanged = (gaitSimulator != null) && (
+            gaitSimulator?.params?.carryMode != carryModeToInt(FakeLoc.gaitData.carryMode) ||
+            kotlin.math.abs(
+                (gaitSimulator?.params?.pitchBaselineRad ?: 0f) - currentPitchBaseline()
+            ) > 1e-3f
+        )
         // 至少 5 秒间隔，避免频繁加载；配置变化不受节流影响。
-        if (!jsonChanged && gaitSimulator != null && now - lastGaitLoadAt < 5000L) return
+        if (!jsonChanged && !carryChanged && gaitSimulator != null && now - lastGaitLoadAt < 5000L) return
 
-        if (userJson.isNotEmpty() && (jsonChanged || gaitSimulator == null)) {
+        if (carryChanged) {
+            Logger.info("[SensorHook] carry mode changed, rebuilding gait simulator: " +
+                "mode=${FakeLoc.gaitData.carryMode}")
+        }
+
+        // Kuroko SET_MODE carry: push current posture into the live simulator
+        gaitSimulator?.let { sim ->
+            val mode = carryModeToInt(FakeLoc.gaitData.carryMode)
+            val pitch = currentPitchBaseline()
+            if (sim.liveCarryMode != mode || kotlin.math.abs(sim.livePitchBaselineRad - pitch) > 1e-3f) {
+                sim.liveCarryMode = mode
+                sim.livePitchBaselineRad = pitch
+                Logger.info("[SensorHook] carry mode applied live: mode=$mode pitch=$pitch")
+            }
+        }
+
+        if (userJson.isNotEmpty() && (jsonChanged || carryChanged || gaitSimulator == null)) {
             // 用户自定义 JSON
             val next = GaitSimulator.loadFromJson(userJson)
             lastGaitLoadAt = now
@@ -145,7 +168,7 @@ object SystemSensorManagerHook {
             } else {
                 Logger.warn("GaitSimulator: user-defined gait params invalid, keeping previous simulator")
             }
-        } else if (gaitSimulator == null || jsonChanged) {
+        } else if (gaitSimulator == null || jsonChanged || carryChanged) {
             // 默认从 assets 加载录制数据解算的步态
             gaitSimulator = GaitSimulator.loadDefault(FakeLoc.getContext())
             lastGaitJson = ""
@@ -155,6 +178,19 @@ object SystemSensorManagerHook {
             } else {
                 Logger.warn("GaitSimulator: default asset load failed, will retry")
             }
+        }
+    }
+
+    private fun carryModeToInt(mode: tv.kyshu.xposed.config.CarryMode): Int = when (mode) {
+        tv.kyshu.xposed.config.CarryMode.HAND_SWING -> 1
+        tv.kyshu.xposed.config.CarryMode.POCKET -> 2
+    }
+
+    private fun currentPitchBaseline(): Float {
+        val g = FakeLoc.gaitData
+        return when (g.carryMode) {
+            tv.kyshu.xposed.config.CarryMode.POCKET -> g.pocketPitchRad
+            else -> g.handPitchRad
         }
     }
 
@@ -535,6 +571,21 @@ object SystemSensorManagerHook {
                 "[SensorHook][MapMiss] passive dispatch skipped: unknown sensor handle=$handle queue=${eventQueue.javaClass.name}"
             }
             return
+        }
+
+        // Kuroko per-UID routing: sensor events dispatched to a specific listener
+        // belong to a specific app UID. Once a UID policy table has been pushed,
+        // non-target UIDs always receive untouched hardware data.
+        if (tv.kyshu.xposed.config.UidPolicy.epochValue() > 0) {
+            val selfUid = android.os.Process.myUid()
+            val policy = if (type == Sensor.TYPE_STEP_COUNTER || type == Sensor.TYPE_STEP_DETECTOR) {
+                tv.kyshu.xposed.config.UidPolicy.POLICY_STEPS
+            } else {
+                tv.kyshu.xposed.config.UidPolicy.POLICY_IMU
+            }
+            if (!tv.kyshu.xposed.config.UidPolicy.hasPolicy(selfUid, policy)) {
+                return
+            }
         }
 
         // 节流：doze/screen off/background 时降低频率

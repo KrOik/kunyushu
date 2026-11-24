@@ -387,6 +387,31 @@ object MockServiceHelper {
         }.first
     }
 
+    /**
+     * Push the per-UID policy table (Kuroko SET_TARGETS semantics) over the
+     * authenticated command channel. [targets] maps UID → policy bitmask
+     * (see [tv.kyshu.xposed.config.UidPolicy] POLICY_* constants).
+     */
+    fun setUidTargets(locationManager: LocationManager, targets: Map<Int, Int>): Boolean {
+        val json = buildString {
+            append("[")
+            targets.entries.forEachIndexed { i, (uid, policies) ->
+                if (i > 0) append(",")
+                append("[").append(uid).append(",").append(policies).append("]")
+            }
+            append("]")
+        }
+        return sendAuthenticated(locationManager, "set_uid_targets") {
+            putString("uid_targets_json", json)
+        }.first
+    }
+
+    fun clearUidTargets(locationManager: LocationManager): Boolean {
+        return sendAuthenticated(locationManager, "set_uid_targets") {
+            putBoolean("uid_targets_clear", true)
+        }.first
+    }
+
     fun setLocation(locationManager: LocationManager, lat: Double, lon: Double): Boolean {
         return updateLocation(locationManager, lat, lon, "=")
     }

@@ -12,6 +12,7 @@ import tv.kyshu.xposed.config.NmeaProfile
 import tv.kyshu.xposed.config.WifiConnectedProfile
 import tv.kyshu.xposed.config.WifiScanEntry
 import tv.kyshu.xposed.config.WifiScanProfile
+import tv.kyshu.xposed.config.UidPolicy
 import tv.kyshu.xposed.utils.LocaleNumberParsing
 import tv.kyshu.xposed.utils.FakeLoc
 
@@ -20,6 +21,7 @@ object MockCommandContract {
     object Commands {
         const val EXCHANGE_KEY = "exchange_key"
         const val PUT_CONFIG = "put_config"
+        const val SET_UID_TARGETS = "set_uid_targets"
         const val SYNC_CONFIG = "sync_config"
         const val UPDATE_WIFI = "update_wifi"
         const val START = "start"
@@ -107,6 +109,8 @@ object MockCommandContract {
         const val PAYLOAD_JSON = "payload_json"
         const val PAYLOAD_COUNT = "payload_count"
         const val MOCK_DOMAIN_CONFIG_JSON = "mock_domain_config_json"
+        const val UID_TARGETS_JSON = "uid_targets_json"
+        const val UID_TARGETS_CLEAR = "uid_targets_clear"
     }
 
     private val domainCommands = setOf(
@@ -366,6 +370,36 @@ object MockCommandContract {
     private fun requireStringLength(key: String, value: String, maxChars: Int) {
         if (value.length > maxChars) {
             throw IllegalArgumentException("Domain command string field '$key' too long: ${value.length} > $maxChars")
+        }
+    }
+
+    /**
+     * Apply a per-UID policy table push (`uid_targets_json`, Kuroko SET_TARGETS semantics).
+     * JSON format: {"uid:policy_flags": ...} as array of [uid, policies] pairs, or
+     * object mapping "uid" strings to policy bitmasks. Malformed input is rejected
+     * without throwing (never crash system_server on config error).
+     */
+    fun applyUidTargets(rely: Bundle): Int {
+        if (rely.containsKey(Keys.UID_TARGETS_CLEAR) &&
+            Extract.booleanOrNull(rely, Keys.UID_TARGETS_CLEAR) == true
+        ) {
+            UidPolicy.clearTargets()
+            return 0
+        }
+        val json = Extract.string(rely, Keys.UID_TARGETS_JSON) ?: return UidPolicy.targetCount()
+        return try {
+            val parsed = HashMap<Int, Int>()
+            val arr = org.json.JSONArray(json)
+            for (i in 0 until arr.length()) {
+                val pair = arr.optJSONArray(i) ?: continue
+                if (pair.length() < 2) continue
+                val uid = pair.optInt(0, -1)
+                val policies = pair.optInt(1, 0)
+                if (uid > 0 && policies > 0) parsed[uid] = policies
+            }
+            UidPolicy.setTargets(parsed)
+        } catch (_: Throwable) {
+            UidPolicy.targetCount()
         }
     }
 

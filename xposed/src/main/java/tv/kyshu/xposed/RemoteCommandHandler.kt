@@ -102,6 +102,7 @@ object RemoteCommandHandler {
     }
     private val proxyCommandIds = mutableSetOf(
         MockCommandContract.Commands.PUT_CONFIG,
+        MockCommandContract.Commands.SET_UID_TARGETS,
         MockCommandContract.Commands.START,
         MockCommandContract.Commands.STOP,
         MockCommandContract.Commands.START_GNSS_MOCK,
@@ -361,6 +362,12 @@ object RemoteCommandHandler {
                 )
                 Logger.info("[RemoteCommandHandler] put_config applied")
                 MockProbeLog.configSync("put_config: enable=${FakeLoc.enable} stepMock=${FakeLoc.enableStepCountMock}")
+                true
+            }
+            MockCommandContract.Commands.SET_UID_TARGETS -> {
+                val count = MockCommandContract.applyUidTargets(rely)
+                Logger.info("[RemoteCommandHandler] set_uid_targets applied, targets=$count, epoch=${tv.kyshu.xposed.config.UidPolicy.epochValue()}")
+                MockProbeLog.configSync("set_uid_targets: targets=$count")
                 true
             }
             MockCommandContract.Commands.SYNC_CONFIG -> {

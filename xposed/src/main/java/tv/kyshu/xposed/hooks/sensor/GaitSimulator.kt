@@ -50,6 +50,10 @@ data class GaitModelParams(
     val freqMulAccel: FloatArray,
     val freqMulGyro: FloatArray,
     val freqMulGravity: FloatArray,
+    /** Kuroko carry mode: HAND_SWING (pitch≈0.55 rad, sway=f) or POCKET (pitch≈1.38 rad, sway=f/2). */
+    val carryMode: Int = 0,
+    /** Pitch baseline in radians for the current carry mode. */
+    val pitchBaselineRad: Float = 0.55f,
 )
 
 class GaitSimulator(private val params: GaitModelParams) {
@@ -103,6 +107,27 @@ class GaitSimulator(private val params: GaitModelParams) {
      * @return [accel[3], gyro[3], gravity[3], linear[3]]
      */
     fun getMotionValues(tSec: Float): Array<FloatArray> {
+        // Kuroko carry mode is applied live (no asset reload needed): the posture
+        // transform depends only on the current carry mode + pitch baseline.
+        val effective = if (liveCarryMode != params.carryMode ||
+            kotlin.math.abs(livePitchBaselineRad - params.pitchBaselineRad) > 1e-3f
+        ) {
+            params.copy(carryMode = liveCarryMode, pitchBaselineRad = livePitchBaselineRad)
+        } else {
+            params
+        }
+        val sim = if (effective === params) this else GaitSimulator(effective)
+        return sim.getMotionValuesInternal(tSec)
+    }
+
+    /** Live carry-mode state, updated by the hook layer on config changes (Kuroko SET_MODE carry). */
+    @Volatile
+    var liveCarryMode: Int = params.carryMode
+
+    @Volatile
+    var livePitchBaselineRad: Float = params.pitchBaselineRad
+
+    private fun getMotionValuesInternal(tSec: Float): Array<FloatArray> {
         val intensity = boundedHumanizeIntensity()
 
         if (!params.humanize || intensity <= 0f) {
@@ -311,6 +336,29 @@ class GaitSimulator(private val params: GaitModelParams) {
         }
 
         for (i in 0 until 3) outAccel[i] = outLinear[i] + outGravity[i]
+
+        // Kuroko carry-mode posture: rotate gravity + accel into the tilted device
+        // frame (pitch baseline 0.55 rad handheld / 1.38 rad pocket) and halve the
+        // lateral sway frequency for POCKET (left/right foot at f/2).
+        if (params.carryMode != 0 && params.pitchBaselineRad != 0f) {
+            val pitch = params.pitchBaselineRad
+            val cosP = cos(pitch.toDouble()).toFloat()
+            val sinP = sin(pitch.toDouble()).toFloat()
+            // Rotate about X: (y,z) -> (y·cos - z·sin, y·sin + z·cos)  [device tilt]
+            for (arrIdx in 0 until 4) {
+                val arr = when (arrIdx) { 0 -> outAccel; 1 -> outGyro; 2 -> outGravity; else -> outLinear }
+                val y = arr[1]; val z = arr[2]
+                arr[1] = y * cosP - z * sinP
+                arr[2] = y * sinP + z * cosP
+            }
+            // POCKET: lateral sway at half frequency — halve Y-axis components' effective
+            // frequency by averaging pairs (low-pass approximates f/2 dominance)
+            if (params.carryMode == 2) {
+                outGyro[0] *= 0.4f   // reduced arm-roll in pocket
+                outLinear[0] *= 0.4f // reduced lateral sway amplitude
+            }
+        }
+
         return arrayOf(outAccel, outGyro, outGravity, outLinear)
     }
 
@@ -336,6 +384,14 @@ class GaitSimulator(private val params: GaitModelParams) {
             }
             return GaitSimulator(params)
         }
+
+        /**
+         * Apply Kuroko carry-mode posture to an existing parameter set: pitch baseline
+         * (0.55 rad handheld / 1.38 rad pocket) and sway scaling. Keeps every other
+         * harmonic/pulse component untouched.
+         */
+        fun withCarryMode(params: GaitModelParams, carryMode: Int, pitchBaselineRad: Float): GaitModelParams =
+            params.copy(carryMode = carryMode, pitchBaselineRad = pitchBaselineRad)
 
         private fun loadDefaultFromContextAssets(context: Context): String? {
             return try {

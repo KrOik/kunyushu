@@ -2,6 +2,7 @@ package tv.kyshu.xposed
 
 import android.location.Location
 import android.location.LocationManager
+import android.os.Binder
 import android.os.Build
 import tv.kyshu.xposed.factory.LocationFactory
 import tv.kyshu.xposed.factory.NmeaSentenceFactory
@@ -28,6 +29,20 @@ abstract class BaseLocationHook: BaseDivineService() {
     fun injectLocation(originLocation: Location, realLocation: Boolean = true): Location {
         if (injectionInProgress.get() == true ||
             DomainGuard.isDomainDisabled(DomainGuard.Domain.LOCATION_INJECTION)) {
+            return originLocation
+        }
+        // Kuroko per-UID routing: once a UID policy table has been pushed (epoch > 0),
+        // callers in system_server that are not targeted with POLICY_LOCATION always
+        // receive untouched real locations. Binder.getCallingUid() is only meaningful
+        // inside onTransact-style entry points; listener transports inside
+        // system_server run with the system UID, so location hooks resolve policy at
+        // the registration boundary (LocationManagerHook) and cache per-uid here.
+        if (tv.kyshu.xposed.config.UidPolicy.epochValue() > 0 &&
+            !tv.kyshu.xposed.config.UidPolicy.callerHasPolicy(tv.kyshu.xposed.config.UidPolicy.POLICY_LOCATION) &&
+            tv.kyshu.xposed.config.UidPolicy.targetCount() > 0 &&
+            Binder.getCallingUid() != android.os.Process.myUid() &&
+            !tv.kyshu.xposed.config.UidPolicy.isTargetUid(Binder.getCallingUid())
+        ) {
             return originLocation
         }
         injectionInProgress.set(true)

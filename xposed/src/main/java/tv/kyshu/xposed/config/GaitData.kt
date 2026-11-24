@@ -16,7 +16,18 @@
 package tv.kyshu.xposed.config
 
 /**
- * 步态模拟参数 — 频率、振幅缩放、JSON 步态曲线配置。
+ * 携带方式 — 手持摆臂 / 裤兜，Kuroko-Teleport carry mode 语义。
+ * 决定姿态基线（pitch）与横摆频率（手持 f，裤兜 f/2 + 更小振幅）。
+ */
+enum class CarryMode {
+    /** 手持摆臂：pitch ≈ 0.55 rad，横摆频率 = 步频 f。 */
+    HAND_SWING,
+    /** 裤兜：pitch ≈ 1.38 rad，横摆频率 = 步频 f/2，振幅 ~0.4×。 */
+    POCKET,
+}
+
+/**
+ * 步态模拟参数 — 频率、振幅缩放、JSON 步态曲线配置、携带方式。
  */
 class GaitData {
     // ==================== 步态参数 ====================
@@ -39,6 +50,24 @@ class GaitData {
     @Volatile
     var gaitParamsJson = ""
 
+    /**
+     * 携带方式：手持摆臂（默认）或裤兜。Kuroko SET_MODE <motion> <carry> 移植。
+     */
+    @Volatile
+    var carryMode = CarryMode.HAND_SWING
+
+    /**
+     * 手持模式 pitch 基线 (rad)
+     */
+    @Volatile
+    var handPitchRad = 0.55f
+
+    /**
+     * 裤兜模式 pitch 基线 (rad)
+     */
+    @Volatile
+    var pocketPitchRad = 1.38f
+
     // ==================== 子对象专属更新 ====================
 
     /**
@@ -48,8 +77,16 @@ class GaitData {
         gaitFreq = map.getAnyVal(gaitFreq, "gaitFreq", "gait_freq")
         gaitAmpScale = map.getAnyVal(gaitAmpScale, "gaitAmpScale", "gait_amp_scale")
         gaitParamsJson = map.getAnyVal(gaitParamsJson, "gaitParamsJson", "gait_params_json")
+        when (map.getAnyVal("hand", "carryMode", "carry_mode")) {
+            "pocket", "POCKET", "1" -> carryMode = CarryMode.POCKET
+            "hand", "HAND_SWING", "0" -> carryMode = CarryMode.HAND_SWING
+        }
+        handPitchRad = map.getAnyVal(handPitchRad, "handPitchRad", "hand_pitch_rad")
+        pocketPitchRad = map.getAnyVal(pocketPitchRad, "pocketPitchRad", "pocket_pitch_rad")
 
         if (gaitFreq <= 0f) gaitFreq = 2.8f
         if (gaitAmpScale <= 0f) gaitAmpScale = 1.0f
+        if (handPitchRad <= 0f) handPitchRad = 0.55f
+        if (pocketPitchRad <= 0f) pocketPitchRad = 1.38f
     }
 }
