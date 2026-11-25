@@ -148,7 +148,7 @@ internal object LocationServiceHook: BaseLocationHook() {
         return GnssConsistencySnapshot(
             satelliteCount = data.svCount,
             maxCn0 = cn0s.max(),
-            meanCn0 = cn0s.average(),
+            meanCn0 = cn0s.average().toFloat(),
             usedInFixCount = data.svidWithFlags.count { flags ->
                 (flags and tv.kyshu.xposed.utils.GnssFlags.SVID_FLAGS_USED_IN_FIX) != 0
             },
