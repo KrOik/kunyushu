@@ -78,6 +78,19 @@ adb logcat | grep -F "[PTL]"                 # hook 安装日志（WlanHook hide
 | 目标 App maps | `grep zygisk /proc/<pid>/maps` | 无残留 |
 | boot-guard | 连续重启两次注入失败场景 | 第三次自动停用 |
 
+## 6.5 无需重启项实测补充（11-25 第二轮）
+
+| 检查 | 结果 |
+|---|---|
+| 模块完整性（portal.apk 设备实解压 SHA-256 = `f6cbca9e…d0af`，与 apk_meta.prop 一致） | ✅ |
+| 4 个脚本 `sh -n` 语法 | customize/post-fs-data/service/uninstall 全 syntax-ok ✅ |
+| uninstall.sh 含 `pm uninstall` | 0 处（仅注释提及），Policy A2 成立 ✅ |
+| boot-guard 沙箱演练（设备端真实路径 /data/adb/kyshu/boot_guard） | before=0 → inc=1 → inc=2 → **trip 判定 ≥2 hooks refuse** → reset=0 → restored-absent ✅ |
+| Portal 应用运行时 | MainActivity 启动 pid 26706，NotificationChannel "Portal Location" 创建，无 crash ✅ |
+| 系统 mock 通道（无需 LSPosed） | `cmd location set-location-enabled true` + `appops mock_location allow` + `add-test-provider gps` → dumpsys 出现 `gps provider [mock]` + `mock provider override` 日志 ✅ |
+
+结论：mock 通道在无 LSPosed 的情况下独立可用（Portal 以 test-provider 模式驱动 mock）；这验证了 app 侧 mock 链路健康。但 v57 的 **system_server 侧 hook 强化**（UID 门控、WiFi/基站/BLE 隐藏、hook 安装日志、boot-guard 正式 trip 行为）仍依赖一次真机重启后的 post-fs-data 阶段。
+
 ## 7. 远端环境备注
 
 - `/root/portal-build`：完整 clone（unshallow 必须，否则 versionCode 退化为浅计数）、`.env`（BAIDU_MAP_KEY、KEYSTORE_PATH）、`release.jks`。
