@@ -91,6 +91,69 @@ adb logcat | grep -F "[PTL]"                 # hook 安装日志（WlanHook hide
 
 结论：mock 通道在无 LSPosed 的情况下独立可用（Portal 以 test-provider 模式驱动 mock）；这验证了 app 侧 mock 链路健康。但 v57 的 **system_server 侧 hook 强化**（UID 门控、WiFi/基站/BLE 隐藏、hook 安装日志、boot-guard 正式 trip 行为）仍依赖一次真机重启后的 post-fs-data 阶段。
 
+## 6.6 无需重启项实测补充（11-25 第三轮：字段级一致性联动落地）
+
+| 检查 | 结果 |
+|---|---|
+| 设备 `portal_ksu` 布局 | 仅 `module.prop` + `update` 标记（ksud 暂存布局，payload 待重启迁移）— 与 §5 预期一致 ✅ |
+| `/data/adb/kyshu/` 状态目录 | 存在（0700），`boot_guard` 缺席 = 复位态，无残留 trip ✅ |
+| uninstall.sh 设备侧内容 | 暂存布局下不可见，待重启迁移后核对；zip 层 SHA-256 + 本地读取确认 0 处活跃 `pm uninstall` ✅ |
+| **字段级一致性代码落地**（commit `58f7dae`） | `LocationServiceHook.currentGnssConsistency()` 快照 API（5s 过期门控）；LocationFactory extras（satellites/maxCn0/meanCn0）与星群同源；hideMock 时剥离演示性 extras；NMEA GGA/GSA/GNS 的 used-in-fix 数与星群 `usedInFixCount` 同源 ✅ |
+| 远端构建验证 | `:app:assembleAppRelease` + `:app:testAppDebugUnitTest`（见下方补记） |
+
+补记：远端构建（`consistency_build2.log`，11-24 23:02）—— 首轮 `consistency_build.log` 因 `meanCn0` Double→Float 编译错误失败（后由 `7ba1859` 修复）；第二轮 **BUILD SUCCESSFUL in 1m 7s**（187 tasks，含 `:app:testAppDebugUnitTest`），产出 `Portal-1.0.8-7ba1859-20261125-1141-all.apk`（versionCode=62）。
+
+## 6.8 Task 13 运行时验证：extras↔星群↔NMEA 字段级一致性（11-25，v58 真机）
+
+> 本节证据全部来自 v58（`1.0.8-7ba1859`，含 `58f7dae`+`7ba1859` 一致性代码）**安装并加载后**的运行态。此前在 v57 上收集的证据仅证明 mock 链路健康，不覆盖一致性代码路径。
+
+### v58 部署与激活
+
+| 步骤 | 结果 |
+|---|---|
+| 安装 | `adb install -r -d` Success，versionName=`1.0.8-7ba1859-20261125-1141`（21:40:50） |
+| hook 加载 | ss 软重启（pid 26156）后，`com.android.location.fused/cache/.svc_tel_*.jsonl` 新增 HOOK_INSTALL 记录（t=21:41:35）→ v58 模块在 ss 运行 ✅ |
+| 配置修复 | 发现 domain config `location` 回落 (0,0) 且 `preserve_mock_flag=false`（隐藏 mock 态）；经 UI 停止→选择 BeijingTest→启动 完整重放 `update_location→put_config→start→is_start→broadcast_location` 序列后恢复 39.9042/116.4074 + `preserve_mock_flag=true` ✅ |
+
+### 探针（com.probe.nmea，未注入三方消费者）实测
+
+探针 APK 演进 v1→v3（远端 `/root/portal-build/nmeaapk/`）：v2 增加 extras/mock/speed 逐字段 dump；v3 再增加 `registerGnssStatusCallback`。
+
+| 验证项 | 结果 |
+|---|---|
+| 位置投递 | LOC 39.9042±漂移, 116.4074±漂移，acc≈25，1s 节奏，`_inj=true` ✅ |
+| mock 标志 | `preserve_mock_flag=true` 时 `mock=true`；`hideMock` 态（`preserve_mock_flag=false`）时 `mock=false` 且 `maxCn0/meanCn0` extras 被剥离 —— **两态均按 LocationFactory 设计执行** ✅ |
+| **extras↔星群同源（核心）** | 探针注册 GnssStatus 回调后：`GNSSSTAT#2 sats=56 maxCn0=39 meanCn0=30` 与同刻 `LOC#388 satellites=56 maxCn0=40 meanCn0=29` —— **同一星群快照源（`currentGnssConsistency()`），数值差 ≤2 dB 在刷新节奏内一致**；随机回退分支（satellites=8~40 抖动）不再出现 ✅ |
+| GNSS 注入对三方 | 探针自身 GnssStatus 回调收到 hook 注入的 56 卫星星群（GPS 31·GNS 0·北斗 0 口径）✅ |
+| NMEA | 0 句（室内无真实 GNSS 定位，HAL 不产句子，改写钩子无从触发）—— 维持 §6.7 记录的既有局限 |
+
+### 机制说明（写入代码注释的语义）
+
+`lastMockGnssData` 仅在 `registerGnssStatusCallback` 的 GnssStatus 分发 `beforeHook` 内更新（LocationServiceHook.kt:1097）。因此 `currentGnssConsistency()` 快照的存在前提是**有外部 GnssStatus 消费者在收**；无消费者时 extras 走独立随机采样回退分支（8~45 卫星），避免 extras 长期冻结在过期星群。本次用探针自身充当消费者验证了同源分支；纯 extras 消费（不注册 GnssStatus）走回退分支属预期设计，非缺陷。
+
+### 证据文件（远端 `/root/portal-build/evidence_t13/`）
+
+`ev_gnss_v58.png`（v58 GNSS 屏）、`ev_probe_v2_extras.png`（探针 extras 投递屏）、`probe_v3_logcat.txt`（549 行，GNSSSTAT↔LOC 同源对照）、`ev_mock.png`/`ev_toast.png`（v57 期 mock 卡片与状态 toast）。
+
+**结论：Task 13 的 extras↔星群 联动在真机 v58 上闭环验证通过（同源 + 回退两分支均符合设计）；NMEA 改写腿受室内无星限制，维持代码路径 + 单测 + smoke 证据。**
+
+## 6.7 真机重启实测（11-25，用户授权后执行）
+
+| 步骤 | 结果 |
+|---|---|
+| 前置核查 | USB 直连（`usb:1-4`，lsusb 确认 Meizu 20 Pro 挂在 RHEL 总线上）、`persist.sys.usb.config=adb`、adb_keys 持久化 2 条公钥、电量 100% USB 供电、`ro.adb.secure=1` |
+| `adb reboot` | 全程 USB adb 存活；boot_completed=1 恢复（<90s）✅ |
+| 重启后 bootreason | `reboot,shell`（干净软件重启；对比重启前基线 `kernel_panic,oops:_fatal_exception` 为 11-21 历史遗留）✅ |
+| 内存 root 清除 | `su: inaccessible or not found` —— GhostLock/KernelSU 内存态 root 如预期失效 ✅ |
+| adb_keys 授权 | 无弹框直接恢复连接（密钥白名单生效）✅ |
+
+**结论**：`adb reboot` 在当前拓扑（设备 USB 连 RHEL，ZeroTier 承载 ssh）下安全 —— adb 不依赖网络态、授权持久化、init 自动恢复 USB 枚举。远端无人值守重启验证通过。
+
+### 远端临时 root 恢复流水线（flyroot 适配）
+
+- 位置：RHEL `/root/flyroot-pipeline/`（自 `C:\Users\29668\Documents\flyroot` 适配：去 cygpath/Windows adb 路径、`adb -s` 显式串号、新增 `05-wake.sh` 息屏唤醒、APK 预置 `apks/`）。
+- 关键事实修正：KernelSU 为 GhostLock late-load **内存态 root，重启即失效** —— 重启后必须重跑 `30-start-shizuku.sh` + `40-run-ghostlock.sh`（UI 自动化导入 profile → 强制攻击 → 执行）恢复 `u:r:ksu:s0`，portal_ksu 模块的 post-fs-data 流程需在 root 恢复后由 ksud 补执行。
+
 ## 7. 远端环境备注
 
 - `/root/portal-build`：完整 clone（unshallow 必须，否则 versionCode 退化为浅计数）、`.env`（BAIDU_MAP_KEY、KEYSTORE_PATH）、`release.jks`。
