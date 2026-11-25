@@ -81,10 +81,19 @@ object LocationFactory {
             location.extras = Bundle()
         }
         location.extras?.putBoolean(INJECTED_EXTRA, true)
+        // 卫星字段与 GnssStatusFactory 的当前星群保持一致（同一状态源），
+        // 避免检测方对比 extras 与 GnssStatus 时出现自相矛盾。
+        val gnssConsistency = tv.kyshu.xposed.hooks.LocationServiceHook.currentGnssConsistency()
+        if (gnssConsistency != null) {
+            location.extras?.putInt("satellites", gnssConsistency.satelliteCount)
+            location.extras?.putInt("maxCn0", gnssConsistency.maxCn0.toInt())
+            location.extras?.putInt("meanCn0", gnssConsistency.meanCn0.toInt())
+        } else {
+            location.extras?.putInt("satellites", Random.nextInt(8, 45))
+            location.extras?.putInt("maxCn0", Random.nextInt(30, 50))
+            location.extras?.putInt("meanCn0", Random.nextInt(20, 30))
+        }
         location.extras?.putDouble("latlon", location.latitude + location.longitude)
-        location.extras?.putInt("satellites", Random.nextInt(8, 45))
-        location.extras?.putInt("maxCn0", Random.nextInt(30, 50))
-        location.extras?.putInt("meanCn0", Random.nextInt(20, 30))
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             // No geoid model at the simulated coordinates: do not invent an MSL value
@@ -94,6 +103,12 @@ object LocationFactory {
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             location.isMock = !locationData.hideMock
+        }
+        if (locationData.hideMock) {
+            // mock 标志已隐藏：清除可能与真实硬件行为冲突的演示性 extras，
+            // 防止检测方从 bundle 键名反推 mock 来源。
+            location.extras?.remove("maxCn0")
+            location.extras?.remove("meanCn0")
         }
 
         // This is a newly generated sample, including when derived from a cached fix.

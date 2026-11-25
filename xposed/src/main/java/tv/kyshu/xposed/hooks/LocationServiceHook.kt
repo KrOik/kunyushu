@@ -127,8 +127,34 @@ internal object LocationServiceHook: BaseLocationHook() {
     @Volatile private var lastProviderCacheFallbackAt = 0L
     private var lastGnssUpdateElapsed = 0L
     private var lastCalcLocation: Pair<Double, Double>? = null
-    private var lastMockGnssData: MockGnssData? = null
-    private var lastMockGnssDataTime = 0L
+    @Volatile private var lastMockGnssData: MockGnssData? = null
+    @Volatile private var lastMockGnssDataTime = 0L
+
+    /** Snapshot of the last mock star cluster for cross-layer consistency (extras/NMEA). */
+    data class GnssConsistencySnapshot(
+        val satelliteCount: Int,
+        val maxCn0: Float,
+        val meanCn0: Float,
+        val usedInFixCount: Int,
+        val elapsedMs: Long,
+    )
+
+    fun currentGnssConsistency(): GnssConsistencySnapshot? {
+        val data = lastMockGnssData ?: return null
+        val age = SystemClock.elapsedRealtime() - lastMockGnssDataTime
+        if (age > 5_000L) return null // stale cluster: prefer independent sampling fallback
+        val cn0s = data.cn0s
+        if (cn0s.isEmpty()) return null
+        return GnssConsistencySnapshot(
+            satelliteCount = data.svCount,
+            maxCn0 = cn0s.max(),
+            meanCn0 = cn0s.average(),
+            usedInFixCount = data.svidWithFlags.count { flags ->
+                (flags and tv.kyshu.xposed.utils.GnssFlags.SVID_FLAGS_USED_IN_FIX) != 0
+            },
+            elapsedMs = age,
+        )
+    }
     private var lastSatelliteCalcTime = 0L
     private var lastSatelliteDiagTime = 0L
     private val loggedSatelliteCalcErrors = ConcurrentHashMap.newKeySet<String>()

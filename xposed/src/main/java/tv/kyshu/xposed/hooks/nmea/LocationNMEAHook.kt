@@ -303,8 +303,11 @@ object LocationNMEAHook: BaseLocationHook() {
                 else -> originalFixQuality
             }
 
-            val usedSatellitesCount = FakeLoc.minSatellites +
-                kotlin.random.Random.nextInt(0, 8)
+            // 参与定位卫星数与 GnssStatusFactory 当前星群的 usedInFix 一致（同一状态源），
+            // 避免检测方对比 NMEA GGA 与 GnssStatus 时出现自相矛盾。
+            val usedSatellitesCount = tv.kyshu.xposed.hooks.LocationServiceHook
+                .currentGnssConsistency()?.usedInFixCount
+                ?: (FakeLoc.minSatellites + kotlin.random.Random.nextInt(0, 8))
             return runCatching {
                 tv.kyshu.xposed.utils.NmeaGenerator.generateGGA(
                     FakeLoc.latitude,
@@ -332,7 +335,10 @@ object LocationNMEAHook: BaseLocationHook() {
 
         // Generate GSA: mode+fix type + PRN of used satellites + PDOP/HDOP/VDOP
         if (nmea.startsWith("\$GPGSA") || nmea.startsWith("\$GNGSA")) {
-            val usedCount = FakeLoc.minSatellites + kotlin.random.Random.nextInt(0, 8)
+            // GSA 的 PRN 集合同样与当前星群 usedInFix 一致，保证 NMEA↔GnssStatus 联动。
+            val usedCount = tv.kyshu.xposed.hooks.LocationServiceHook
+                .currentGnssConsistency()?.usedInFixCount
+                ?: (FakeLoc.minSatellites + kotlin.random.Random.nextInt(0, 8))
             val satelliteIds = (1..usedCount.coerceIn(4, 24)).map { kotlin.random.Random.nextInt(1, 33) }
             return runCatching {
                 tv.kyshu.xposed.utils.NmeaGenerator.generateGSA(
@@ -347,8 +353,9 @@ object LocationNMEAHook: BaseLocationHook() {
         }
 
         if (nmea.startsWith("\$GPGNS") || nmea.startsWith("\$GNGNS")) {
-            val usedSatellitesCount = FakeLoc.minSatellites +
-                kotlin.random.Random.nextInt(0, 8)
+            val usedSatellitesCount = tv.kyshu.xposed.hooks.LocationServiceHook
+                .currentGnssConsistency()?.usedInFixCount
+                ?: (FakeLoc.minSatellites + kotlin.random.Random.nextInt(0, 8))
             return runCatching {
                 tv.kyshu.xposed.utils.NmeaGenerator.generateGNS(
                     talker = original.removePrefix("$").take(2),
